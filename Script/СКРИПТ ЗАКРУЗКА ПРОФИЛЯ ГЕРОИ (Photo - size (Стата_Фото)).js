@@ -229,11 +229,23 @@ async function fetchProfileByTN(tn) {
   const processed = processPhotos(tn, rawData);
   const sizeAfter = getJsonSizeBytes(processed);
 
-  console.log(
-    "TN", tn,
-    "| OK | size before:", sizeBefore, "bytes",
-    "| size after:", sizeAfter, "bytes"
-  );
+  // Ответ с success: false (например «Запись не найдена») — выводим ERROR и поля ошибки; в JSON сохраняем как есть.
+  if (rawData.success === false && rawData.error && typeof rawData.error === "object") {
+    const err = rawData.error;
+    console.log(
+      "TN", tn,
+      "| ERROR |",
+      "code:", err.code || "",
+      "system:", err.system || "",
+      "text:", err.text || ""
+    );
+  } else {
+    console.log(
+      "TN", tn,
+      "| OK | size before:", sizeBefore, "bytes",
+      "| size after:", sizeAfter, "bytes"
+    );
+  }
 
   return {
     tn: tn,
