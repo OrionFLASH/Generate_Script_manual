@@ -3,7 +3,7 @@
 // =============================================================================
 // POST к эндпоинтам .../file-download — ответ: бинарный файл (скачивание в браузере).
 // Куки берутся из текущей сессии (credentials: "include"), на странице нужного стенда.
-// Панель: основные выгрузки, группы «Рейтинг» и «Заказы», «Скачать всё» с паузой между запросами.
+// Панель: основные выгрузки, группы «Рейтинг» и «Заказы», чекбоксы и «Скачать выделенное» с паузой между запросами.
 // Табельные номера не используются.
 // =============================================================================
 
@@ -454,13 +454,65 @@ async function downloadOrdersGroupOnly() {
 }
 
 /**
- * Панель: по кнопке на каждую задачу + «Скачать всё».
- * Рейтинг и Заказы — в одном ряду (слева / справа), уменьшенные отступы без лишней прокрутки.
+ * Скачивание только тех задач, у которых на панели отмечен чекбокс.
+ * @param {{ cb: HTMLInputElement, job: object }[]} entries — пары чекбокс + задача с панели.
+ */
+async function downloadCheckedPanelJobs(entries) {
+  const jobs = entries
+    .filter(function (x) {
+      return x.cb.checked;
+    })
+    .map(function (x) {
+      return x.job;
+    });
+  if (jobs.length === 0) {
+    console.warn(
+      "Скачать выделенное: нет отмеченных задач. Отметьте чекбоксы или нажмите «Отметить всё»."
+    );
+    return;
+  }
+  await downloadJobsSequentially(jobs, "«Скачать выделенное»");
+}
+
+/**
+ * Панель: кнопка на каждую задачу + чекбокс для пакета «Скачать выделенное».
+ * Рейтинг и Заказы — в одном ряду (слева / справа), компактные отступы.
  */
 function startDownloadPanel() {
-  // Компактные кнопки в колонках (длинные подписи переносятся).
+  // Пары чекбокс ↔ задача (порядок = порядок обхода при «Скачать выделенное»).
+  const panelCheckboxJobs = [];
+
+  // Компактные кнопки в колонках (длинные подписи переносятся); в строке с чекбоксом — flex:1.
   const panelBtnGroupRow =
-    "display:block;margin:2px 0;padding:3px 6px;font-size:10px;line-height:1.2;cursor:pointer;color:#fff;border:none;border-radius:4px;width:100%;box-sizing:border-box;text-align:left;white-space:normal;word-break:break-word;";
+    "flex:1;min-width:0;display:block;margin:0;padding:3px 6px;font-size:10px;line-height:1.2;cursor:pointer;color:#fff;border:none;border-radius:4px;box-sizing:border-box;text-align:left;white-space:normal;word-break:break-word;";
+
+  /**
+   * Строка: чекбокс + кнопка скачивания одной задачи (учёт в «Скачать выделенное»).
+   * @param {HTMLElement} parent
+   * @param {object} job
+   * @param {string} buttonCss — стили кнопки (в т.ч. background).
+   * @param {function(): void} onButtonClick
+   */
+  function appendRowWithCheckbox(parent, job, buttonCss, onButtonClick) {
+    const row = document.createElement("div");
+    row.style.cssText =
+      "display:flex;flex-direction:row;align-items:flex-start;gap:5px;margin:2px 0;width:100%;box-sizing:border-box;";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = false;
+    cb.title = "Участвует в «Скачать выделенное»";
+    cb.style.cssText =
+      "margin:5px 0 0 0;flex-shrink:0;width:14px;height:14px;cursor:pointer;accent-color:#444;";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = job.label || job.id || "Скачать";
+    btn.style.cssText = buttonCss;
+    btn.addEventListener("click", onButtonClick);
+    row.appendChild(cb);
+    row.appendChild(btn);
+    parent.appendChild(row);
+    panelCheckboxJobs.push({ cb: cb, job: job });
+  }
 
   const container = document.createElement("div");
   container.style.cssText =
@@ -480,7 +532,7 @@ function startDownloadPanel() {
     RATING_GROUP_JOBS.length +
     " · Зак.: " +
     ORDERS_GROUP_JOBS.length +
-    " · Всего «всё»: " +
+    " · Всего задач с чекбоксом: " +
     getAllDownloadJobs().length +
     " · dateFrom наград: " +
     EMPLOYEE_REWARDS_DATE_FROM;
@@ -493,19 +545,15 @@ function startDownloadPanel() {
   labMain.textContent = "Основные выгрузки";
   secMain.appendChild(labMain);
 
+  const mainBtnCss =
+    "flex:1;min-width:0;display:block;margin:0;padding:5px 10px;font-size:11px;line-height:1.2;cursor:pointer;background:#0066cc;color:#fff;border:none;border-radius:4px;box-sizing:border-box;text-align:left;";
   DOWNLOAD_JOBS.forEach(function (job) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.textContent = job.label || job.id || "Скачать";
-    btn.style.cssText =
-      "display:block;margin:3px 0;padding:5px 10px;font-size:11px;line-height:1.2;cursor:pointer;background:#0066cc;color:#fff;border:none;border-radius:4px;width:100%;box-sizing:border-box;";
-    btn.addEventListener("click", function () {
+    appendRowWithCheckbox(secMain, job, mainBtnCss, function () {
       downloadOneJob(job, {
         groupName: getGroupNameForJob(job),
         batchName: "ручной клик (одна задача) | секция «Основные выгрузки»"
       });
     });
-    secMain.appendChild(btn);
   });
   container.appendChild(secMain);
 
@@ -523,17 +571,12 @@ function startDownloadPanel() {
   secRating.appendChild(labRating);
 
   RATING_GROUP_JOBS.forEach(function (job) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.textContent = job.label || job.id || "Скачать";
-    btn.style.cssText = panelBtnGroupRow + "background:#415a9e;";
-    btn.addEventListener("click", function () {
+    appendRowWithCheckbox(secRating, job, panelBtnGroupRow + "background:#415a9e;", function () {
       downloadOneJob(job, {
         groupName: "Рейтинг",
         batchName: "ручной клик (одна задача) | секция «Рейтинг»"
       });
     });
-    secRating.appendChild(btn);
   });
 
   const btnRatingAll = document.createElement("button");
@@ -556,17 +599,12 @@ function startDownloadPanel() {
   secOrders.appendChild(labOrders);
 
   ORDERS_GROUP_JOBS.forEach(function (job) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.textContent = job.label || job.id || "Скачать";
-    btn.style.cssText = panelBtnGroupRow + "background:#2d8659;";
-    btn.addEventListener("click", function () {
+    appendRowWithCheckbox(secOrders, job, panelBtnGroupRow + "background:#2d8659;", function () {
       downloadOneJob(job, {
         groupName: "Заказы",
         batchName: "ручной клик (одна задача) | секция «Заказы»"
       });
     });
-    secOrders.appendChild(btn);
   });
 
   const btnOrdersAll = document.createElement("button");
@@ -582,15 +620,43 @@ function startDownloadPanel() {
 
   container.appendChild(rowRatingOrders);
 
-  const btnAll = document.createElement("button");
-  btnAll.type = "button";
-  btnAll.textContent = "Скачать всё (осн. + рейт. + зак.)";
-  btnAll.style.cssText =
-    "display:block;margin:0 0 4px;padding:6px 10px;font-size:11px;line-height:1.2;cursor:pointer;background:#28a745;color:#fff;border:none;border-radius:4px;width:100%;box-sizing:border-box;font-weight:bold;";
-  btnAll.addEventListener("click", function () {
-    downloadAllJobs();
+  // Мелкие кнопки: отметить / снять все чекбоксы на панели.
+  const rowMark = document.createElement("div");
+  rowMark.style.cssText =
+    "display:flex;flex-direction:row;flex-wrap:wrap;gap:6px;align-items:center;margin:0 0 6px;";
+  const btnMarkAll = document.createElement("button");
+  btnMarkAll.type = "button";
+  btnMarkAll.textContent = "Отметить всё";
+  btnMarkAll.style.cssText =
+    "padding:3px 8px;font-size:10px;line-height:1.2;cursor:pointer;background:#e8e8e8;color:#222;border:1px solid #bbb;border-radius:4px;box-sizing:border-box;";
+  btnMarkAll.addEventListener("click", function () {
+    panelCheckboxJobs.forEach(function (x) {
+      x.cb.checked = true;
+    });
   });
-  container.appendChild(btnAll);
+  rowMark.appendChild(btnMarkAll);
+  const btnClearAll = document.createElement("button");
+  btnClearAll.type = "button";
+  btnClearAll.textContent = "Снять отметки";
+  btnClearAll.style.cssText =
+    "padding:3px 8px;font-size:10px;line-height:1.2;cursor:pointer;background:#f5f5f5;color:#333;border:1px solid #ccc;border-radius:4px;box-sizing:border-box;";
+  btnClearAll.addEventListener("click", function () {
+    panelCheckboxJobs.forEach(function (x) {
+      x.cb.checked = false;
+    });
+  });
+  rowMark.appendChild(btnClearAll);
+  container.appendChild(rowMark);
+
+  const btnSelected = document.createElement("button");
+  btnSelected.type = "button";
+  btnSelected.textContent = "Скачать выделенное (по чекбоксам)";
+  btnSelected.style.cssText =
+    "display:block;margin:0 0 6px;padding:6px 10px;font-size:11px;line-height:1.2;cursor:pointer;background:#28a745;color:#fff;border:none;border-radius:4px;width:100%;box-sizing:border-box;font-weight:bold;";
+  btnSelected.addEventListener("click", function () {
+    downloadCheckedPanelJobs(panelCheckboxJobs);
+  });
+  container.appendChild(btnSelected);
 
   const btnClose = document.createElement("button");
   btnClose.type = "button";
