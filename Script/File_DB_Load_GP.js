@@ -3,9 +3,14 @@
 // =============================================================================
 // POST к эндпоинтам .../file-download — ответ: бинарный файл (скачивание в браузере).
 // Куки берутся из текущей сессии (credentials: "include"), на странице нужного стенда.
-// Панель: основные выгрузки, группы «Рейтинг» и «Заказы», чекбоксы и «Скачать выделенное» с паузой между запросами.
+// Панель: основные выгрузки, группы «Рейтинг» и «Заказы», чекбоксы и «Скачать выделенное» с паузой; стиль как у других панелей; лог на панели дублирует консоль.
 // Табельные номера не используются.
 // =============================================================================
+
+// Весь исполняемый код ниже — в IIFE: повторная вставка скрипта в консоль без перезагрузки вкладки
+// (нет ошибки повторного объявления const/let в глобальной области).
+(function () {
+  "use strict";
 
 // =============================================================================
 // КОНФИГУРАЦИЯ
@@ -26,14 +31,33 @@ const STAND_ORIGINS = {
 // Путь по умолчанию, если у задачи не указан apiPath.
 const DEFAULT_FILE_DOWNLOAD_PATH = "/bo/rmkib.gamification/proxy/v1/tournaments/file-download";
 
-// Дата «с которой» грузить сводку наград (payload dateFrom для employee-rewards/file-download).
-const EMPLOYEE_REWARDS_DATE_FROM = "2023-01-01";
+// Дата «с которой» грузить сводку наград — значение по умолчанию до открытия панели и при пустом поле даты.
+const DEFAULT_EMPLOYEE_REWARDS_DATE_FROM = "2023-01-01";
 
-// Пауза между запросами при пакетной загрузке («Скачать всё», группы «Рейтинг» / «Заказы»), мс.
+/** Текущий dateFrom для выгрузки наград (обновляется с панели, `<input type="date">`). */
+var fileDlEmployeeRewardsDateFrom = DEFAULT_EMPLOYEE_REWARDS_DATE_FROM;
+
+/** Поле даты на панели (null после «Закрыть»). */
+var fileDlPanelRewardsDateInput = null;
+
+// Пауза между запросами при пакетной загрузке — значение по умолчанию для поля на панели, мс.
 const DOWNLOAD_ALL_DELAY_MS = 800;
 
-// Режим «скользящий старт»: минимальный интервал между запусками POST (мс); следующий старт раньше, если предыдущий успешно завершился и прошло DOWNLOAD_ALL_DELAY_MS.
+// Скользящий старт: минимальный интервал между запусками POST — значение по умолчанию на панели, мс.
 const DOWNLOAD_STAGGER_MS = 15000;
+
+/** Верхняя граница задержек, вводимых на панели (защита от опечаток), мс. */
+const FILE_DL_DELAY_INPUT_MAX_MS = 600000;
+
+/** Текущая пауза между файлами в пакете (последовательно и после успеха при скользящем старте), мс. */
+var fileDlDelayBetweenMs = DOWNLOAD_ALL_DELAY_MS;
+
+/** Текущий минимальный интервал между стартами в скользящем режиме, мс. */
+var fileDlStaggerMinMs = DOWNLOAD_STAGGER_MS;
+
+/** Поля ввода задержек на панели (null, если панель закрыта). */
+var fileDlPanelDelayBetweenInput = null;
+var fileDlPanelStaggerInput = null;
 
 /** Включён ли на панели чекбокс «скользящий старт» (обновляется из UI). */
 var FILE_DL_USE_STAGGER = false;
@@ -63,15 +87,16 @@ const DOWNLOAD_JOBS = [
   },
   {
     id: "employeeRewardsSummary",
-    label: "Сводка (награды, CSV)",
+    label: "Награды: (LIST REWARD)",
     apiPath: "/bo/rmkib.gamification/proxy/v1/employee-rewards/file-download",
-    body: { dateFrom: EMPLOYEE_REWARDS_DATE_FROM },
+    // dateFrom подставляется в downloadOneJob из панели (`fileDlEmployeeRewardsDateFrom`).
+    body: {},
     refererPath: "/awards/list",
     fileName: null
   },
   {
     id: "administrationStatisticCsv",
-    label: "Сводка статистики (админ, CSV)",
+    label: "Посещения",
     apiPath: "/bo/rmkib.gamification/proxy/v1/administration/statistic/file-download",
     body: {},
     refererPath: "/admin/statistic",
@@ -287,6 +312,79 @@ function delay(ms) {
 }
 
 /**
+ * Читает неотрицательное целое из поля числа с потолком.
+ * @param {HTMLInputElement|null} inp
+ * @param {number} fallback
+ * @param {number} maxMs
+ * @returns {number}
+ */
+function fileDlReadDelayMs(inp, fallback, maxMs) {
+  if (!inp) return fallback;
+  var n = parseInt(String(inp.value).trim(), 10);
+  if (isNaN(n) || n < 0) return fallback;
+  if (n > maxMs) return maxMs;
+  return n;
+}
+
+/** Обновляет рабочие задержки из полей панели (если панель открыта). */
+function syncFileDlDelaysFromPanel() {
+  fileDlDelayBetweenMs = fileDlReadDelayMs(
+    fileDlPanelDelayBetweenInput,
+    DOWNLOAD_ALL_DELAY_MS,
+    FILE_DL_DELAY_INPUT_MAX_MS
+  );
+  fileDlStaggerMinMs = fileDlReadDelayMs(
+    fileDlPanelStaggerInput,
+    DOWNLOAD_STAGGER_MS,
+    FILE_DL_DELAY_INPUT_MAX_MS
+  );
+}
+
+/**
+ * Проверка формата даты для API (только календарная дата, без времени).
+ * @param {string} s
+ * @returns {boolean}
+ */
+function fileDlIsIsoDateYmd(s) {
+  return typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s.trim());
+}
+
+/**
+ * Переносит dateFrom наград с панели в `fileDlEmployeeRewardsDateFrom` (если панель открыта).
+ */
+function syncFileDlRewardsDateFromPanel() {
+  if (!fileDlPanelRewardsDateInput) return;
+  var v = String(fileDlPanelRewardsDateInput.value || "").trim();
+  if (fileDlIsIsoDateYmd(v)) {
+    fileDlEmployeeRewardsDateFrom = v;
+  } else {
+    fileDlEmployeeRewardsDateFrom = DEFAULT_EMPLOYEE_REWARDS_DATE_FROM;
+  }
+}
+
+/** Если открыта панель — функция добавления строки в блок лога; иначе `null`. */
+var fileDlPanelLogAppend = null;
+
+/**
+ * Дублирует сообщение в консоль и в лог панели (если панель открыта и задан приёмник).
+ * @param {"log"|"warn"|"error"} level
+ * @param {string} msg
+ */
+function fileDlPanelEcho(level, msg) {
+  var s = typeof msg === "string" ? msg : String(msg);
+  if (level === "error") console.error(s);
+  else if (level === "warn") console.warn(s);
+  else console.log(s);
+  if (typeof fileDlPanelLogAppend === "function") {
+    try {
+      fileDlPanelLogAppend(s);
+    } catch (e) {
+      /* панель могла быть снята с DOM */
+    }
+  }
+}
+
+/**
  * Извлекает имя файла из заголовка Content-Disposition (RFC 5987 / простой вариант).
  * @param {string|null} header
  * @returns {string|null}
@@ -351,7 +449,20 @@ async function downloadOneJob(job, ctx) {
     "Content-Type": "application/json"
   };
 
-  const bodyObj = job.body !== undefined && job.body !== null ? job.body : {};
+  // Клонируем тело, чтобы для наград подставить актуальный dateFrom с панели, не мутируя константу DOWNLOAD_JOBS.
+  var bodyObj;
+  try {
+    bodyObj =
+      job.body !== undefined && job.body !== null
+        ? JSON.parse(JSON.stringify(job.body))
+        : {};
+  } catch (cloneErr) {
+    bodyObj = {};
+  }
+  if (job.id === "employeeRewardsSummary") {
+    syncFileDlRewardsDateFromPanel();
+    bodyObj.dateFrom = fileDlEmployeeRewardsDateFrom;
+  }
 
   const groupName = ctx.groupName != null ? ctx.groupName : getGroupNameForJob(job);
   const batchName = ctx.batchName != null ? ctx.batchName : "одиночный запрос (кнопка)";
@@ -360,7 +471,8 @@ async function downloadOneJob(job, ctx) {
   const posStr =
     idx != null && total != null ? "Файл в пакете: " + (idx + 1) + " из " + total : null;
 
-  console.log(
+  fileDlPanelEcho(
+    "log",
     "СТАРТ загрузки\n" +
       "Группа: " +
       groupName +
@@ -381,12 +493,13 @@ async function downloadOneJob(job, ctx) {
     });
   } catch (e) {
     // id задачи уже в предыдущем логе «СТАРТ загрузки» — не дублируем.
-    console.error("ОШИБКА (сеть / исключение)\n" + String(e));
+    fileDlPanelEcho("error", "ОШИБКА (сеть / исключение)\n" + String(e));
     return { ok: false, error: String(e) };
   }
 
   if (!res.ok) {
-    console.warn(
+    fileDlPanelEcho(
+      "warn",
       "ОШИБКА HTTP\nСтатус: " + res.status + " " + (res.statusText || "")
     );
     return { ok: false, status: res.status };
@@ -400,14 +513,16 @@ async function downloadOneJob(job, ctx) {
     try {
       data = JSON.parse(textBody);
     } catch (parseErr) {
-      console.warn(
+      fileDlPanelEcho(
+        "warn",
         "ОШИБКА: ответ помечен как JSON, разбор не удался\n" + String(parseErr)
       );
       return { ok: false, error: "invalid_json_body" };
     }
     if (data && data.success === false && data.error) {
       const err = data.error;
-      console.warn(
+      fileDlPanelEcho(
+        "warn",
         "ОШИБКА API (HTTP 200, JSON)\nСтенд: " +
           standKey +
           "\nЗадача id: " +
@@ -425,12 +540,14 @@ async function downloadOneJob(job, ctx) {
       return { ok: false, apiError: err };
     }
     if (data && data.success === true) {
-      console.warn(
+      fileDlPanelEcho(
+        "warn",
         "Ответ JSON с success:true — не файл выгрузки, скачивание отменено"
       );
       return { ok: false, error: "unexpected_json_success" };
     }
-    console.warn(
+    fileDlPanelEcho(
+      "warn",
       "Ответ application/json непохож на файл выгрузки — скачивание отменено"
     );
     return { ok: false, error: "unexpected_json_shape" };
@@ -458,7 +575,8 @@ async function downloadOneJob(job, ctx) {
   }, 0);
 
   // При параллельном (скользящем) старте в консоли несколько потоков — дублируем id и payload.
-  console.log(
+  fileDlPanelEcho(
+    "log",
     "ЗАВЕРШЕНО: файл скачан\n" +
       "Стенд: " +
       standKey +
@@ -479,19 +597,22 @@ async function downloadOneJob(job, ctx) {
 }
 
 /**
- * Последовательно скачивает задачи из массива с паузой DOWNLOAD_ALL_DELAY_MS.
+ * Последовательно скачивает задачи из массива с паузой из панели (`fileDlDelayBetweenMs`).
  * @param {object[]} jobs
  * @param {string} logLabel — подпись для консоли (название пакета).
  */
 async function downloadJobsSequentially(jobs, logLabel) {
+  syncFileDlDelaysFromPanel();
+  const pauseMs = fileDlDelayBetweenMs;
   const total = jobs.length;
-  console.log(
+  fileDlPanelEcho(
+    "log",
     "ПАКЕТ: " +
       logLabel +
       "\nСТАРТ последовательной загрузки\nВсего файлов в пакете: " +
       total +
       "\nПауза между запросами: " +
-      DOWNLOAD_ALL_DELAY_MS +
+      pauseMs +
       " мс"
   );
 
@@ -510,15 +631,17 @@ async function downloadJobsSequentially(jobs, logLabel) {
     if (result.ok) okCount++;
     else errCount++;
 
-    if (i < jobs.length - 1 && DOWNLOAD_ALL_DELAY_MS > 0) {
-      console.log(
-        "Пауза " + DOWNLOAD_ALL_DELAY_MS + " мс перед файлом " + (i + 2) + "/" + total
+    if (i < jobs.length - 1 && pauseMs > 0) {
+      fileDlPanelEcho(
+        "log",
+        "Пауза " + pauseMs + " мс перед файлом " + (i + 2) + "/" + total
       );
-      await delay(DOWNLOAD_ALL_DELAY_MS);
+      await delay(pauseMs);
     }
   }
 
-  console.log(
+  fileDlPanelEcho(
+    "log",
     "ПАКЕТ: " +
       logLabel +
       "\nФИНИШ: обработано задач: " +
@@ -531,22 +654,25 @@ async function downloadJobsSequentially(jobs, logLabel) {
 }
 
 /**
- * Пакет с перекрывающимися запросами: каждый следующий старт не раньше чем через DOWNLOAD_STAGGER_MS;
- * если предыдущий завершился успешно — можно стартовать через DOWNLOAD_ALL_DELAY_MS после его конца.
+ * Пакет с перекрывающимися запросами: интервалы из панели (`fileDlStaggerMinMs`, `fileDlDelayBetweenMs`).
  * @param {object[]} jobs
  * @param {string} logLabel
  */
 async function downloadJobsStaggered(jobs, logLabel) {
+  syncFileDlDelaysFromPanel();
+  const staggerMs = fileDlStaggerMinMs;
+  const pauseAfterOkMs = fileDlDelayBetweenMs;
   const total = jobs.length;
-  console.log(
+  fileDlPanelEcho(
+    "log",
     "ПАКЕТ: " +
       logLabel +
       "\nСТАРТ (скользящий старт запросов)\nВсего задач: " +
       total +
       "\nМежду стартами min: " +
-      DOWNLOAD_STAGGER_MS +
+      staggerMs +
       " мс | после успеха предыдущего: " +
-      DOWNLOAD_ALL_DELAY_MS +
+      pauseAfterOkMs +
       " мс"
   );
 
@@ -563,9 +689,9 @@ async function downloadJobsStaggered(jobs, logLabel) {
     promises.push(p);
     if (i < total - 1) {
       await Promise.race([
-        delay(DOWNLOAD_STAGGER_MS),
+        delay(staggerMs),
         p.then(function (result) {
-          if (result && result.ok) return delay(DOWNLOAD_ALL_DELAY_MS);
+          if (result && result.ok) return delay(pauseAfterOkMs);
           return new Promise(function () {});
         })
       ]);
@@ -580,7 +706,8 @@ async function downloadJobsStaggered(jobs, logLabel) {
     else errCount++;
   });
 
-  console.log(
+  fileDlPanelEcho(
+    "log",
     "ПАКЕТ: " +
       logLabel +
       "\nФИНИШ: обработано задач: " +
@@ -605,6 +732,7 @@ async function downloadJobsBatch(jobs, logLabel, useStagger) {
 
 /** Основные выгрузки + рейтинг + заказы. */
 async function downloadAllJobs() {
+  syncFileDlDelaysFromPanel();
   await downloadJobsSequentially(getAllDownloadJobs(), "«Скачать всё»");
 }
 
@@ -631,7 +759,8 @@ async function downloadCheckedPanelJobs(entries) {
       return x.job;
     });
   if (jobs.length === 0) {
-    console.warn(
+    fileDlPanelEcho(
+      "warn",
       "Скачать выделенное: нет отмеченных задач. Отметьте чекбоксы или нажмите «Отметить всё»."
     );
     return;
@@ -640,16 +769,64 @@ async function downloadCheckedPanelJobs(entries) {
 }
 
 /**
+ * Обнуляет ссылки на DOM панели и возвращает рабочие переменные к значениям по умолчанию.
+ * Вызывается при «Закрыть» и перед повторным открытием панели — чтобы не держать мёртвые узлы и не смешивать состояние.
+ */
+function fileDlDetachPanelAndResetRuntime() {
+  fileDlPanelLogAppend = null;
+  fileDlPanelDelayBetweenInput = null;
+  fileDlPanelStaggerInput = null;
+  fileDlPanelRewardsDateInput = null;
+  FILE_DL_ACTIVE_STAND = DEFAULT_FILE_DL_STAND;
+  fileDlEmployeeRewardsDateFrom = DEFAULT_EMPLOYEE_REWARDS_DATE_FROM;
+  fileDlDelayBetweenMs = DOWNLOAD_ALL_DELAY_MS;
+  fileDlStaggerMinMs = DOWNLOAD_STAGGER_MS;
+  FILE_DL_USE_STAGGER = false;
+}
+
+/**
  * Панель: кнопка на каждую задачу + чекбокс для пакета «Скачать выделенное».
- * Рейтинг и Заказы — в одном ряду (слева / справа), компактные отступы.
+ * Стиль окна и кнопок — в одном ключе с AddressBook_export / Tournament_LeadersForAdmin; внизу лог (дубль консоли).
  */
 function startDownloadPanel() {
-  // Пары чекбокс ↔ задача (порядок = порядок обхода при «Скачать выделенное»).
+  var prevRoot = document.getElementById("fileDlGamificationPanelRoot");
+  if (prevRoot) {
+    prevRoot.remove();
+    fileDlDetachPanelAndResetRuntime();
+  }
+
   const panelCheckboxJobs = [];
 
-  // Компактные кнопки в колонках (длинные подписи переносятся); в строке с чекбоксом — flex:1.
-  const panelBtnGroupRow =
-    "flex:1;min-width:0;display:block;margin:0;padding:3px 6px;font-size:10px;line-height:1.2;cursor:pointer;color:#fff;border:none;border-radius:4px;box-sizing:border-box;text-align:left;white-space:normal;word-break:break-word;";
+  // Строка-сводка под стендом: пересчёт «отмечено» при смене любого чекбокса.
+  const sub = document.createElement("div");
+  sub.style.cssText =
+    "font-size:9px;color:#64748b;margin:0 0 6px;line-height:1.35;word-break:break-word;";
+  function refreshPanelSubSummary() {
+    var total = getAllDownloadJobs().length;
+    var marked = 0;
+    for (var i = 0; i < panelCheckboxJobs.length; i++) {
+      if (panelCheckboxJobs[i].cb.checked) marked++;
+    }
+    sub.textContent =
+      "Осн.: " +
+      DOWNLOAD_JOBS.length +
+      " · Рейт.: " +
+      RATING_GROUP_JOBS.length +
+      " · Зак.: " +
+      ORDERS_GROUP_JOBS.length +
+      " · Всего задач с чекбоксом: " +
+      total +
+      " (отмечено: " +
+      marked +
+      ")";
+  }
+
+  // Кнопки строк: текст по центру, чуть крупнее шрифт; высота умеренная.
+  const btnJobRowBase =
+    "flex:1;min-width:0;margin:0;min-height:30px;padding:5px 6px;font-size:10px;font-weight:600;cursor:pointer;" +
+    "border-radius:8px;border:none;color:#fff;box-sizing:border-box;display:flex;align-items:center;" +
+    "justify-content:center;line-height:1.2;text-align:center;white-space:normal;word-break:break-word;";
+  const panelBtnGroupRow = btnJobRowBase;
 
   /**
    * Строка: чекбокс + кнопка скачивания одной задачи (учёт в «Скачать выделенное»).
@@ -661,13 +838,13 @@ function startDownloadPanel() {
   function appendRowWithCheckbox(parent, job, buttonCss, onButtonClick) {
     const row = document.createElement("div");
     row.style.cssText =
-      "display:flex;flex-direction:row;align-items:flex-start;gap:5px;margin:2px 0;width:100%;box-sizing:border-box;";
+      "display:flex;flex-direction:row;align-items:center;gap:4px;margin:2px 0;width:100%;box-sizing:border-box;";
     const cb = document.createElement("input");
     cb.type = "checkbox";
     cb.checked = false;
     cb.title = "Участвует в «Скачать выделенное»";
     cb.style.cssText =
-      "margin:5px 0 0 0;flex-shrink:0;width:14px;height:14px;cursor:pointer;accent-color:#444;";
+      "margin:0;flex-shrink:0;width:14px;height:14px;cursor:pointer;accent-color:#0369a1;";
     const btn = document.createElement("button");
     btn.type = "button";
     btn.textContent = job.label || job.id || "Скачать";
@@ -677,35 +854,40 @@ function startDownloadPanel() {
     row.appendChild(btn);
     parent.appendChild(row);
     panelCheckboxJobs.push({ cb: cb, job: job });
+    cb.addEventListener("change", refreshPanelSubSummary);
   }
 
   const container = document.createElement("div");
+  container.id = "fileDlGamificationPanelRoot";
   container.style.cssText =
-    "position:fixed;top:8px;right:8px;background:#fff;border:1px solid #ccc;padding:10px 10px 8px;z-index:999999;box-shadow:0 2px 10px rgba(0,0,0,.18);min-width:min(520px,calc(100vw - 16px));max-width:calc(100vw - 16px);max-height:calc(100vh - 16px);overflow-y:auto;box-sizing:border-box;font-family:sans-serif;font-size:11px;";
+    "position:fixed;top:8px;right:8px;z-index:999999;box-sizing:border-box;" +
+    "width:min(960px,calc(100vw - 16px));max-width:calc(100vw - 16px);max-height:calc(100vh - 16px);overflow-y:auto;" +
+    "padding:10px 12px 8px;background:#ffffff;border:1px solid #cbd5e1;border-radius:12px;" +
+    "box-shadow:0 10px 40px rgba(15,23,42,.12);font-family:system-ui,-apple-system,sans-serif;" +
+    "font-size:11px;color:#0f172a;color-scheme:light;";
 
   const title = document.createElement("div");
-  title.style.cssText = "font-size:12px;font-weight:bold;margin:0 0 6px;color:#333;line-height:1.2;";
+  title.style.cssText =
+    "font-size:15px;font-weight:700;color:#0f172a;margin:0 0 4px 0;letter-spacing:-0.02em;line-height:1.2;";
   function syncFileDlTitle() {
     title.textContent = "Скачивание (gamification) · " + FILE_DL_ACTIVE_STAND;
   }
   syncFileDlTitle();
   container.appendChild(title);
 
-  // Выбор стенда: базовый хост для POST (ALPHA / SIGMA).
   const rowStand = document.createElement("div");
   rowStand.style.cssText =
-    "display:flex;align-items:center;gap:8px;margin:0 0 8px;font-size:11px;flex-wrap:wrap;";
+    "display:flex;align-items:center;gap:8px 12px;margin:0 0 6px;font-size:11px;flex-wrap:wrap;" +
+    "width:100%;box-sizing:border-box;";
   const labStand = document.createElement("label");
-  labStand.style.cssText = "color:#333;font-weight:bold;";
+  labStand.style.cssText = "color:#334155;font-weight:600;flex-shrink:0;";
   labStand.textContent = "Стенд:";
   labStand.setAttribute("for", "fileDlStandSelect");
   const selStand = document.createElement("select");
   selStand.id = "fileDlStandSelect";
-  // Явные цвета и color-scheme: иначе на тёмной странице текст select может быть белым на белом фоне панели.
   selStand.style.cssText =
-    "padding:4px 8px;font-size:11px;min-width:160px;cursor:pointer;" +
-    "color:#111827;background-color:#ffffff;border:1px solid #64748b;border-radius:4px;" +
-    "color-scheme:light;";
+    "padding:5px 8px;font-size:11px;min-width:160px;max-width:min(360px,100%);cursor:pointer;flex:1 1 200px;" +
+    "color:#111827;background-color:#ffffff;border:1px solid #94a3b8;border-radius:6px;color-scheme:light;";
   ["ALPHA", "SIGMA"].forEach(function (key) {
     const opt = document.createElement("option");
     opt.value = key;
@@ -720,92 +902,265 @@ function startDownloadPanel() {
   });
   rowStand.appendChild(labStand);
   rowStand.appendChild(selStand);
+
+  // «Отметить всё» / «Снять отметки» — справа в строке стенда (освобождает место по вертикали под лог).
+  const rowMarkBtns = document.createElement("div");
+  rowMarkBtns.style.cssText =
+    "display:flex;flex-direction:row;flex-wrap:wrap;align-items:center;gap:6px;margin-left:auto;flex-shrink:0;";
+  const btnMarkBase =
+    "min-height:28px;padding:4px 10px;font-size:10px;font-weight:600;cursor:pointer;border-radius:8px;box-sizing:border-box;" +
+    "border:1px solid #cbd5e1;background:#f1f5f9;color:#334155;";
+  const btnMarkAll = document.createElement("button");
+  btnMarkAll.type = "button";
+  btnMarkAll.textContent = "Отметить всё";
+  btnMarkAll.style.cssText = btnMarkBase;
+  btnMarkAll.addEventListener("click", function () {
+    panelCheckboxJobs.forEach(function (x) {
+      x.cb.checked = true;
+    });
+    refreshPanelSubSummary();
+  });
+  rowMarkBtns.appendChild(btnMarkAll);
+  const btnClearAll = document.createElement("button");
+  btnClearAll.type = "button";
+  btnClearAll.textContent = "Снять отметки";
+  btnClearAll.style.cssText = btnMarkBase;
+  btnClearAll.addEventListener("click", function () {
+    panelCheckboxJobs.forEach(function (x) {
+      x.cb.checked = false;
+    });
+    refreshPanelSubSummary();
+  });
+  rowMarkBtns.appendChild(btnClearAll);
+  rowStand.appendChild(rowMarkBtns);
+
   container.appendChild(rowStand);
 
-  const sub = document.createElement("div");
-  sub.style.cssText = "font-size:10px;color:#666;margin:0 0 8px;line-height:1.35;word-break:break-word;";
-  sub.textContent =
-    "Осн.: " +
-    DOWNLOAD_JOBS.length +
-    " · Рейт.: " +
-    RATING_GROUP_JOBS.length +
-    " · Зак.: " +
-    ORDERS_GROUP_JOBS.length +
-    " · Всего задач с чекбоксом: " +
-    getAllDownloadJobs().length +
-    " · dateFrom наград: " +
-    EMPLOYEE_REWARDS_DATE_FROM;
   container.appendChild(sub);
 
-  // Режим пакета: скользящий старт запросов (см. DOWNLOAD_STAGGER_MS / DOWNLOAD_ALL_DELAY_MS).
-  const rowStagger = document.createElement("div");
-  rowStagger.style.cssText =
-    "display:flex;align-items:center;gap:6px;margin:0 0 8px;font-size:10px;color:#444;";
+  // Паузы пакета + перекрытие запросов + дата наград — одна строка (при нехватке ширины перенос подписей).
+  const secDelays = document.createElement("div");
+  secDelays.style.cssText =
+    "margin:0 0 6px;padding:5px 8px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;box-sizing:border-box;";
+  secDelays.title =
+    "Паузы для пакетов («Все N», «Скачать выделенное», downloadAllJobs), дата сводки наград справа. Подробности — подсказки на полях. Одиночный клик по кнопке задачи — без пауз.";
+
+  const delayOneRow = document.createElement("div");
+  delayOneRow.style.cssText =
+    "display:flex;flex-direction:row;flex-wrap:wrap;align-items:center;gap:5px 10px;width:100%;box-sizing:border-box;";
+
+  const labDelaysInline = document.createElement("span");
+  labDelaysInline.textContent = "Пакет: паузы";
+  labDelaysInline.style.cssText =
+    "font-size:9px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#64748b;flex-shrink:0;max-width:14em;line-height:1.2;";
+  labDelaysInline.title =
+    "Паузы только для пакетов («Все N», «Скачать выделенное», downloadAllJobs). Наведите на поля и чекбокс — расширенная подсказка.";
+  delayOneRow.appendChild(labDelaysInline);
+
+  /**
+   * Компактное поле мс: подпись и input в одну линию.
+   * @param {string} labelShort
+   * @param {string} idSuffix
+   * @param {number} defaultMs
+   * @param {string} hintTitle
+   * @returns {{ wrap: HTMLLabelElement, inp: HTMLInputElement }}
+   */
+  function mkInlineDelayField(labelShort, idSuffix, defaultMs, hintTitle) {
+    const wrap = document.createElement("label");
+    wrap.style.cssText =
+      "display:inline-flex;flex-direction:row;align-items:center;gap:4px;font-size:9px;color:#334155;cursor:pointer;flex-shrink:0;";
+    wrap.setAttribute("for", "fileDlDelay" + idSuffix);
+    const sp = document.createElement("span");
+    sp.textContent = labelShort;
+    sp.style.cssText =
+      "max-width:13em;line-height:1.25;white-space:normal;flex-shrink:1;min-width:0;color:#334155;";
+    const inp = document.createElement("input");
+    inp.type = "number";
+    inp.id = "fileDlDelay" + idSuffix;
+    inp.min = "0";
+    inp.step = "100";
+    inp.max = String(FILE_DL_DELAY_INPUT_MAX_MS);
+    inp.value = String(defaultMs);
+    inp.title =
+      hintTitle + " Допустимо: целое 0…" + FILE_DL_DELAY_INPUT_MAX_MS + " мс (шаг в поле 100).";
+    wrap.title = inp.title;
+    inp.style.cssText =
+      "width:62px;box-sizing:border-box;padding:2px 5px;font-size:10px;color:#0f172a;" +
+      "border:1px solid #94a3b8;border-radius:4px;color-scheme:light;flex-shrink:0;";
+    function onDelayInput() {
+      syncFileDlDelaysFromPanel();
+    }
+    inp.addEventListener("input", onDelayInput);
+    inp.addEventListener("change", onDelayInput);
+    wrap.appendChild(sp);
+    wrap.appendChild(inp);
+    return { wrap: wrap, inp: inp };
+  }
+
+  const fieldDelayBetween = mkInlineDelayField(
+    "Пауза между файлами пакета (после ответа), мс",
+    "Between",
+    DOWNLOAD_ALL_DELAY_MS,
+    "После ответа сервера по предыдущей задаче ждём столько миллисекунд и только затем отправляем POST для следующего файла. " +
+      "Для кнопок «Все N (рейтинг/заказы)», «Скачать выделенное» и downloadAllJobs(). " +
+      "При включённом «Перекрывать запросы» эта же пауза — после успешного завершения предыдущего запроса перед стартом следующего. " +
+      "Одиночный клик по кнопке задачи пакетом не считается — пауза не ставится."
+  );
+  const fieldDelayStagger = mkInlineDelayField(
+    "Мин. интервал между стартами POST (при перекрытии), мс",
+    "Stagger",
+    DOWNLOAD_STAGGER_MS,
+    "Имеет смысл только если включено «Перекрывать запросы в пакете»: следующий POST нельзя начать раньше, чем через столько мс после старта предыдущего, пока тот ещё не завершился успехом. " +
+      "После успешного завершения предыдущего перед следующим стартом действует поле «Пауза между файлами пакета». " +
+      "Если перекрытие выключено — запросы строго по одному, между ними только пауза между файлами."
+  );
+  delayOneRow.appendChild(fieldDelayBetween.wrap);
+  delayOneRow.appendChild(fieldDelayStagger.wrap);
+
   const staggerCb = document.createElement("input");
   staggerCb.type = "checkbox";
   staggerCb.id = "fileDlStaggerCb";
+  staggerCb.style.cssText = "width:14px;height:14px;cursor:pointer;accent-color:#0369a1;flex-shrink:0;";
+  var staggerHint =
+    "Вкл.: в пакете несколько POST могут идти с перекрытием — следующий старт не раньше чем через «Мин. интервал между стартами…», пока предыдущий не завершился успехом; " +
+    "после успеха перед следующим стартом дополнительно ждём «Пауза между файлами пакета». " +
+    "Выкл.: строго один запрос за другим, между завершениями только эта пауза.";
+  staggerCb.title = staggerHint;
   staggerCb.addEventListener("change", function () {
     FILE_DL_USE_STAGGER = staggerCb.checked;
   });
   const staggerLab = document.createElement("label");
   staggerLab.htmlFor = "fileDlStaggerCb";
-  staggerLab.style.cssText = "cursor:pointer;line-height:1.3;";
-  staggerLab.textContent =
-    "Пакеты: скользящий старт (след. запрос через " +
-    DOWNLOAD_STAGGER_MS / 1000 +
-    " с или раньше после успеха +" +
-    DOWNLOAD_ALL_DELAY_MS +
-    " мс)";
-  rowStagger.appendChild(staggerCb);
-  rowStagger.appendChild(staggerLab);
-  container.appendChild(rowStagger);
+  staggerLab.title = staggerHint;
+  staggerLab.style.cssText =
+    "display:inline-flex;align-items:center;gap:4px;font-size:9px;color:#475569;cursor:pointer;flex-shrink:1;min-width:0;margin-left:2px;max-width:16em;";
+  staggerLab.appendChild(staggerCb);
+  const staggerTxt = document.createElement("span");
+  staggerTxt.textContent = "Перекрывать запросы в пакете (скользящий старт)";
+  staggerTxt.style.cssText = "line-height:1.25;white-space:normal;";
+  staggerTxt.title = staggerHint;
+  staggerLab.appendChild(staggerTxt);
+  delayOneRow.appendChild(staggerLab);
 
+  // Награды: dateFrom справа в той же строке, что и задержки (`margin-left: auto`); нативный календарь (`type="date"`).
+  const labRewardsDate = document.createElement("label");
+  labRewardsDate.style.cssText =
+    "display:inline-flex;align-items:center;gap:6px;color:#334155;font-weight:600;flex-shrink:0;cursor:pointer;" +
+    "margin-left:auto;";
+  labRewardsDate.setAttribute("for", "fileDlRewardsDateFrom");
+  const labRewardsDateTxt = document.createElement("span");
+  labRewardsDateTxt.textContent = "Награды с:";
+  labRewardsDateTxt.style.cssText = "white-space:nowrap;font-size:10px;";
+  const inpRewardsDate = document.createElement("input");
+  inpRewardsDate.type = "date";
+  inpRewardsDate.id = "fileDlRewardsDateFrom";
+  inpRewardsDate.value = DEFAULT_EMPLOYEE_REWARDS_DATE_FROM;
+  inpRewardsDate.title =
+    "Дата dateFrom для POST employee-rewards/file-download (сводка наград). Клик открывает календарь браузера.";
+  inpRewardsDate.style.cssText =
+    "padding:4px 10px;font-size:11px;font-weight:600;min-width:9.5em;cursor:pointer;box-sizing:border-box;" +
+    "color:#0f172a;background-color:#ffffff;border:1px solid #94a3b8;border-radius:8px;color-scheme:light;";
+  function onRewardsDateInput() {
+    syncFileDlRewardsDateFromPanel();
+  }
+  inpRewardsDate.addEventListener("input", onRewardsDateInput);
+  inpRewardsDate.addEventListener("change", onRewardsDateInput);
+  labRewardsDate.appendChild(labRewardsDateTxt);
+  labRewardsDate.appendChild(inpRewardsDate);
+  delayOneRow.appendChild(labRewardsDate);
+
+  secDelays.appendChild(delayOneRow);
+  container.appendChild(secDelays);
+
+  fileDlPanelDelayBetweenInput = fieldDelayBetween.inp;
+  fileDlPanelStaggerInput = fieldDelayStagger.inp;
+  fileDlPanelRewardsDateInput = inpRewardsDate;
+  syncFileDlDelaysFromPanel();
+  syncFileDlRewardsDateFromPanel();
+
+  // Основные выгрузки: одна строка из трёх кнопок + чекбоксы, карточка в стиле колонок ниже.
   const secMain = document.createElement("div");
-  secMain.style.cssText = "margin-bottom:8px;";
+  secMain.style.cssText =
+    "margin:0 0 6px;padding:6px 8px;background:linear-gradient(180deg,#f0f9ff 0%,#e0f2fe 100%);" +
+    "border:1px solid #7dd3fc;border-radius:8px;box-sizing:border-box;";
   const labMain = document.createElement("div");
-  labMain.style.cssText = "font-size:11px;font-weight:bold;color:#444;margin:0 0 4px;";
+  labMain.style.cssText =
+    "font-size:10px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#0369a1;margin:0 0 4px;";
   labMain.textContent = "Основные выгрузки";
   secMain.appendChild(labMain);
 
+  const mainGrid = document.createElement("div");
+  mainGrid.style.cssText =
+    "display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;width:100%;box-sizing:border-box;align-items:stretch;";
+
   const mainBtnCss =
-    "flex:1;min-width:0;display:block;margin:0;padding:5px 10px;font-size:11px;line-height:1.2;cursor:pointer;background:#0066cc;color:#fff;border:none;border-radius:4px;box-sizing:border-box;text-align:left;";
+    btnJobRowBase +
+    "background:linear-gradient(180deg,#0284c7,#0369a1);box-shadow:0 2px 6px rgba(3,105,161,.3);";
+
   DOWNLOAD_JOBS.forEach(function (job) {
-    appendRowWithCheckbox(secMain, job, mainBtnCss, function () {
+    const cell = document.createElement("div");
+    cell.style.cssText =
+      "display:flex;flex-direction:row;align-items:center;gap:4px;min-width:0;box-sizing:border-box;";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = false;
+    cb.title = "Участвует в «Скачать выделенное»";
+    cb.style.cssText =
+      "margin:0;flex-shrink:0;width:14px;height:14px;cursor:pointer;accent-color:#0369a1;";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = job.label || job.id || "Скачать";
+    btn.style.cssText = mainBtnCss;
+    btn.addEventListener("click", function () {
       downloadOneJob(job, {
         groupName: getGroupNameForJob(job),
         batchName: "ручной клик (одна задача) | секция «Основные выгрузки»"
       });
     });
+    cell.appendChild(cb);
+    cell.appendChild(btn);
+    mainGrid.appendChild(cell);
+    panelCheckboxJobs.push({ cb: cb, job: job });
+    cb.addEventListener("change", refreshPanelSubSummary);
   });
+  secMain.appendChild(mainGrid);
   container.appendChild(secMain);
 
-  // Две колонки: слева «Рейтинг», справа «Заказы».
   const rowRatingOrders = document.createElement("div");
   rowRatingOrders.style.cssText =
-    "display:flex;flex-direction:row;gap:8px;align-items:flex-start;margin:0 0 8px;width:100%;box-sizing:border-box;";
+    "display:flex;flex-direction:row;gap:8px;align-items:flex-start;margin:0 0 6px;width:100%;box-sizing:border-box;";
 
   const secRating = document.createElement("div");
   secRating.style.cssText =
-    "flex:1;min-width:0;box-sizing:border-box;margin:0;padding:8px;background:#f0f4ff;border:1px solid #c5d0f0;border-radius:6px;";
+    "flex:1;min-width:0;box-sizing:border-box;margin:0;padding:6px 8px;background:linear-gradient(180deg,#eff6ff 0%,#dbeafe 100%);" +
+    "border:1px solid #93c5fd;border-radius:8px;";
   const labRating = document.createElement("div");
-  labRating.style.cssText = "font-size:11px;font-weight:bold;color:#2c3e80;margin:0 0 5px;line-height:1.2;";
+  labRating.style.cssText = "font-size:10px;font-weight:700;color:#1e3a8a;margin:0 0 4px;line-height:1.2;";
   labRating.textContent = "Рейтинг (" + RATING_GROUP_JOBS.length + ")";
   secRating.appendChild(labRating);
 
   RATING_GROUP_JOBS.forEach(function (job) {
-    appendRowWithCheckbox(secRating, job, panelBtnGroupRow + "background:#415a9e;", function () {
-      downloadOneJob(job, {
-        groupName: "Рейтинг",
-        batchName: "ручной клик (одна задача) | секция «Рейтинг»"
-      });
-    });
+    appendRowWithCheckbox(
+      secRating,
+      job,
+      panelBtnGroupRow +
+        "background:linear-gradient(180deg,#4f6fc4,#3b5ca8);box-shadow:0 2px 5px rgba(59,92,168,.25);",
+      function () {
+        downloadOneJob(job, {
+          groupName: "Рейтинг",
+          batchName: "ручной клик (одна задача) | секция «Рейтинг»"
+        });
+      }
+    );
   });
 
   const btnRatingAll = document.createElement("button");
   btnRatingAll.type = "button";
   btnRatingAll.textContent = "Все " + RATING_GROUP_JOBS.length + " (рейтинг)";
   btnRatingAll.style.cssText =
-    "display:block;margin:6px 0 0;padding:5px 8px;font-size:10px;line-height:1.2;cursor:pointer;background:#6f42c1;color:#fff;border:none;border-radius:4px;width:100%;box-sizing:border-box;font-weight:bold;";
+    "display:block;margin:4px 0 0;width:100%;box-sizing:border-box;min-height:30px;padding:5px 8px;" +
+    "font-size:10px;font-weight:600;cursor:pointer;border-radius:8px;border:none;color:#fff;" +
+    "background:linear-gradient(180deg,#7c3aed,#6d28d9);box-shadow:0 2px 6px rgba(124,58,237,.35);";
   btnRatingAll.addEventListener("click", function () {
     downloadRatingGroupOnly();
   });
@@ -814,26 +1169,35 @@ function startDownloadPanel() {
 
   const secOrders = document.createElement("div");
   secOrders.style.cssText =
-    "flex:1;min-width:0;box-sizing:border-box;margin:0;padding:8px;background:#f0faf4;border:1px solid #b8dfc8;border-radius:6px;";
+    "flex:1;min-width:0;box-sizing:border-box;margin:0;padding:6px 8px;background:linear-gradient(180deg,#ecfdf5 0%,#d1fae5 100%);" +
+    "border:1px solid #6ee7b7;border-radius:8px;";
   const labOrders = document.createElement("div");
-  labOrders.style.cssText = "font-size:11px;font-weight:bold;color:#1e5c3a;margin:0 0 5px;line-height:1.2;";
+  labOrders.style.cssText = "font-size:10px;font-weight:700;color:#14532d;margin:0 0 4px;line-height:1.2;";
   labOrders.textContent = "Заказы (" + ORDERS_GROUP_JOBS.length + ")";
   secOrders.appendChild(labOrders);
 
   ORDERS_GROUP_JOBS.forEach(function (job) {
-    appendRowWithCheckbox(secOrders, job, panelBtnGroupRow + "background:#2d8659;", function () {
-      downloadOneJob(job, {
-        groupName: "Заказы",
-        batchName: "ручной клик (одна задача) | секция «Заказы»"
-      });
-    });
+    appendRowWithCheckbox(
+      secOrders,
+      job,
+      panelBtnGroupRow +
+        "background:linear-gradient(180deg,#199f63,#15803d);box-shadow:0 2px 5px rgba(21,128,61,.25);",
+      function () {
+        downloadOneJob(job, {
+          groupName: "Заказы",
+          batchName: "ручной клик (одна задача) | секция «Заказы»"
+        });
+      }
+    );
   });
 
   const btnOrdersAll = document.createElement("button");
   btnOrdersAll.type = "button";
   btnOrdersAll.textContent = "Все " + ORDERS_GROUP_JOBS.length + " (заказы)";
   btnOrdersAll.style.cssText =
-    "display:block;margin:6px 0 0;padding:5px 8px;font-size:10px;line-height:1.2;cursor:pointer;background:#1a6840;color:#fff;border:none;border-radius:4px;width:100%;box-sizing:border-box;font-weight:bold;";
+    "display:block;margin:4px 0 0;width:100%;box-sizing:border-box;min-height:30px;padding:5px 8px;" +
+    "font-size:10px;font-weight:600;cursor:pointer;border-radius:8px;border:none;color:#fff;" +
+    "background:linear-gradient(180deg,#059669,#047857);box-shadow:0 2px 6px rgba(5,150,105,.35);";
   btnOrdersAll.addEventListener("click", function () {
     downloadOrdersGroupOnly();
   });
@@ -842,56 +1206,55 @@ function startDownloadPanel() {
 
   container.appendChild(rowRatingOrders);
 
-  // Мелкие кнопки: отметить / снять все чекбоксы на панели.
-  const rowMark = document.createElement("div");
-  rowMark.style.cssText =
-    "display:flex;flex-direction:row;flex-wrap:wrap;gap:6px;align-items:center;margin:0 0 6px;";
-  const btnMarkAll = document.createElement("button");
-  btnMarkAll.type = "button";
-  btnMarkAll.textContent = "Отметить всё";
-  btnMarkAll.style.cssText =
-    "padding:3px 8px;font-size:10px;line-height:1.2;cursor:pointer;background:#e8e8e8;color:#222;border:1px solid #bbb;border-radius:4px;box-sizing:border-box;";
-  btnMarkAll.addEventListener("click", function () {
-    panelCheckboxJobs.forEach(function (x) {
-      x.cb.checked = true;
-    });
-  });
-  rowMark.appendChild(btnMarkAll);
-  const btnClearAll = document.createElement("button");
-  btnClearAll.type = "button";
-  btnClearAll.textContent = "Снять отметки";
-  btnClearAll.style.cssText =
-    "padding:3px 8px;font-size:10px;line-height:1.2;cursor:pointer;background:#f5f5f5;color:#333;border:1px solid #ccc;border-radius:4px;box-sizing:border-box;";
-  btnClearAll.addEventListener("click", function () {
-    panelCheckboxJobs.forEach(function (x) {
-      x.cb.checked = false;
-    });
-  });
-  rowMark.appendChild(btnClearAll);
-  container.appendChild(rowMark);
-
   const btnSelected = document.createElement("button");
   btnSelected.type = "button";
   btnSelected.textContent = "Скачать выделенное (по чекбоксам)";
   btnSelected.style.cssText =
-    "display:block;margin:0 0 6px;padding:6px 10px;font-size:11px;line-height:1.2;cursor:pointer;background:#28a745;color:#fff;border:none;border-radius:4px;width:100%;box-sizing:border-box;font-weight:bold;";
+    "display:block;margin:0 0 6px;width:100%;box-sizing:border-box;min-height:32px;padding:6px 10px;" +
+    "font-size:11px;font-weight:600;cursor:pointer;border-radius:8px;border:none;color:#fff;" +
+    "background:linear-gradient(180deg,#22c55e,#16a34a);box-shadow:0 2px 8px rgba(22,163,74,.35);";
   btnSelected.addEventListener("click", function () {
     downloadCheckedPanelJobs(panelCheckboxJobs);
   });
   container.appendChild(btnSelected);
 
+  const logLab = document.createElement("div");
+  logLab.style.cssText =
+    "font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#64748b;margin:0 0 5px;";
+  logLab.textContent = "Лог";
+  container.appendChild(logLab);
+
+  const logEl = document.createElement("div");
+  logEl.style.cssText =
+    "margin:0 0 6px;font-size:9px;color:#0f172a;background:#f8fafc;min-height:76px;max-height:148px;overflow:auto;" +
+    "border:1px solid #e2e8f0;border-radius:8px;padding:6px 8px;font-family:ui-monospace,monospace;" +
+    "white-space:pre-wrap;word-break:break-word;line-height:1.35;box-sizing:border-box;width:100%;";
+  logEl.textContent = "Лог: —";
+  container.appendChild(logEl);
+
+  fileDlPanelLogAppend = function (line) {
+    const s = typeof line === "string" ? line : String(line);
+    if (logEl.textContent === "Лог: —") logEl.textContent = s;
+    else logEl.textContent = logEl.textContent + "\n" + s;
+    logEl.scrollTop = logEl.scrollHeight;
+  };
+
   const btnClose = document.createElement("button");
   btnClose.type = "button";
   btnClose.textContent = "Закрыть";
   btnClose.style.cssText =
-    "display:block;margin:0;padding:5px 10px;font-size:11px;cursor:pointer;background:#f0f0f0;color:#333;border:1px solid #ccc;border-radius:4px;width:100%;box-sizing:border-box;";
+    "display:block;margin:0;width:100%;box-sizing:border-box;min-height:30px;padding:6px 10px;font-size:10px;cursor:pointer;" +
+    "background:#f1f5f9;color:#334155;border:1px solid #cbd5e1;border-radius:8px;font-weight:500;";
   btnClose.addEventListener("click", function () {
+    fileDlDetachPanelAndResetRuntime();
     container.remove();
   });
   container.appendChild(btnClose);
 
+  refreshPanelSubSummary();
   document.body.appendChild(container);
 }
 
 // При вставке скрипта в консоль на странице стенда показывается панель.
 startDownloadPanel();
+})();
