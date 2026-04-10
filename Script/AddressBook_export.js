@@ -1,19 +1,25 @@
 // =============================================================================
 // AddressBook_export.js — выгрузки из адресной книги (DevTools, консоль)
 // =============================================================================
-// Запросы идут на выбранный стенд: полный URL = ORIGIN + /api/home/...
-// credentials: 'include' — куки; при выборе хоста, отличного от вкладки, возможны ограничения CORS.
+// Запросы: полный URL = ORIGIN + /api/home/...
+// По умолчанию ORIGIN = window.location.origin (режим TAB) — same-origin, куки с вкладки, без CORS.
+// ALPHA/SIGMA — фиксированные хосты; использовать только если консоль открыта на том же origin.
+// Карточка empInfoFull на прокси адресной книги ожидает empId = UUID (employeeId из ответа search), не 8-значный ТН.
+// credentials: 'include' — куки текущей вкладки.
 // =============================================================================
 
-// Базовые хосты (как у gamification); при необходимости поправьте под фактический URL адресной книги.
+// Ключ «текущая вкладка»: URL берётся из location.origin, не из таблицы ниже.
+const ADDRESSBOOK_STAND_TAB = "TAB";
+
+// Фиксированные хосты (перекрёстные запросы с https://addressbook/ к ним дают CORS/401 без настройки сервера).
 const ADDRESSBOOK_ORIGINS = {
   ALPHA: "https://efs-our-business-prom.omega.sbrf.ru",
   SIGMA: "https://salesheroes.sberbank.ru"
 };
 
-const DEFAULT_ADDRESSBOOK_STAND = "SIGMA";
+const DEFAULT_ADDRESSBOOK_STAND = ADDRESSBOOK_STAND_TAB;
 
-/** Выбранный на панели стенд (ALPHA | SIGMA). */
+/** Выбранный на панели стенд: TAB | ALPHA | SIGMA. */
 var ADDRESSBOOK_ACTIVE_STAND = DEFAULT_ADDRESSBOOK_STAND;
 
 const ADDRESSBOOK_API_HOME = "/api/home";
@@ -65,20 +71,55 @@ function parseEmpIdsFromText(text) {
 }
 
 /**
+ * Число для тела POST search по табельному (как в UI адресной книги): ведущие нули снимаются.
+ * @param {string} normalizedEightDigits
+ * @returns {number}
+ */
+function tabNumToSearchNumber(normalizedEightDigits) {
+  return Number(String(normalizedEightDigits).replace(/^0+/, "") || "0");
+}
+
+/**
+ * Берёт employeeId (UUID) из ответа POST employees/search.
+ * @param {*} data — распарсенный JSON
+ * @returns {string|null}
+ */
+function pickEmployeeIdFromSearchData(data) {
+  if (!data || typeof data !== "object") return null;
+  var hits = data.hits;
+  if (!Array.isArray(hits) || hits.length === 0) return null;
+  var h0 = hits[0];
+  if (!h0 || typeof h0.employeeId !== "string") return null;
+  var id = h0.employeeId.trim();
+  return id.length > 0 ? id : null;
+}
+
+/**
  * Нормализованный ключ стенда и origin без завершающего слэша.
  * @returns {{ standKey: string, origin: string }}
  */
 function getAddressBookStandAndOrigin() {
-  var k =
-    ADDRESSBOOK_ACTIVE_STAND === "ALPHA" || ADDRESSBOOK_ACTIVE_STAND === "SIGMA"
-      ? ADDRESSBOOK_ACTIVE_STAND
-      : "SIGMA";
-  var origin = ADDRESSBOOK_ORIGINS[k] || ADDRESSBOOK_ORIGINS.SIGMA;
-  return { standKey: k, origin: origin.replace(/\/$/, "") };
+  var k = ADDRESSBOOK_ACTIVE_STAND;
+  if (k === "ALPHA" || k === "SIGMA") {
+    var originFixed = ADDRESSBOOK_ORIGINS[k] || ADDRESSBOOK_ORIGINS.SIGMA;
+    return { standKey: k, origin: originFixed.replace(/\/$/, "") };
+  }
+  // TAB и любое неизвестное значение — origin страницы (адресная книга в той же вкладке).
+  var tabOrigin = "";
+  try {
+    tabOrigin = String(window.location.origin || "").replace(/\/$/, "");
+  } catch (e) {
+    tabOrigin = "";
+  }
+  if (!tabOrigin) {
+    var fallback = ADDRESSBOOK_ORIGINS.SIGMA || "";
+    return { standKey: "TAB", origin: fallback.replace(/\/$/, "") };
+  }
+  return { standKey: "TAB", origin: tabOrigin };
 }
 
 /**
- * GET …/api/home/empInfoFull?empId=
+ * GET …/api/home/empInfoFull?empId=  (empId — UUID employeeId с бэкенда, не 8-значный ТН)
  * @param {string} empId
  */
 async function fetchEmpInfoFull(empId) {
@@ -88,7 +129,11 @@ async function fetchEmpInfoFull(empId) {
     ADDRESSBOOK_API_HOME +
     "/empInfoFull?empId=" +
     encodeURIComponent(empId);
-  const res = await fetch(url, { method: "GET", credentials: "include" });
+  const res = await fetch(url, {
+    method: "GET",
+    credentials: "include",
+    headers: { Accept: "application/json, text/plain, */*" }
+  });
   const data = await res.json().catch(function () {
     return null;
   });
@@ -114,7 +159,10 @@ async function fetchEmployeesSearch(searchText, asNumber) {
   const res = await fetch(o.origin + ADDRESSBOOK_API_HOME + "/employees/search", {
     method: "POST",
     credentials: "include",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json, text/plain, */*"
+    },
     body: JSON.stringify(body)
   });
   const data = await res.json().catch(function () {
@@ -174,7 +222,7 @@ function startAddressBookPanel() {
   const sub = document.createElement("div");
   sub.style.cssText = "font-size:12px;color:#64748b;margin:0 0 14px 0;line-height:1.45;";
   sub.textContent =
-    "Хост задаётся стендом. Откройте вкладку на том же домене, что выбран (куки, CORS). Прогресс и HTTP-статусы — в логе ниже и в консоли.";
+    "Стенд «Текущая вкладка» — запросы на origin страницы (рекомендуется для https://addressbook/…). ALPHA/SIGMA — только с той же вкладки на этом хосте, иначе CORS. Прогресс — в логе и в консоли.";
   box.appendChild(sub);
 
   const rowStand = document.createElement("div");
@@ -190,14 +238,28 @@ function startAddressBookPanel() {
   selStand.style.cssText =
     "flex:1;min-width:200px;padding:8px 10px;font-size:13px;cursor:pointer;" +
     "color:#0f172a;background:#fff;border:1px solid #94a3b8;border-radius:6px;color-scheme:light;";
-  ["ALPHA", "SIGMA"].forEach(function (key) {
+  var tabOriginSafe = "";
+  try {
+    tabOriginSafe = window.location.origin || "";
+  } catch (e) {
+    tabOriginSafe = "";
+  }
+  [
+    { key: ADDRESSBOOK_STAND_TAB, label: "Текущая вкладка — " + (tabOriginSafe || "(нет origin)") },
+    { key: "ALPHA", label: "ALPHA — " + ADDRESSBOOK_ORIGINS.ALPHA },
+    { key: "SIGMA", label: "SIGMA — " + ADDRESSBOOK_ORIGINS.SIGMA }
+  ].forEach(function (item) {
     const opt = document.createElement("option");
-    opt.value = key;
-    opt.textContent = key + " — " + ADDRESSBOOK_ORIGINS[key];
+    opt.value = item.key;
+    opt.textContent = item.label;
     opt.style.cssText = "color:#0f172a;background:#fff;";
-    if (key === ADDRESSBOOK_ACTIVE_STAND) opt.selected = true;
+    if (item.key === ADDRESSBOOK_ACTIVE_STAND) opt.selected = true;
     selStand.appendChild(opt);
   });
+  if (!selStand.value || selStand.selectedIndex < 0) {
+    ADDRESSBOOK_ACTIVE_STAND = ADDRESSBOOK_STAND_TAB;
+    selStand.value = ADDRESSBOOK_STAND_TAB;
+  }
   selStand.addEventListener("change", function () {
     ADDRESSBOOK_ACTIVE_STAND = selStand.value;
   });
@@ -213,7 +275,7 @@ function startAddressBookPanel() {
 
   const lab1 = document.createElement("div");
   lab1.textContent =
-    "Список ТН: empInfoFull (GET) и поиск по числу (POST). Любые разделители между цифрами.";
+    "По ТН: полная карточка — сначала POST search (число), затем GET empInfoFull по employeeId из ответа. «POST search по ТН» — только поиск. Разделители между цифрами в списке ТН допускаются.";
   lab1.style.cssText = "font-size:12px;color:#475569;margin:0 0 8px 0;line-height:1.4;";
   box.appendChild(lab1);
 
@@ -234,7 +296,7 @@ function startAddressBookPanel() {
     "text-align:center;line-height:1.3;box-sizing:border-box;";
   const b1 = document.createElement("button");
   b1.type = "button";
-  b1.textContent = "GET empInfoFull";
+  b1.textContent = "Карточки по ТН (search → empInfoFull)";
   b1.style.cssText = btnCssHalf + "background:linear-gradient(180deg,#0284c7,#0369a1);box-shadow:0 2px 6px rgba(3,105,161,.3);";
   const b2 = document.createElement("button");
   b2.type = "button";
@@ -300,22 +362,67 @@ function startAddressBookPanel() {
     b2.disabled = true;
     b3.disabled = true;
     try {
-      appendLog("— GET empInfoFull, ТН: " + ids.length + ", стенд: " + ADDRESSBOOK_ACTIVE_STAND);
+      appendLog(
+        "— Карточки по ТН (search → empInfoFull), шт.: " +
+          ids.length +
+          ", стенд: " +
+          ADDRESSBOOK_ACTIVE_STAND
+      );
       const results = [];
       for (let i = 0; i < ids.length; i++) {
         const id = ids[i];
-        appendLog("[" + (i + 1) + "/" + ids.length + "] empInfoFull ТН " + id + " …");
+        const searchNum = tabNumToSearchNumber(id);
+        appendLog(
+          "[" + (i + 1) + "/" + ids.length + "] ТН " + id + " → search(" + searchNum + ") …"
+        );
         try {
-          const r = await fetchEmpInfoFull(id);
-          results.push(r);
-          appendLog("    → HTTP " + r.status + (r.ok ? " OK" : " ошибка"));
+          const searchRes = await fetchEmployeesSearch(searchNum, true);
+          appendLog(
+            "    → search HTTP " +
+              searchRes.status +
+              (searchRes.ok ? "" : " — ошибка")
+          );
+          var totalHits =
+            searchRes.data && typeof searchRes.data.total === "number"
+              ? searchRes.data.total
+              : searchRes.data && Array.isArray(searchRes.data.hits)
+                ? searchRes.data.hits.length
+                : 0;
+          if (totalHits > 1) {
+            appendLog("    → внимание: в ответе search несколько записей, берётся первая (hits[0])");
+          }
+          const empUuid = pickEmployeeIdFromSearchData(searchRes.data);
+          if (!empUuid) {
+            results.push({
+              tabNumNormalized: id,
+              search: searchRes,
+              employeeId: null,
+              empInfoFull: null,
+              error: "Нет employeeId в ответе search (пустые hits или неуспех)"
+            });
+            appendLog("    → пропуск: нет employeeId после search");
+          } else {
+            appendLog("    → employeeId " + empUuid + " → GET empInfoFull …");
+            await delay(REQUEST_PAUSE_MS);
+            const full = await fetchEmpInfoFull(empUuid);
+            results.push({
+              tabNumNormalized: id,
+              search: searchRes,
+              employeeId: empUuid,
+              empInfoFull: full
+            });
+            appendLog(
+              "    → empInfoFull HTTP " + full.status + (full.ok ? " OK" : " ошибка")
+            );
+          }
         } catch (e) {
-          results.push({ empId: id, error: String(e) });
+          results.push({ tabNumNormalized: id, error: String(e) });
           appendLog("    → исключение: " + e);
         }
         if (i < ids.length - 1) await delay(REQUEST_PAUSE_MS);
       }
-      const fname = "addressbook_empInfoFull_" + ADDRESSBOOK_ACTIVE_STAND + "_" + Date.now() + ".json";
+      const fname =
+        "addressbook_empInfoFull_" + ADDRESSBOOK_ACTIVE_STAND + "_" + Date.now() + ".json";
       downloadJson(fname, results);
       appendLog("Готово. Файл: " + fname + " (записей: " + results.length + ")");
     } finally {
@@ -344,7 +451,7 @@ function startAddressBookPanel() {
       appendLog("— POST search по ТН (число), запросов: " + ids.length + ", стенд: " + ADDRESSBOOK_ACTIVE_STAND);
       const results = [];
       for (let i = 0; i < ids.length; i++) {
-        const num = Number(ids[i].replace(/^0+/, "") || "0");
+        const num = tabNumToSearchNumber(ids[i]);
         appendLog("[" + (i + 1) + "/" + ids.length + "] search ТН " + num + " …");
         try {
           const r = await fetchEmployeesSearch(num, true);

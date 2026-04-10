@@ -7,7 +7,7 @@
 - **Script/** — скрипты для запуска через консоль разработчика на странице стенда или приложения.
   - Загрузка профилей героев: **`Profile_GP_LOAD_file.js`** — панель (стенд ALPHA/SIGMA, задержки, retry, батч, фото), ТН из поля, из файла `.txt` или из массива `TAB_NUMS`; скачивание фото через Blob, при блокировке автоскачивания — ссылки «Скачать» на панели. Дополнительно: базовый скрипт с длинным именем (только `TAB_NUMS`) и `_from_file.js` (упрощённая панель).
   - Выгрузка файлов gamification: **`File_DB_Load_GP.js`** — POST `file-download`, панель, группы «Рейтинг» и «Заказы», опционально скользящий старт пакетов; при HTTP 200 и JSON с `success: false` файл не сохраняется.
-  - Адресная книга: **`AddressBook_export.js`** — панель в стиле профилей, лог на экране, GET `empInfoFull`, POST `employees/search` (ТН / ФИО), см. [Docs/Скрипт_AddressBook_export.md](Docs/Скрипт_AddressBook_export.md).
+  - Адресная книга: **`AddressBook_export.js`** — панель, лог; стенд **«Текущая вкладка»** (same-origin); по ТН: POST `employees/search` → GET `empInfoFull` по `employeeId` (UUID); отдельно — только search; см. [Docs/Скрипт_AddressBook_export.md](Docs/Скрипт_AddressBook_export.md).
   - Турниры: **`Tournament_LeadersForAdmin.js`** — GET `leadersForAdmin`; панель: кнопки «сразу выгрузка» (массив в скрипте, текст в поле, файл `.txt`), два блока CSV (колонки A/B) с настраиваемыми именами полей код/статус, фильтр чекбоксами и **только выбор CSV с диска**; пропуски с 0 лидеров дублируются в консоль. См. [Docs/Скрипт_турниры_leadersForAdmin.md](Docs/Скрипт_турниры_leadersForAdmin.md).
 - **Docs/** — подробная документация по отдельным скриптам.
 - **log/** — каталог для логов (при наличии логирования в проекте).
@@ -52,6 +52,7 @@
 
 | Дата | Описание |
 |------|----------|
+| 2026-04 | `AddressBook_export.js`: стенд TAB, цепочка search → empInfoFull; [Docs/Скрипт_AddressBook_export.md](Docs/Скрипт_AddressBook_export.md) v1.5 (структура JSON выгрузки). |
 | 2026-04 | `AddressBook_export.js`: панель в стиле профилей, поле лога, `addressBookExportPanelRoot`, блокировка параллельных сценариев; [Docs/Скрипт_AddressBook_export.md](Docs/Скрипт_AddressBook_export.md) v1.3; README — уточнение про каталог `POST/` и `post_txt_sync.sh`. |
 | 2026-04 | `Tournament_LeadersForAdmin.js`: кнопки вместо радиокнопок, две колонки CSV с полями имён колонок и `codesFromCsvByColumns`, лог пропусков в консоль, CSV только из файла (без textarea в колонках); обновлены [Docs/Скрипт_турниры_leadersForAdmin.md](Docs/Скрипт_турниры_leadersForAdmin.md) и README. |
 | 2026-04 | `Profile_GP_LOAD_file.js`: фото через Blob, `findProfilePhotoContainer`, блок «Ссылки на фото» на панели, устойчивый decode base64; синхронизированы вспомогательные скрипты профиля; обновлены [Docs/Скрипт_загрузка_профиля_герои.md](Docs/Скрипт_загрузка_профиля_герои.md) и README. |
