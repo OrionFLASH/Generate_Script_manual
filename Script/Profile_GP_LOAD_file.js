@@ -80,6 +80,29 @@ const PROFILE_URLS = {
 };
 const SIGMA_ORIGIN = "https://salesheroes.sberbank.ru";
 
+/** Приёмник строк лога панели «Профили героев»; null после «Закрыть» или снятия панели. */
+var profileGpPanelLogAppend = null;
+
+/**
+ * Дублирует сообщение в консоль и в блок лога на панели (аргументы склеиваются через пробел).
+ * @param {"log"|"warn"|"error"} level
+ */
+function profileGpPanelEcho(level) {
+  var parts = [];
+  for (var pi = 1; pi < arguments.length; pi++) {
+    parts.push(String(arguments[pi]));
+  }
+  var s = parts.join(" ");
+  if (level === "error") console.error(s);
+  else if (level === "warn") console.warn(s);
+  else console.log(s);
+  if (typeof profileGpPanelLogAppend === "function") {
+    try {
+      profileGpPanelLogAppend(s);
+    } catch (eLog) {}
+  }
+}
+
 // =============================================================================
 // ПАРСИНГ ТАБЕЛЬНЫХ ИЗ ТЕКСТА (любые разделители, нормализация 8–20 цифр)
 // =============================================================================
@@ -236,7 +259,7 @@ function downloadBase64File(rawOrDataUrl, filename, linkHost) {
         URL.revokeObjectURL(objectUrl);
       } catch (eRev) {}
     }
-    console.warn("Скачивание фото не удалось:", filename, e);
+    profileGpPanelEcho("warn", "Скачивание фото не удалось:", filename, e);
   }
 }
 
@@ -286,7 +309,8 @@ function processPhotos(tn, data, cfg) {
   var photoHost = findProfilePhotoContainer(data);
   if (!photoHost) {
     if (cfg.enablePhotoDownload) {
-      console.warn(
+      profileGpPanelEcho(
+        "warn",
         "Фото: в ответе не найден объект с непустыми строками photoData / photoDataKpk (проверьте вложенность JSON)."
       );
     }
@@ -300,7 +324,7 @@ function processPhotos(tn, data, cfg) {
     photoSize = photoHost.photoData.length;
     if (cfg.enablePhotoDownload && photoSize > 0) {
       var nameMain = tn + "_photoData.jpg";
-      console.log("Скачивание фото:", nameMain, "| символов в строке:", photoSize);
+      profileGpPanelEcho("log", "Скачивание фото:", nameMain, "| символов в строке:", photoSize);
       downloadBase64File(photoHost.photoData, nameMain, cfg.photoDownloadLinkHost || null);
     }
   }
@@ -309,7 +333,7 @@ function processPhotos(tn, data, cfg) {
     photoKpkSize = photoHost.photoDataKpk.length;
     if (cfg.enablePhotoDownload && photoKpkSize > 0) {
       var nameKpk = tn + "_photoDataKpk.jpg";
-      console.log("Скачивание фото KPK:", nameKpk, "| символов:", photoKpkSize);
+      profileGpPanelEcho("log", "Скачивание фото KPK:", nameKpk, "| символов:", photoKpkSize);
       downloadBase64File(photoHost.photoDataKpk, nameKpk, cfg.photoDownloadLinkHost || null);
     }
   }
@@ -355,7 +379,7 @@ async function fetchProfileByTN(tn, cfg) {
   const res = await fetch(url, fetchOpts);
 
   if (!res.ok) {
-    console.warn("TN", tn, "ERROR HTTP", res.status);
+    profileGpPanelEcho("warn", "TN", tn, "ERROR HTTP", res.status);
     return { tn: tn, error: true, status: res.status };
   }
 
@@ -367,12 +391,17 @@ async function fetchProfileByTN(tn, cfg) {
   // Ответ с success: false (например «Запись не найдена») — выводим ERROR и поля ошибки; в JSON сохраняем как есть.
   if (rawData.success === false && rawData.error && typeof rawData.error === "object") {
     const err = rawData.error;
-    console.log(
-      "TN", tn,
+    profileGpPanelEcho(
+      "log",
+      "TN",
+      tn,
       "| ERROR |",
-      "code:", err.code || "",
-      "system:", err.system || "",
-      "text:", err.text || ""
+      "code:",
+      err.code || "",
+      "system:",
+      err.system || "",
+      "text:",
+      err.text || ""
     );
     return {
       tn: tn,
@@ -386,10 +415,16 @@ async function fetchProfileByTN(tn, cfg) {
       text: err.text || ""
     };
   } else {
-    console.log(
-      "TN", tn,
-      "| OK | size before:", sizeBefore, "bytes",
-      "| size after:", sizeAfter, "bytes"
+    profileGpPanelEcho(
+      "log",
+      "TN",
+      tn,
+      "| OK | size before:",
+      sizeBefore,
+      "bytes",
+      "| size after:",
+      sizeAfter,
+      "bytes"
     );
   }
 
@@ -412,11 +447,15 @@ function saveJsonToFile(data, baseName, partIndex) {
   const part = partIndex != null ? "_part" + partIndex : "";
   const filename = (baseName || "data") + part + "_" + ts + ".json";
 
-  console.log(
+  profileGpPanelEcho(
+    "log",
     "Сохранение файла",
     filename,
-    "| записей:", data.length,
-    "| размер файла:", sizeBytes, "bytes"
+    "| записей:",
+    data.length,
+    "| размер файла:",
+    sizeBytes,
+    "bytes"
   );
 
   a.href = url;
@@ -442,7 +481,10 @@ async function runCollectProfiles(tabNums, runOpts) {
   const cfg = normalizeRunOptions(runOpts);
   const list = tabNums && tabNums.length > 0 ? tabNums : [];
   if (list.length === 0) {
-    console.warn("Нет табельных номеров для обработки (файл пустой или не содержит чисел). Сбор не выполнен.");
+    profileGpPanelEcho(
+      "warn",
+      "Нет табельных номеров для обработки (файл пустой или не содержит чисел). Сбор не выполнен."
+    );
     return;
   }
 
@@ -465,22 +507,34 @@ async function runCollectProfiles(tabNums, runOpts) {
   let totalSizeBefore = 0;
   let totalSizeAfter = 0;
 
-  console.log("Старт. Всего ТН к обработке:", list.length);
+  profileGpPanelEcho("log", "——— Старт сбора ———");
+  profileGpPanelEcho("log", "Старт. Всего ТН к обработке:", list.length);
   var standKeyRun =
     PROFILE_UI_STAND === "ALPHA" || PROFILE_UI_STAND === "SIGMA" ? PROFILE_UI_STAND : "ALPHA";
-  console.log("Стенд:", standKeyRun, "| URL:", PROFILE_URLS[standKeyRun] || PROFILE_URLS.ALPHA);
-  console.log(
-    "Параметры | задержка мс:", cfg.requestDelayMs,
-    "| retry:", cfg.enableRetry, "| maxRetries:", cfg.maxRetries,
-    "| retryDelay мс:", cfg.retryDelayOnErrorMs,
-    "| batch:", cfg.batchSize,
-    "| имя файла:", cfg.outputBaseName,
-    "| фото DL:", cfg.enablePhotoDownload, "| strip:", cfg.enablePhotoStrip
+  profileGpPanelEcho("log", "Стенд:", standKeyRun, "| URL:", PROFILE_URLS[standKeyRun] || PROFILE_URLS.ALPHA);
+  profileGpPanelEcho(
+    "log",
+    "Параметры | задержка мс:",
+    cfg.requestDelayMs,
+    "| retry:",
+    cfg.enableRetry,
+    "| maxRetries:",
+    cfg.maxRetries,
+    "| retryDelay мс:",
+    cfg.retryDelayOnErrorMs,
+    "| batch:",
+    cfg.batchSize,
+    "| имя файла:",
+    cfg.outputBaseName,
+    "| фото DL:",
+    cfg.enablePhotoDownload,
+    "| strip:",
+    cfg.enablePhotoStrip
   );
 
   for (let i = 0; i < list.length; i++) {
     const tn = list[i];
-    console.log("Запрос", i + 1, "/", list.length, "— ТН", tn);
+    profileGpPanelEcho("log", "Запрос", i + 1, "/", list.length, "— ТН", tn);
 
     try {
       const retries = cfg.enableRetry ? cfg.maxRetries : 0;
@@ -497,21 +551,33 @@ async function runCollectProfiles(tabNums, runOpts) {
         // Успех — завершаем цикл попыток.
         if (!r.error) {
           if (attempt > 1) {
-            console.log("TN", tn, "| OK после", attempt, "-й попытки");
+            profileGpPanelEcho("log", "TN", tn, "| OK после", attempt, "-й попытки");
           }
           break;
         }
 
         // Ошибка и попытки закончились — фиксируем как итоговую ошибку.
         if (attempt >= maxAttempts) {
-          console.log("TN", tn, "| ERROR после", attempt, "-й попытки | status:", r.status || "n/a");
+          profileGpPanelEcho(
+            "log",
+            "TN",
+            tn,
+            "| ERROR после",
+            attempt,
+            "-й попытки | status:",
+            r.status || "n/a"
+          );
           break;
         }
 
         // Ошибка и есть ещё попытки — ждём и повторяем.
-        console.warn(
-          "TN", tn,
-          "| Ошибка на", attempt, "-й попытке. Повтор через",
+        profileGpPanelEcho(
+          "warn",
+          "TN",
+          tn,
+          "| Ошибка на",
+          attempt,
+          "-й попытке. Повтор через",
           cfg.retryDelayOnErrorMs,
           "мс"
         );
@@ -531,14 +597,14 @@ async function runCollectProfiles(tabNums, runOpts) {
       batch.push(r);
       totalCount++;
     } catch (e) {
-      console.error("Исключение при запросе для", tn, e);
+      profileGpPanelEcho("error", "Исключение при запросе для", tn, e);
       batch.push({ tn: tn, error: true, exception: String(e) });
       totalErr++;
       totalCount++;
     }
 
     if (batch.length >= cfg.batchSize) {
-      console.log("== Сохранение батча", batchIndex, "| записей:", batch.length, "==");
+      profileGpPanelEcho("log", "== Сохранение батча", batchIndex, "| записей:", batch.length, "==");
       saveJsonToFile(batch, cfg.outputBaseName, batchIndex);
       batch = [];
       batchIndex++;
@@ -550,16 +616,16 @@ async function runCollectProfiles(tabNums, runOpts) {
   }
 
   if (batch.length > 0) {
-    console.log("== Сохранение финального батча", batchIndex, "| записей:", batch.length, "==");
+    profileGpPanelEcho("log", "== Сохранение финального батча", batchIndex, "| записей:", batch.length, "==");
     saveJsonToFile(batch, cfg.outputBaseName, batchIndex);
   }
 
-  console.log("==== ИТОГ ====");
-  console.log("Всего ТН:", list.length);
-  console.log("Всего обработано записей:", totalCount);
-  console.log("Успешных:", totalOk, "| Ошибок:", totalErr);
-  console.log("Суммарный размер ответов ДО обработки:", totalSizeBefore, "bytes");
-  console.log("Суммарный размер ответов ПОСЛЕ обработки:", totalSizeAfter, "bytes");
+  profileGpPanelEcho("log", "==== ИТОГ ====");
+  profileGpPanelEcho("log", "Всего ТН:", list.length);
+  profileGpPanelEcho("log", "Всего обработано записей:", totalCount);
+  profileGpPanelEcho("log", "Успешных:", totalOk, "| Ошибок:", totalErr);
+  profileGpPanelEcho("log", "Суммарный размер ответов ДО обработки:", totalSizeBefore, "bytes");
+  profileGpPanelEcho("log", "Суммарный размер ответов ПОСЛЕ обработки:", totalSizeAfter, "bytes");
 }
 
 // =============================================================================
@@ -571,18 +637,15 @@ async function runCollectProfiles(tabNums, runOpts) {
  */
 function startWithChoice() {
   var prev = document.getElementById("profileGpLoadPanelRoot");
-  if (prev) prev.remove();
+  if (prev) {
+    profileGpPanelLogAppend = null;
+    prev.remove();
+  }
 
   const input = document.createElement("input");
   input.type = "file";
   input.accept = ".txt,text/plain";
   input.style.display = "none";
-
-  const inpCss =
-    "padding:7px 10px;box-sizing:border-box;border:1px solid #94a3b8;border-radius:6px;font-size:12px;" +
-    "color:#0f172a;background:#ffffff;color-scheme:light;width:100%;max-width:140px;";
-  const gridRow =
-    "display:grid;grid-template-columns:1fr minmax(88px,140px);gap:10px;align-items:center;margin:8px 0;font-size:12px;color:#0f172a;";
 
   function readOptsFromForm() {
     return normalizeRunOptions({
@@ -608,34 +671,34 @@ function startWithChoice() {
   const container = document.createElement("div");
   container.id = "profileGpLoadPanelRoot";
   container.style.cssText =
-    "position:fixed;top:12px;right:12px;width:min(420px,calc(100vw - 24px));max-height:calc(100vh - 24px);overflow:auto;" +
-    "z-index:999999;box-sizing:border-box;padding:18px 18px 16px;" +
+    "position:fixed;top:10px;right:10px;width:min(920px,calc(100vw - 20px));max-height:calc(100vh - 16px);overflow:auto;" +
+    "z-index:999999;box-sizing:border-box;padding:12px 16px 12px;" +
     "background:#ffffff;border:1px solid #cbd5e1;border-radius:12px;" +
     "box-shadow:0 10px 40px rgba(15,23,42,.12);font-family:system-ui,-apple-system,sans-serif;" +
     "color:#0f172a;color-scheme:light;";
 
   const head = document.createElement("div");
-  head.style.cssText = "font-size:17px;font-weight:700;color:#0f172a;margin:0 0 4px 0;letter-spacing:-0.02em;";
+  head.style.cssText = "font-size:16px;font-weight:700;color:#0f172a;margin:0 0 2px 0;letter-spacing:-0.02em;line-height:1.2;";
   head.textContent = "Профили героев";
   container.appendChild(head);
 
   const sub = document.createElement("div");
-  sub.style.cssText = "font-size:12px;color:#64748b;margin:0 0 14px 0;line-height:1.4;";
+  sub.style.cssText = "font-size:11px;color:#64748b;margin:0 0 10px 0;line-height:1.35;";
   sub.textContent = "Сбор по API профиля: выберите стенд, при необходимости параметры ниже, источник ТН.";
   container.appendChild(sub);
 
   const rowStand = document.createElement("div");
   rowStand.style.cssText =
-    "display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;padding:10px 12px;" +
+    "display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;padding:8px 10px;" +
     "background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;";
   const labStand = document.createElement("label");
   labStand.textContent = "Стенд";
   labStand.setAttribute("for", "profileStandSel");
-  labStand.style.cssText = "font-weight:600;font-size:13px;color:#334155;min-width:52px;";
+  labStand.style.cssText = "font-weight:600;font-size:12px;color:#334155;min-width:48px;flex-shrink:0;";
   const selStand = document.createElement("select");
   selStand.id = "profileStandSel";
   selStand.style.cssText =
-    "flex:1;min-width:200px;padding:8px 10px;font-size:13px;cursor:pointer;" +
+    "flex:1;min-width:220px;padding:6px 10px;font-size:12px;cursor:pointer;" +
     "color:#0f172a;background:#fff;border:1px solid #94a3b8;border-radius:6px;color-scheme:light;";
   ["ALPHA", "SIGMA"].forEach(function (key) {
     const opt = document.createElement("option");
@@ -655,150 +718,191 @@ function startWithChoice() {
   const def = getDefaultRunOptions();
   const details = document.createElement("details");
   details.open = true;
-  details.style.cssText = "margin:0 0 12px 0;border:1px solid #e2e8f0;border-radius:8px;padding:0;overflow:hidden;";
+  details.style.cssText = "margin:0 0 10px 0;border:1px solid #e2e8f0;border-radius:8px;padding:0;overflow:hidden;";
   const summ = document.createElement("summary");
   summ.style.cssText =
-    "cursor:pointer;list-style:none;padding:10px 12px;font-size:13px;font-weight:600;background:#f1f5f9;color:#334155;" +
+    "cursor:pointer;list-style:none;padding:8px 10px;font-size:12px;font-weight:600;background:#f1f5f9;color:#334155;" +
     "user-select:none;";
   summ.textContent = "Параметры запуска (задержки, retry, батч, фото)";
   details.appendChild(summ);
 
   const paramsBody = document.createElement("div");
-  paramsBody.style.cssText = "padding:8px 12px 14px 12px;border-top:1px solid #e2e8f0;background:#fafafa;";
+  paramsBody.style.cssText =
+    "padding:5px 8px 7px;border-top:1px solid #e2e8f0;background:#fafafa;display:flex;flex-direction:column;gap:4px;";
 
-  var row1 = document.createElement("div");
-  row1.style.cssText = gridRow;
+  const lblEnd =
+    "justify-self:end;text-align:right;padding:0 3px 0 0;color:#475569;font-size:10px;line-height:1.15;align-self:center;white-space:nowrap;";
+  const inpN =
+    "padding:2px 6px;box-sizing:border-box;border:1px solid #94a3b8;border-radius:4px;font-size:11px;height:22px;width:64px;max-width:100%;color:#0f172a;background:#fff;color-scheme:light;";
+  const inpNW =
+    "padding:2px 6px;box-sizing:border-box;border:1px solid #94a3b8;border-radius:4px;font-size:11px;height:22px;width:74px;max-width:100%;color:#0f172a;background:#fff;color-scheme:light;";
+
+  // Одна линия: три числовых параметра задержек/retry и чекбокс «повтор».
+  var rowDelays = document.createElement("div");
+  rowDelays.style.cssText =
+    "display:grid;grid-template-columns:" +
+    "max-content minmax(56px,64px) max-content minmax(48px,56px) max-content minmax(64px,74px) minmax(140px,1fr);" +
+    "gap:3px 6px;align-items:center;overflow-x:auto;padding-bottom:1px;";
+  const tipReqDelay =
+    "Пауза после каждого успешного запроса профиля, миллисекунды. Увеличьте при ограничениях API.";
+  const tipMaxRet =
+    "Сколько раз повторить запрос после ошибки (не считая первую попытку). Работает только если включён «Повтор при ошибке».";
+  const tipRetryMs = "Пауза перед следующей попыткой после сбоя по табельному номеру, миллисекунды.";
+  const tipRetryEn = "Если запрос по ТН вернул ошибку — повторить с задержкой (см. поля справа).";
+
   const l1 = document.createElement("label");
   l1.htmlFor = "profReqDelay";
-  l1.textContent = "Пауза между запросами (мс)";
-  l1.style.cssText = "line-height:1.35;";
+  l1.textContent = "Пауза между запросами, мс";
+  l1.title = tipReqDelay;
+  l1.style.cssText = lblEnd;
   const inReqDelay = document.createElement("input");
   inReqDelay.type = "number";
   inReqDelay.id = "profReqDelay";
   inReqDelay.min = "0";
   inReqDelay.step = "1";
   inReqDelay.value = String(def.requestDelayMs);
-  inReqDelay.style.cssText = inpCss;
-  row1.appendChild(l1);
-  row1.appendChild(inReqDelay);
-  paramsBody.appendChild(row1);
+  inReqDelay.title = tipReqDelay;
+  inReqDelay.style.cssText = inpN;
 
-  const cbRetry = document.createElement("input");
-  cbRetry.type = "checkbox";
-  cbRetry.id = "profRetryEn";
-  cbRetry.checked = def.enableRetry;
-  const lbRetry = document.createElement("label");
-  lbRetry.htmlFor = "profRetryEn";
-  lbRetry.style.cssText =
-    "display:flex;align-items:center;gap:8px;margin:10px 0 6px 0;font-size:12px;color:#0f172a;cursor:pointer;font-weight:600;";
-  lbRetry.appendChild(cbRetry);
-  lbRetry.appendChild(document.createTextNode(" Повтор при ошибке по ТН"));
-  paramsBody.appendChild(lbRetry);
-
-  var row2 = document.createElement("div");
-  row2.style.cssText = gridRow;
   const l2 = document.createElement("label");
   l2.htmlFor = "profMaxRetr";
   l2.textContent = "Доп. попыток после первой";
-  l2.style.cssText = "line-height:1.35;";
+  l2.title = tipMaxRet;
+  l2.style.cssText = lblEnd;
   const inMaxRetries = document.createElement("input");
   inMaxRetries.type = "number";
   inMaxRetries.id = "profMaxRetr";
   inMaxRetries.min = "0";
   inMaxRetries.step = "1";
   inMaxRetries.value = String(def.maxRetries);
-  inMaxRetries.style.cssText = inpCss;
-  row2.appendChild(l2);
-  row2.appendChild(inMaxRetries);
-  paramsBody.appendChild(row2);
+  inMaxRetries.title = tipMaxRet;
+  inMaxRetries.style.cssText = inpN;
 
-  var row3 = document.createElement("div");
-  row3.style.cssText = gridRow;
   const l3 = document.createElement("label");
   l3.htmlFor = "profRetryMs";
-  l3.textContent = "Пауза перед повтором (мс)";
-  l3.style.cssText = "line-height:1.35;";
+  l3.textContent = "Пауза перед повтором, мс";
+  l3.title = tipRetryMs;
+  l3.style.cssText = lblEnd;
   const inRetryDel = document.createElement("input");
   inRetryDel.type = "number";
   inRetryDel.id = "profRetryMs";
   inRetryDel.min = "0";
   inRetryDel.step = "100";
   inRetryDel.value = String(def.retryDelayOnErrorMs);
-  inRetryDel.style.cssText = inpCss;
-  row3.appendChild(l3);
-  row3.appendChild(inRetryDel);
-  paramsBody.appendChild(row3);
+  inRetryDel.title = tipRetryMs;
+  inRetryDel.style.cssText = inpNW;
 
-  var row4 = document.createElement("div");
-  row4.style.cssText = "margin:10px 0 0 0;";
+  const cbRetry = document.createElement("input");
+  cbRetry.type = "checkbox";
+  cbRetry.id = "profRetryEn";
+  cbRetry.checked = def.enableRetry;
+  cbRetry.title = tipRetryEn;
+  const lbRetry = document.createElement("label");
+  lbRetry.htmlFor = "profRetryEn";
+  lbRetry.title = tipRetryEn;
+  lbRetry.style.cssText =
+    "display:flex;align-items:center;gap:5px;margin:0;font-size:11px;color:#0f172a;cursor:pointer;font-weight:600;line-height:1.2;min-width:0;";
+  lbRetry.appendChild(cbRetry);
+  lbRetry.appendChild(document.createTextNode("Повтор при ошибке по ТН"));
+
+  rowDelays.appendChild(l1);
+  rowDelays.appendChild(inReqDelay);
+  rowDelays.appendChild(l2);
+  rowDelays.appendChild(inMaxRetries);
+  rowDelays.appendChild(l3);
+  rowDelays.appendChild(inRetryDel);
+  rowDelays.appendChild(lbRetry);
+  paramsBody.appendChild(rowDelays);
+
+  var rowName = document.createElement("div");
+  rowName.style.cssText = "display:grid;grid-template-columns:132px 1fr;gap:8px;align-items:center;margin-top:1px;";
+  const tipOutName =
+    "Префикс имён сохраняемых JSON-файлов (например, profiles → profiles_batch_1.json). Недопустимые символы заменяются.";
   const l4 = document.createElement("label");
   l4.htmlFor = "profOutName";
-  l4.textContent = "Базовое имя JSON-файлов";
-  l4.style.cssText = "display:block;margin:0 0 6px 0;font-size:12px;color:#0f172a;font-weight:600;";
+  l4.textContent = "Базовое имя JSON";
+  l4.title = tipOutName;
+  l4.style.cssText = lblEnd;
   const inOutName = document.createElement("input");
   inOutName.type = "text";
   inOutName.id = "profOutName";
   inOutName.value = def.outputBaseName;
+  inOutName.title = tipOutName;
   inOutName.style.cssText =
-    "padding:7px 10px;box-sizing:border-box;border:1px solid #94a3b8;border-radius:6px;font-size:12px;" +
-    "color:#0f172a;background:#fff;width:100%;color-scheme:light;";
-  row4.appendChild(l4);
-  row4.appendChild(inOutName);
-  paramsBody.appendChild(row4);
+    "padding:3px 8px;box-sizing:border-box;border:1px solid #94a3b8;border-radius:4px;font-size:11px;height:22px;" +
+    "color:#0f172a;background:#fff;width:100%;min-width:0;color-scheme:light;";
+  rowName.appendChild(l4);
+  rowName.appendChild(inOutName);
+  paramsBody.appendChild(rowName);
 
-  var row5 = document.createElement("div");
-  row5.style.cssText = gridRow;
+  var rowBatchPhoto = document.createElement("div");
+  rowBatchPhoto.style.cssText =
+    "display:grid;grid-template-columns:max-content minmax(72px,80px) 1fr;gap:5px 10px;align-items:center;margin-top:1px;";
+  const tipBatch =
+    "Сколько профилей пишется в один JSON перед сохранением следующего файла. Большие значения — крупнее файлы.";
   const l5 = document.createElement("label");
   l5.htmlFor = "profBatch";
-  l5.textContent = "Записей в одном файле (батч)";
-  l5.style.cssText = "line-height:1.35;";
+  l5.textContent = "Записей в батче";
+  l5.title = tipBatch;
+  l5.style.cssText = lblEnd;
   const inBatch = document.createElement("input");
   inBatch.type = "number";
   inBatch.id = "profBatch";
   inBatch.min = "1";
   inBatch.step = "100";
   inBatch.value = String(def.batchSize);
-  inBatch.style.cssText = inpCss;
-  row5.appendChild(l5);
-  row5.appendChild(inBatch);
-  paramsBody.appendChild(row5);
-
+  inBatch.title = tipBatch;
+  inBatch.style.cssText = inpNW;
+  const tipPhotoDl =
+    "После ответа API дополнительно скачивать изображения (photoData/KPK). Ссылки на ручное скачивание — в зелёном блоке ниже.";
+  const tipPhotoStrip =
+    "Убрать длинные base64 из поля photoDataInfo в JSON — файлы легче; полное фото при необходимости — через отдельное скачивание.";
+  const cellPhotoChecks = document.createElement("div");
+  cellPhotoChecks.style.cssText =
+    "display:flex;flex-direction:row;flex-wrap:wrap;align-items:center;gap:6px 14px;min-width:0;";
   const cbPhotoDl = document.createElement("input");
   cbPhotoDl.type = "checkbox";
   cbPhotoDl.id = "profPhotoDl";
   cbPhotoDl.checked = def.enablePhotoDownload;
+  cbPhotoDl.title = tipPhotoDl;
   const lbPhotoDl = document.createElement("label");
   lbPhotoDl.htmlFor = "profPhotoDl";
+  lbPhotoDl.title = tipPhotoDl;
   lbPhotoDl.style.cssText =
-    "display:flex;align-items:center;gap:8px;margin:12px 0 6px 0;font-size:12px;color:#0f172a;cursor:pointer;";
+    "display:flex;align-items:center;gap:5px;margin:0;font-size:11px;color:#0f172a;cursor:pointer;line-height:1.2;white-space:nowrap;max-width:100%;";
   lbPhotoDl.appendChild(cbPhotoDl);
-  lbPhotoDl.appendChild(document.createTextNode(" Скачивать фото (photoData / KPK) отдельными файлами"));
-  paramsBody.appendChild(lbPhotoDl);
-
+  lbPhotoDl.appendChild(document.createTextNode("Скачивать фото (photoData / KPK) отдельно"));
   const cbPhotoStrip = document.createElement("input");
   cbPhotoStrip.type = "checkbox";
   cbPhotoStrip.id = "profPhotoStrip";
   cbPhotoStrip.checked = def.enablePhotoStrip;
+  cbPhotoStrip.title = tipPhotoStrip;
   const lbPhotoStrip = document.createElement("label");
   lbPhotoStrip.htmlFor = "profPhotoStrip";
+  lbPhotoStrip.title = tipPhotoStrip;
   lbPhotoStrip.style.cssText =
-    "display:flex;align-items:center;gap:8px;margin:0 0 4px 0;font-size:12px;color:#0f172a;cursor:pointer;";
+    "display:flex;align-items:center;gap:5px;margin:0;font-size:11px;color:#0f172a;cursor:pointer;line-height:1.2;white-space:nowrap;max-width:100%;";
   lbPhotoStrip.appendChild(cbPhotoStrip);
-  lbPhotoStrip.appendChild(document.createTextNode(" Урезать base64 из JSON (photoDataInfo)"));
-  paramsBody.appendChild(lbPhotoStrip);
+  lbPhotoStrip.appendChild(document.createTextNode("Урезать base64 в JSON (photoDataInfo)"));
+  cellPhotoChecks.appendChild(lbPhotoDl);
+  cellPhotoChecks.appendChild(lbPhotoStrip);
+  rowBatchPhoto.appendChild(l5);
+  rowBatchPhoto.appendChild(inBatch);
+  rowBatchPhoto.appendChild(cellPhotoChecks);
+  paramsBody.appendChild(rowBatchPhoto);
 
   // Контейнер для ручного скачивания фото: программный клик после await fetch часто не считается «жестом пользователя».
   const photoDlSection = document.createElement("div");
   photoDlSection.style.cssText =
-    "margin:12px 0 0 0;padding:10px 10px 8px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;";
+    "margin:8px 0 0 0;padding:8px 8px 6px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;";
   const photoDlSectionTitle = document.createElement("div");
   photoDlSectionTitle.style.cssText =
-    "font-size:11px;color:#166534;font-weight:600;margin:0 0 6px 0;line-height:1.35;";
+    "font-size:10px;color:#166534;font-weight:600;margin:0 0 4px 0;line-height:1.3;";
   photoDlSectionTitle.textContent =
     "Ссылки на фото: если в папку загрузок ничего не пришло, нажмите здесь (браузер часто блокирует автоскачивание после запроса).";
   var photoDlLinkHost = document.createElement("div");
   photoDlLinkHost.id = "profileGpPhotoDlHost";
-  photoDlLinkHost.style.cssText = "font-size:12px;";
+  photoDlLinkHost.style.cssText = "font-size:11px;";
   photoDlSection.appendChild(photoDlSectionTitle);
   photoDlSection.appendChild(photoDlLinkHost);
   paramsBody.appendChild(photoDlSection);
@@ -816,28 +920,32 @@ function startWithChoice() {
 
   const secTn = document.createElement("div");
   secTn.style.cssText =
-    "font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#64748b;margin:16px 0 8px 0;";
+    "font-size:10px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#64748b;margin:10px 0 6px 0;";
   secTn.textContent = "Источник табельных";
   container.appendChild(secTn);
 
   const labTa = document.createElement("div");
-  labTa.style.cssText = "font-size:12px;color:#475569;margin:0 0 8px 0;line-height:1.45;";
+  labTa.style.cssText = "font-size:11px;color:#475569;margin:0 0 6px 0;line-height:1.35;";
   labTa.textContent =
     "Текст или файл: любые разделители между числами; нормализация 8–20 цифр. Либо массив TAB_NUMS в скрипте.";
   container.appendChild(labTa);
 
   const taNums = document.createElement("textarea");
-  taNums.rows = 5;
+  taNums.rows = 3;
   taNums.style.cssText =
-    "width:100%;box-sizing:border-box;margin:0 0 12px 0;padding:10px;font-size:12px;font-family:ui-monospace,monospace;" +
-    "color:#0f172a;background:#fff;border:1px solid #94a3b8;border-radius:8px;resize:vertical;min-height:88px;color-scheme:light;";
+    "width:100%;box-sizing:border-box;margin:0 0 8px 0;padding:8px;font-size:12px;font-family:ui-monospace,monospace;" +
+    "color:#0f172a;background:#fff;border:1px solid #94a3b8;border-radius:8px;resize:vertical;min-height:64px;max-height:140px;color-scheme:light;";
   taNums.placeholder = "Например:\n00673892, 01515739\n01980754";
   taNums.spellcheck = false;
   container.appendChild(taNums);
 
   const btnCssBase =
-    "width:100%;box-sizing:border-box;padding:11px 14px;margin:0 0 8px 0;font-size:13px;font-weight:600;" +
-    "cursor:pointer;border-radius:8px;border:none;transition:opacity .15s;";
+    "width:100%;box-sizing:border-box;padding:6px 8px;margin:0;font-size:11px;font-weight:600;line-height:1.25;" +
+    "cursor:pointer;border-radius:6px;border:none;transition:opacity .15s;text-align:center;word-break:break-word;";
+  const rowRunBtns = document.createElement("div");
+  rowRunBtns.style.cssText =
+    "display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin:0 0 8px 0;align-items:stretch;";
+
   const btnFromText = document.createElement("button");
   btnFromText.type = "button";
   btnFromText.textContent = "Запустить по тексту из поля";
@@ -845,11 +953,11 @@ function startWithChoice() {
   btnFromText.addEventListener("click", function () {
     const tabNums = parseTabNumbersFromText(taNums.value);
     if (tabNums.length === 0) {
-      console.warn("В поле нет табельных номеров (нужны группы цифр).");
+      profileGpPanelEcho("warn", "В поле нет табельных номеров (нужны группы цифр).");
       return;
     }
-    console.log("Запуск по тексту из поля, ТН:", tabNums.length);
-    console.log("Сбор в фоне — панель не закрывается; по окончании смотрите консоль и загрузки.");
+    profileGpPanelEcho("log", "Запуск по тексту из поля, ТН:", tabNums.length);
+    profileGpPanelEcho("log", "Сбор в фоне — панель не закрывается; по окончании смотрите консоль, журнал ниже и загрузки.");
     runCollectProfiles(tabNums, readRunOptsForCollect());
   });
 
@@ -867,31 +975,54 @@ function startWithChoice() {
   btnArray.style.cssText = btnCssBase + "background:#059669;color:#fff;box-shadow:0 2px 6px rgba(5,150,105,.3);";
   btnArray.addEventListener("click", function () {
     if (TAB_NUMS.length === 0) {
-      console.warn("Массив TAB_NUMS в скрипте пуст.");
+      profileGpPanelEcho("warn", "Массив TAB_NUMS в скрипте пуст.");
       return;
     }
-    console.log("Запуск по TAB_NUMS, ТН:", TAB_NUMS.length);
-    console.log("Сбор в фоне — панель не закрывается; по окончании смотрите консоль и загрузки.");
+    profileGpPanelEcho("log", "Запуск по TAB_NUMS, ТН:", TAB_NUMS.length);
+    profileGpPanelEcho("log", "Сбор в фоне — панель не закрывается; по окончании смотрите консоль, журнал ниже и загрузки.");
     runCollectProfiles(TAB_NUMS, readRunOptsForCollect());
   });
+
+  rowRunBtns.appendChild(btnFromText);
+  rowRunBtns.appendChild(btnFile);
+  rowRunBtns.appendChild(btnArray);
+
+  const logSecLab = document.createElement("div");
+  logSecLab.textContent = "Журнал работы";
+  logSecLab.style.cssText =
+    "font-size:10px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#64748b;margin:0 0 4px 0;";
+  const logEl = document.createElement("pre");
+  logEl.setAttribute("role", "log");
+  logEl.setAttribute("aria-live", "polite");
+  logEl.style.cssText =
+    "margin:0 0 8px 0;padding:6px 8px;min-height:72px;max-height:min(200px,28vh);overflow:auto;box-sizing:border-box;" +
+    "font-family:ui-monospace,monospace;font-size:10px;line-height:1.35;color:#0f172a;background:#f8fafc;" +
+    "border:1px solid #e2e8f0;border-radius:6px;white-space:pre-wrap;word-break:break-word;";
+  logEl.textContent = "";
+
+  profileGpPanelLogAppend = function (line) {
+    logEl.textContent += line + "\n";
+    logEl.scrollTop = logEl.scrollHeight;
+  };
 
   const btnClose = document.createElement("button");
   btnClose.type = "button";
   btnClose.textContent = "Закрыть панель";
   btnClose.title = "Снять панель с экрана. Повторный запуск — снова вставить скрипт в консоль (страницу не перезагружать).";
   btnClose.style.cssText =
-    "width:100%;box-sizing:border-box;margin-top:4px;padding:9px 12px;font-size:12px;cursor:pointer;" +
+    "width:100%;box-sizing:border-box;margin-top:0;padding:6px 10px;font-size:11px;cursor:pointer;" +
     "background:#f1f5f9;color:#334155;border:1px solid #cbd5e1;border-radius:8px;font-weight:500;";
   btnClose.addEventListener("click", function () {
     try {
       input.value = "";
     } catch (eCloseInp) {}
+    profileGpPanelLogAppend = null;
     container.remove();
   });
 
-  container.appendChild(btnFromText);
-  container.appendChild(btnFile);
-  container.appendChild(btnArray);
+  container.appendChild(rowRunBtns);
+  container.appendChild(logSecLab);
+  container.appendChild(logEl);
   container.appendChild(btnClose);
   container.appendChild(input);
   document.body.appendChild(container);
@@ -903,8 +1034,8 @@ function startWithChoice() {
     reader.onload = function () {
       const text = typeof reader.result === "string" ? reader.result : "";
       const tabNums = parseTabNumbersFromText(text);
-      console.log("Из файла извлечено ТН:", tabNums.length);
-      console.log("Сбор в фоне — панель не закрывается; по окончании смотрите консоль и загрузки.");
+      profileGpPanelEcho("log", "Из файла извлечено ТН:", tabNums.length);
+      profileGpPanelEcho("log", "Сбор в фоне — панель не закрывается; по окончании смотрите консоль, журнал ниже и загрузки.");
       runCollectProfiles(tabNums, readRunOptsForCollect());
       try {
         input.value = "";
