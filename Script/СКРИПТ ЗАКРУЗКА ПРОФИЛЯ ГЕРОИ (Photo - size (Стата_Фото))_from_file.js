@@ -91,14 +91,40 @@ function getJsonSizeBytes(obj) {
   return new TextEncoder().encode(json).length;
 }
 
-function downloadBase64File(dataUrl, filename) {
-  if (!dataUrl || typeof dataUrl !== "string") return;
-  const a = document.createElement("a");
-  a.href = dataUrl;
-  a.download = filename || "file.bin";
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+/**
+ * Скачивание base64-фото: «голый» base64 или data:image/...;base64,...
+ * Через Blob — иначе href без префикса data: не открывается как файл.
+ */
+function downloadBase64File(rawOrDataUrl, filename) {
+  if (!rawOrDataUrl || typeof rawOrDataUrl !== "string") return;
+  try {
+    var s = rawOrDataUrl.trim();
+    var mime = "image/jpeg";
+    if (/^data:([^;]+);base64,/i.test(s)) {
+      mime = RegExp.$1 || mime;
+      s = s.replace(/^data:[^;]+;base64,/i, "");
+    }
+    s = s.replace(/\s/g, "");
+    if (!s.length) return;
+    var binary = atob(s);
+    var n = binary.length;
+    var bytes = new Uint8Array(n);
+    for (var i = 0; i < n; i++) bytes[i] = binary.charCodeAt(i);
+    var blob = new Blob([bytes], { type: mime || "image/jpeg" });
+    var objectUrl = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = objectUrl;
+    a.download = filename || "photo.jpg";
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () {
+      URL.revokeObjectURL(objectUrl);
+    }, 500);
+  } catch (e) {
+    console.warn("Скачивание фото не удалось:", filename, e);
+  }
 }
 
 function processPhotos(tn, data) {
@@ -306,9 +332,7 @@ async function runCollectProfiles(tabNums) {
 // =============================================================================
 
 /**
- * Показывает панель выбора: загрузить ТН из файла или запустить по массиву TAB_NUMS из скрипта.
- * При выборе файла — парсит текст и запускает runCollectProfiles(табельные_из_файла).
- * При «по массиву» — запускает runCollectProfiles(TAB_NUMS).
+ * Панель: ТН из многострочного поля (как из файла — parseTabNumbersFromText), из .txt или из TAB_NUMS.
  */
 function startWithChoice() {
   const input = document.createElement("input");
@@ -318,7 +342,37 @@ function startWithChoice() {
 
   const label = document.createElement("div");
   label.style.cssText = "margin:0 0 10px 0;font-family:sans-serif;font-size:14px;color:#333;";
-  label.textContent = "Табельные: из файла или из массива в скрипте (TAB_NUMS)";
+  label.textContent = "Табельные: файл, текст в поле ниже или массив TAB_NUMS в скрипте";
+
+  const labTa = document.createElement("div");
+  labTa.style.cssText =
+    "margin:0 0 6px 0;font-family:sans-serif;font-size:12px;color:#444;line-height:1.35;";
+  labTa.textContent =
+    "Любые разделители (как в .txt): пробел, запятая, перенос строки; нормализация 8–20 цифр — та же, что при загрузке из файла.";
+
+  const taNums = document.createElement("textarea");
+  taNums.rows = 5;
+  taNums.style.cssText =
+    "width:100%;box-sizing:border-box;margin:0 0 8px 0;padding:8px;font-size:12px;font-family:monospace;" +
+    "color:#111827;background-color:#fff;border:1px solid #64748b;border-radius:6px;resize:vertical;min-height:72px;";
+  taNums.placeholder = "Например:\n00673892, 01515739\n01980754";
+  taNums.spellcheck = false;
+
+  const btnFromText = document.createElement("button");
+  btnFromText.type = "button";
+  btnFromText.textContent = "Запустить по тексту из поля";
+  btnFromText.style.cssText =
+    "display:block;margin:0 0 10px 0;padding:10px 16px;font-size:14px;cursor:pointer;background:#6f42c1;color:#fff;border:none;border-radius:6px;width:100%;box-sizing:border-box;";
+  btnFromText.addEventListener("click", function () {
+    const tabNums = parseTabNumbersFromText(taNums.value);
+    if (tabNums.length === 0) {
+      console.warn("В поле нет табельных номеров (нужны группы цифр). Вставьте текст или выберите другой способ.");
+      return;
+    }
+    console.log("Запуск по тексту из поля, извлечено ТН:", tabNums.length);
+    runCollectProfiles(tabNums);
+    container.remove();
+  });
 
   const btnFile = document.createElement("button");
   btnFile.type = "button";
@@ -343,8 +397,12 @@ function startWithChoice() {
   });
 
   const container = document.createElement("div");
-  container.style.cssText = "position:fixed;top:10px;right:10px;background:#fff;border:1px solid #ccc;padding:16px;z-index:999999;box-shadow:0 2px 12px rgba(0,0,0,.2);min-width:300px;";
+  container.style.cssText =
+    "position:fixed;top:10px;right:10px;background:#fff;border:1px solid #ccc;padding:16px;z-index:999999;box-shadow:0 2px 12px rgba(0,0,0,.2);min-width:min(380px,calc(100vw - 24px));max-width:calc(100vw - 16px);box-sizing:border-box;";
   container.appendChild(label);
+  container.appendChild(labTa);
+  container.appendChild(taNums);
+  container.appendChild(btnFromText);
   container.appendChild(btnFile);
   container.appendChild(btnArray);
   container.appendChild(input);
@@ -366,5 +424,5 @@ function startWithChoice() {
   });
 }
 
-// При вставке скрипта в консоль показывается выбор: файл или массив TAB_NUMS.
+// Панель: текстовое поле ТН, файл или TAB_NUMS.
 startWithChoice();

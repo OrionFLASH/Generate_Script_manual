@@ -106,20 +106,42 @@ function getJsonSizeBytes(obj) {
 }
 
 /**
- * Инициирует скачивание файла по data URL (например base64-изображение).
- * Создаёт временную ссылку <a>, программно нажимает на неё и удаляет из DOM.
- * @param {string} dataUrl — строка вида "data:image/jpeg;base64,..." или пустая/не строка (тогда выход).
- * @param {string} [filename] — имя сохраняемого файла; по умолчанию "file.bin".
+ * Скачивание фото из ответа API: часто приходит «голый» base64 без префикса data: —
+ * тогда прямой href не работает. Поддержка data:image/...;base64,... и сырого base64.
+ * Реализация через Blob + object URL.
+ * @param {string} rawOrDataUrl
+ * @param {string} [filename]
  */
-function downloadBase64File(dataUrl, filename) {
-  if (!dataUrl || typeof dataUrl !== "string") return;
-
-  const a = document.createElement("a");
-  a.href = dataUrl;
-  a.download = filename || "file.bin";
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+function downloadBase64File(rawOrDataUrl, filename) {
+  if (!rawOrDataUrl || typeof rawOrDataUrl !== "string") return;
+  try {
+    var s = rawOrDataUrl.trim();
+    var mime = "image/jpeg";
+    if (/^data:([^;]+);base64,/i.test(s)) {
+      mime = RegExp.$1 || mime;
+      s = s.replace(/^data:[^;]+;base64,/i, "");
+    }
+    s = s.replace(/\s/g, "");
+    if (!s.length) return;
+    var binary = atob(s);
+    var n = binary.length;
+    var bytes = new Uint8Array(n);
+    for (var i = 0; i < n; i++) bytes[i] = binary.charCodeAt(i);
+    var blob = new Blob([bytes], { type: mime || "image/jpeg" });
+    var objectUrl = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = objectUrl;
+    a.download = filename || "photo.jpg";
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () {
+      URL.revokeObjectURL(objectUrl);
+    }, 500);
+  } catch (e) {
+    console.warn("Скачивание фото не удалось:", filename, e);
+  }
 }
 
 /**

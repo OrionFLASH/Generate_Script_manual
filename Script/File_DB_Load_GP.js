@@ -11,8 +11,11 @@
 // КОНФИГУРАЦИЯ
 // =============================================================================
 
-// Стенд: ALPHA (omega) или SIGMA (salesheroes) — меняются базовый origin и referer.
-const STAND = "SIGMA";
+// Стенд по умолчанию до открытия панели; дальше задаётся выпадающим списком на панели.
+const DEFAULT_FILE_DL_STAND = "SIGMA";
+
+/** Текущий выбранный стенд для POST (обновляется из UI панели). */
+var FILE_DL_ACTIVE_STAND = DEFAULT_FILE_DL_STAND;
 
 // Базовые URL для каждого стенда (без завершающего слэша).
 const STAND_ORIGINS = {
@@ -24,10 +27,16 @@ const STAND_ORIGINS = {
 const DEFAULT_FILE_DOWNLOAD_PATH = "/bo/rmkib.gamification/proxy/v1/tournaments/file-download";
 
 // Дата «с которой» грузить сводку наград (payload dateFrom для employee-rewards/file-download).
-const EMPLOYEE_REWARDS_DATE_FROM = "2026-01-01";
+const EMPLOYEE_REWARDS_DATE_FROM = "2023-01-01";
 
 // Пауза между запросами при пакетной загрузке («Скачать всё», группы «Рейтинг» / «Заказы»), мс.
 const DOWNLOAD_ALL_DELAY_MS = 800;
+
+// Режим «скользящий старт»: минимальный интервал между запусками POST (мс); следующий старт раньше, если предыдущий успешно завершился и прошло DOWNLOAD_ALL_DELAY_MS.
+const DOWNLOAD_STAGGER_MS = 15000;
+
+/** Включён ли на панели чекбокс «скользящий старт» (обновляется из UI). */
+var FILE_DL_USE_STAGGER = false;
 
 // Эндпоинт выгрузки рейтинга (группа кнопок «Рейтинг»).
 const RATINGLIST_FILE_DOWNLOAD_PATH = "/bo/rmkib.gamification/proxy/v1/ratinglist/file-download";
@@ -198,12 +207,12 @@ const ORDERS_GROUP_JOBS = [
     fileName: "gamification-orderList_KMKKSB_SEASON_2024.csv"
   },
   {
-    id: "orders_KMKKSB_ALLTHETIME",
-    label: "Заказы · KMKKSB · ALLTHETIME",
+    id: "orders_KMKKSB_ALLSEASONS",
+    label: "Заказы · KMKKSB · ALLSEASONS",
     apiPath: ORDERS_FILE_DOWNLOAD_PATH,
-    body: { businessBlock: "KMKKSB", listType: "ALLTHETIME" },
+    body: { businessBlock: "KMKKSB", listType: "ALLSEASONS" },
     refererPath: "/admin/orders",
-    fileName: "gamification-orderList_KMKKSB_ALLTHETIME.csv"
+    fileName: "gamification-orderList_KMKKSB_ALLSEASONS.csv"
   },
   {
     id: "orders_MNS_NONSEASON",
@@ -238,12 +247,12 @@ const ORDERS_GROUP_JOBS = [
     fileName: "gamification-orderList_MNS_SEASON_m_2024.csv"
   },
   {
-    id: "orders_MNS_ALLTHETIME",
-    label: "Заказы · MNS · ALLTHETIME",
+    id: "orders_MNS_ALLSEASONS",
+    label: "Заказы · MNS · ALLSEASONS",
     apiPath: ORDERS_FILE_DOWNLOAD_PATH,
-    body: { businessBlock: "MNS", listType: "ALLTHETIME" },
+    body: { businessBlock: "MNS", listType: "ALLSEASONS" },
     refererPath: "/admin/orders",
-    fileName: "gamification-orderList_MNS_ALLTHETIME.csv"
+    fileName: "gamification-orderList_MNS_ALLSEASONS.csv"
   }
 ];
 
@@ -300,6 +309,29 @@ function parseFilenameFromContentDisposition(header) {
 }
 
 /**
+ * Проверяет, что Content-Type указывает на JSON.
+ * @param {string|null} ct
+ * @returns {boolean}
+ */
+function isJsonContentType(ct) {
+  if (!ct || typeof ct !== "string") return false;
+  return ct.split(";")[0].trim().toLowerCase() === "application/json";
+}
+
+/**
+ * Компактная строка тела POST для логов консоли (параметры выгрузки).
+ * @param {object} bodyObj
+ * @returns {string}
+ */
+function formatPostBodyForLog(bodyObj) {
+  try {
+    return JSON.stringify(bodyObj !== undefined && bodyObj !== null ? bodyObj : {});
+  } catch (e) {
+    return String(bodyObj);
+  }
+}
+
+/**
  * Выполняет один POST и инициирует скачивание полученного файла.
  * @param {object} job — элемент из списка задач.
  * @param {object} [ctx] — контекст для логов: groupName, batchName, index (0-based), total.
@@ -307,7 +339,8 @@ function parseFilenameFromContentDisposition(header) {
  */
 async function downloadOneJob(job, ctx) {
   ctx = ctx || {};
-  const origin = STAND_ORIGINS[STAND] || STAND_ORIGINS.SIGMA;
+  const standKey = FILE_DL_ACTIVE_STAND === "ALPHA" || FILE_DL_ACTIVE_STAND === "SIGMA" ? FILE_DL_ACTIVE_STAND : "SIGMA";
+  const origin = STAND_ORIGINS[standKey] || STAND_ORIGINS.SIGMA;
   const path = job.apiPath || DEFAULT_FILE_DOWNLOAD_PATH;
   const url = origin + path;
   // Origin и Referer в fetch из JS задавать нельзя (запрещённые заголовки) — браузер подставит сам с текущей вкладки.
@@ -359,6 +392,50 @@ async function downloadOneJob(job, ctx) {
     return { ok: false, status: res.status };
   }
 
+  // Сервер может вернуть HTTP 200 и JSON с success:false (таймаут и т.д.) — не сохранять как файл.
+  const contentType = res.headers.get("Content-Type") || "";
+  if (isJsonContentType(contentType)) {
+    const textBody = await res.text();
+    let data;
+    try {
+      data = JSON.parse(textBody);
+    } catch (parseErr) {
+      console.warn(
+        "ОШИБКА: ответ помечен как JSON, разбор не удался\n" + String(parseErr)
+      );
+      return { ok: false, error: "invalid_json_body" };
+    }
+    if (data && data.success === false && data.error) {
+      const err = data.error;
+      console.warn(
+        "ОШИБКА API (HTTP 200, JSON)\nСтенд: " +
+          standKey +
+          "\nЗадача id: " +
+          (job.id || "—") +
+          "\nPOST body: " +
+          formatPostBodyForLog(bodyObj) +
+          "\ncode: " +
+          (err.code || "—") +
+          "\nsystem: " +
+          (err.system || "—") +
+          "\ntext: " +
+          (err.text || "—") +
+          (err.uuid ? "\nuuid: " + err.uuid : "")
+      );
+      return { ok: false, apiError: err };
+    }
+    if (data && data.success === true) {
+      console.warn(
+        "Ответ JSON с success:true — не файл выгрузки, скачивание отменено"
+      );
+      return { ok: false, error: "unexpected_json_success" };
+    }
+    console.warn(
+      "Ответ application/json непохож на файл выгрузки — скачивание отменено"
+    );
+    return { ok: false, error: "unexpected_json_shape" };
+  }
+
   const blob = await res.blob();
   const sizeBytes = blob.size;
   const cd = res.headers.get("Content-Disposition");
@@ -380,8 +457,23 @@ async function downloadOneJob(job, ctx) {
     URL.revokeObjectURL(objectUrl);
   }, 0);
 
-  // Группа, пакет, позиция в пакете и id уже выведены в «СТАРТ загрузки» — только результат.
-  console.log("ЗАВЕРШЕНО: файл скачан\nРазмер ответа: " + sizeBytes + " байт");
+  // При параллельном (скользящем) старте в консоли несколько потоков — дублируем id и payload.
+  console.log(
+    "ЗАВЕРШЕНО: файл скачан\n" +
+      "Стенд: " +
+      standKey +
+      "\nЗадача id: " +
+      (job.id || "—") +
+      "\nPOST body: " +
+      formatPostBodyForLog(bodyObj) +
+      "\nПуть API: " +
+      path +
+      "\nИмя файла: " +
+      fileName +
+      "\nРазмер ответа: " +
+      sizeBytes +
+      " байт"
+  );
 
   return { ok: true, fileName: fileName };
 }
@@ -438,6 +530,79 @@ async function downloadJobsSequentially(jobs, logLabel) {
   );
 }
 
+/**
+ * Пакет с перекрывающимися запросами: каждый следующий старт не раньше чем через DOWNLOAD_STAGGER_MS;
+ * если предыдущий завершился успешно — можно стартовать через DOWNLOAD_ALL_DELAY_MS после его конца.
+ * @param {object[]} jobs
+ * @param {string} logLabel
+ */
+async function downloadJobsStaggered(jobs, logLabel) {
+  const total = jobs.length;
+  console.log(
+    "ПАКЕТ: " +
+      logLabel +
+      "\nСТАРТ (скользящий старт запросов)\nВсего задач: " +
+      total +
+      "\nМежду стартами min: " +
+      DOWNLOAD_STAGGER_MS +
+      " мс | после успеха предыдущего: " +
+      DOWNLOAD_ALL_DELAY_MS +
+      " мс"
+  );
+
+  const promises = [];
+  for (let i = 0; i < total; i++) {
+    const job = jobs[i];
+    const groupName = getGroupNameForJob(job);
+    const p = downloadOneJob(job, {
+      groupName: groupName,
+      batchName: logLabel,
+      index: i,
+      total: total
+    });
+    promises.push(p);
+    if (i < total - 1) {
+      await Promise.race([
+        delay(DOWNLOAD_STAGGER_MS),
+        p.then(function (result) {
+          if (result && result.ok) return delay(DOWNLOAD_ALL_DELAY_MS);
+          return new Promise(function () {});
+        })
+      ]);
+    }
+  }
+
+  const results = await Promise.all(promises);
+  let okCount = 0;
+  let errCount = 0;
+  results.forEach(function (r) {
+    if (r.ok) okCount++;
+    else errCount++;
+  });
+
+  console.log(
+    "ПАКЕТ: " +
+      logLabel +
+      "\nФИНИШ: обработано задач: " +
+      total +
+      "\nУспешно (файл инициирован): " +
+      okCount +
+      "\nС ошибкой: " +
+      errCount
+  );
+}
+
+/**
+ * Запуск пакета: последовательно или скользящий старт.
+ * @param {object[]} jobs
+ * @param {string} logLabel
+ * @param {boolean} useStagger
+ */
+async function downloadJobsBatch(jobs, logLabel, useStagger) {
+  if (useStagger) await downloadJobsStaggered(jobs, logLabel);
+  else await downloadJobsSequentially(jobs, logLabel);
+}
+
 /** Основные выгрузки + рейтинг + заказы. */
 async function downloadAllJobs() {
   await downloadJobsSequentially(getAllDownloadJobs(), "«Скачать всё»");
@@ -445,12 +610,12 @@ async function downloadAllJobs() {
 
 /** Только группа «Рейтинг» (10 файлов). */
 async function downloadRatingGroupOnly() {
-  await downloadJobsSequentially(RATING_GROUP_JOBS, "«Загрузить Рейтинг»");
+  await downloadJobsBatch(RATING_GROUP_JOBS, "«Загрузить Рейтинг»", FILE_DL_USE_STAGGER);
 }
 
 /** Только группа «Заказы» (10 файлов). */
 async function downloadOrdersGroupOnly() {
-  await downloadJobsSequentially(ORDERS_GROUP_JOBS, "«Загрузить Заказы»");
+  await downloadJobsBatch(ORDERS_GROUP_JOBS, "«Загрузить Заказы»", FILE_DL_USE_STAGGER);
 }
 
 /**
@@ -471,7 +636,7 @@ async function downloadCheckedPanelJobs(entries) {
     );
     return;
   }
-  await downloadJobsSequentially(jobs, "«Скачать выделенное»");
+  await downloadJobsBatch(jobs, "«Скачать выделенное»", FILE_DL_USE_STAGGER);
 }
 
 /**
@@ -520,8 +685,42 @@ function startDownloadPanel() {
 
   const title = document.createElement("div");
   title.style.cssText = "font-size:12px;font-weight:bold;margin:0 0 6px;color:#333;line-height:1.2;";
-  title.textContent = "Скачивание (gamification) · " + STAND;
+  function syncFileDlTitle() {
+    title.textContent = "Скачивание (gamification) · " + FILE_DL_ACTIVE_STAND;
+  }
+  syncFileDlTitle();
   container.appendChild(title);
+
+  // Выбор стенда: базовый хост для POST (ALPHA / SIGMA).
+  const rowStand = document.createElement("div");
+  rowStand.style.cssText =
+    "display:flex;align-items:center;gap:8px;margin:0 0 8px;font-size:11px;flex-wrap:wrap;";
+  const labStand = document.createElement("label");
+  labStand.style.cssText = "color:#333;font-weight:bold;";
+  labStand.textContent = "Стенд:";
+  labStand.setAttribute("for", "fileDlStandSelect");
+  const selStand = document.createElement("select");
+  selStand.id = "fileDlStandSelect";
+  // Явные цвета и color-scheme: иначе на тёмной странице текст select может быть белым на белом фоне панели.
+  selStand.style.cssText =
+    "padding:4px 8px;font-size:11px;min-width:160px;cursor:pointer;" +
+    "color:#111827;background-color:#ffffff;border:1px solid #64748b;border-radius:4px;" +
+    "color-scheme:light;";
+  ["ALPHA", "SIGMA"].forEach(function (key) {
+    const opt = document.createElement("option");
+    opt.value = key;
+    opt.textContent = key + " — " + STAND_ORIGINS[key];
+    opt.style.cssText = "color:#111827;background-color:#ffffff;";
+    if (key === FILE_DL_ACTIVE_STAND) opt.selected = true;
+    selStand.appendChild(opt);
+  });
+  selStand.addEventListener("change", function () {
+    FILE_DL_ACTIVE_STAND = selStand.value;
+    syncFileDlTitle();
+  });
+  rowStand.appendChild(labStand);
+  rowStand.appendChild(selStand);
+  container.appendChild(rowStand);
 
   const sub = document.createElement("div");
   sub.style.cssText = "font-size:10px;color:#666;margin:0 0 8px;line-height:1.35;word-break:break-word;";
@@ -537,6 +736,29 @@ function startDownloadPanel() {
     " · dateFrom наград: " +
     EMPLOYEE_REWARDS_DATE_FROM;
   container.appendChild(sub);
+
+  // Режим пакета: скользящий старт запросов (см. DOWNLOAD_STAGGER_MS / DOWNLOAD_ALL_DELAY_MS).
+  const rowStagger = document.createElement("div");
+  rowStagger.style.cssText =
+    "display:flex;align-items:center;gap:6px;margin:0 0 8px;font-size:10px;color:#444;";
+  const staggerCb = document.createElement("input");
+  staggerCb.type = "checkbox";
+  staggerCb.id = "fileDlStaggerCb";
+  staggerCb.addEventListener("change", function () {
+    FILE_DL_USE_STAGGER = staggerCb.checked;
+  });
+  const staggerLab = document.createElement("label");
+  staggerLab.htmlFor = "fileDlStaggerCb";
+  staggerLab.style.cssText = "cursor:pointer;line-height:1.3;";
+  staggerLab.textContent =
+    "Пакеты: скользящий старт (след. запрос через " +
+    DOWNLOAD_STAGGER_MS / 1000 +
+    " с или раньше после успеха +" +
+    DOWNLOAD_ALL_DELAY_MS +
+    " мс)";
+  rowStagger.appendChild(staggerCb);
+  rowStagger.appendChild(staggerLab);
+  container.appendChild(rowStagger);
 
   const secMain = document.createElement("div");
   secMain.style.cssText = "margin-bottom:8px;";
