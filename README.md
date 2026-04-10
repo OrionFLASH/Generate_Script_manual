@@ -8,7 +8,7 @@
   - Загрузка профилей героев: **`Profile_GP_LOAD_file.js`** — панель (стенд ALPHA/SIGMA, задержки, retry, батч, фото), ТН из поля, из файла `.txt` или из массива `TAB_NUMS`; скачивание фото через Blob, при блокировке автоскачивания — ссылки «Скачать» на панели. Дополнительно: базовый скрипт с длинным именем (только `TAB_NUMS`) и `_from_file.js` (упрощённая панель).
   - Выгрузка файлов gamification: **`File_DB_Load_GP.js`** — POST `file-download`, панель, группы «Рейтинг» и «Заказы», опционально скользящий старт пакетов; при HTTP 200 и JSON с `success: false` файл не сохраняется.
   - Адресная книга: **`AddressBook_export.js`** — GET `empInfoFull`, POST `employees/search` (ТН / ФИО), см. [Docs/Скрипт_AddressBook_export.md](Docs/Скрипт_AddressBook_export.md).
-  - Турниры: **`Tournament_LeadersForAdmin.js`** — GET `leadersForAdmin` по списку кодов (textarea, файл, CSV), см. [Docs/Скрипт_турниры_leadersForAdmin.md](Docs/Скрипт_турниры_leadersForAdmin.md).
+  - Турниры: **`Tournament_LeadersForAdmin.js`** — GET `leadersForAdmin`; панель: кнопки «сразу выгрузка» (массив в скрипте, текст в поле, файл `.txt`), два блока CSV (колонки A/B) с настраиваемыми именами полей код/статус, фильтр чекбоксами и **только выбор CSV с диска**; пропуски с 0 лидеров дублируются в консоль. См. [Docs/Скрипт_турниры_leadersForAdmin.md](Docs/Скрипт_турниры_leadersForAdmin.md).
 - **Docs/** — подробная документация по отдельным скриптам.
 - **log/** — каталог для логов (при наличии логирования в проекте).
 - **POST/** — *не хранится в git* (см. `.gitignore`). Локальная папка с **копиями** всех скриптов из `Script/*.js`, всех файлов из `Docs/*.md` и корневого `README.md`, у каждой копии к полному имени добавлено расширение **`.txt`** (пример: `File_DB_Load_GP.js` → `POST/File_DB_Load_GP.js.txt`). Удобно для вставки в системы, где удобнее тип «текстовый файл». Обновить копии: из корня репозитория выполнить `chmod +x post_txt_sync.sh && ./post_txt_sync.sh`.
@@ -52,6 +52,7 @@
 
 | Дата | Описание |
 |------|----------|
+| 2026-04 | `Tournament_LeadersForAdmin.js`: кнопки вместо радиокнопок, две колонки CSV с полями имён колонок и `codesFromCsvByColumns`, лог пропусков в консоль, CSV только из файла (без textarea в колонках); обновлены [Docs/Скрипт_турниры_leadersForAdmin.md](Docs/Скрипт_турниры_leadersForAdmin.md) и README. |
 | 2026-04 | `Profile_GP_LOAD_file.js`: фото через Blob, `findProfilePhotoContainer`, блок «Ссылки на фото» на панели, устойчивый decode base64; синхронизированы вспомогательные скрипты профиля; обновлены [Docs/Скрипт_загрузка_профиля_герои.md](Docs/Скрипт_загрузка_профиля_герои.md) и README. |
 | 2026-04 | `AddressBook_export.js`, `Tournament_LeadersForAdmin.js` и документы в `Docs/`; в `File_DB_Load_GP.js` — детект JSON-ошибки при HTTP 200 и опциональный скользящий старт пакетов; обновлены README и Docs по выгрузке файлов. |
 | 2026-04 | Каталог `POST/` (в .gitignore): локальные .txt-копии скриптов и документации; скрипт `post_txt_sync.sh`; описание в README и в Docs по File_DB_Load_GP. |

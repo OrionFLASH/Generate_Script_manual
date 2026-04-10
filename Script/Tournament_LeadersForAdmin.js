@@ -139,42 +139,28 @@ function indexOfHeader(headers, name) {
 }
 
 /**
- * Коды из CSV вариант 1: TOURNAMENT_CODE + фильтр TOURNAMENT_STATUS.
+ * Коды из CSV по именам колонок (как в первой строке файла, с учётом trim).
  * @param {string} csvText
- * @param {Record<string, boolean>} allowedStatus — какие статусы включены
+ * @param {Record<string, boolean>} allowedStatus — какие значения статуса включены
+ * @param {string} codeColumnName — заголовок колонки с кодом турнира
+ * @param {string} statusColumnName — заголовок колонки со статусом (фильтр чекбоксов)
+ * @returns {string[]}
  */
-function codesFromCsvVariant1(csvText, allowedStatus) {
+function codesFromCsvByColumns(csvText, allowedStatus, codeColumnName, statusColumnName) {
   const { headers, rows } = parseCsv(csvText);
-  const ic = indexOfHeader(headers, "TOURNAMENT_CODE");
-  const is = indexOfHeader(headers, "TOURNAMENT_STATUS");
-  if (ic < 0 || is < 0) {
-    console.warn("CSV1: нет колонок TOURNAMENT_CODE или TOURNAMENT_STATUS");
+  const ch = (codeColumnName || "").trim();
+  const sh = (statusColumnName || "").trim();
+  if (!ch || !sh) {
+    console.warn("CSV: не заданы имена колонок (код и/или статус).");
     return [];
   }
-  const out = [];
-  const seen = {};
-  for (let r = 0; r < rows.length; r++) {
-    const row = rows[r];
-    const st = (row[is] || "").trim();
-    if (!allowedStatus[st]) continue;
-    const code = (row[ic] || "").trim();
-    if (code && !seen[code]) {
-      seen[code] = true;
-      out.push(code);
-    }
-  }
-  return out;
-}
-
-/**
- * Коды из CSV вариант 2: «Код турнира» + «Бизнес-статус турнира».
- */
-function codesFromCsvVariant2(csvText, allowedStatus) {
-  const { headers, rows } = parseCsv(csvText);
-  const ic = indexOfHeader(headers, "Код турнира");
-  const is = indexOfHeader(headers, "Бизнес-статус турнира");
+  const ic = indexOfHeader(headers, ch);
+  const is = indexOfHeader(headers, sh);
   if (ic < 0 || is < 0) {
-    console.warn("CSV2: нет колонок «Код турнира» или «Бизнес-статус турнира»");
+    console.warn(
+      "CSV: колонки не найдены. Ожидались «" + ch + "» и «" + sh + "». Заголовки в файле:",
+      headers
+    );
     return [];
   }
   const out = [];
@@ -244,14 +230,20 @@ function startTournamentPanel() {
   root.id = "tournamentLeadersForAdminRoot";
   // color + color-scheme: на тёмной странице иначе наследуется светлый текст — нечитаемо на белом фоне панели.
   root.style.cssText =
-    "position:fixed;left:10px;top:10px;width:min(480px,calc(100vw - 20px));max-height:92vh;overflow:auto;z-index:999999;" +
-    "background:#ffffff;border:1px solid #888;padding:12px;box-shadow:0 4px 20px rgba(0,0,0,.2);" +
-    "font-family:sans-serif;font-size:12px;color:#111827;color-scheme:light;";
+    "position:fixed;left:10px;top:10px;width:min(920px,calc(100vw - 16px));max-height:92vh;overflow:auto;z-index:999999;" +
+    "background:#ffffff;border:1px solid #cbd5e1;padding:14px 16px;box-shadow:0 12px 40px rgba(15,23,42,.12);border-radius:12px;" +
+    "font-family:system-ui,-apple-system,sans-serif;font-size:12px;color:#111827;color-scheme:light;box-sizing:border-box;";
 
   const title = document.createElement("div");
-  title.style.cssText = "font-weight:bold;font-size:14px;margin-bottom:6px;color:#111827;";
+  title.style.cssText =
+    "font-weight:700;font-size:16px;margin-bottom:2px;color:#0f172a;letter-spacing:-0.02em;";
   title.textContent = "Турниры — leadersForAdmin";
   root.appendChild(title);
+  const titleSub = document.createElement("div");
+  titleSub.style.cssText = "font-size:11px;color:#64748b;margin-bottom:10px;line-height:1.4;";
+  titleSub.textContent =
+    "Каждая кнопка сразу запускает выгрузку. Для .txt и CSV сначала откроется выбор файла. Стенд и «Удалять photoData» задайте до нажатия.";
+  root.appendChild(titleSub);
 
   const stRow = document.createElement("div");
   stRow.style.cssText =
@@ -291,212 +283,416 @@ function startTournamentPanel() {
   root.appendChild(lbPhoto);
   root.appendChild(document.createElement("br"));
 
-  const labMode = document.createElement("div");
-  labMode.style.cssText = "font-weight:bold;margin:10px 0 4px;color:#111827;";
-  labMode.textContent = "Источник кодов турнира";
-  root.appendChild(labMode);
-
-  const modes = [
-    { id: "m_script", label: "Массив TOURNAMENT_IDS_IN_SCRIPT в файле" },
-    { id: "m_ta", label: "Текст ниже (коды через пробелы, запятые, строки)" },
-    { id: "m_txt", label: "Файл .txt" },
-    { id: "m_csv1", label: "CSV: TOURNAMENT_CODE + TOURNAMENT_STATUS" },
-    { id: "m_csv2", label: "CSV: «Код турнира» + «Бизнес-статус турнира»" }
-  ];
-  const radios = {};
-  modes.forEach(function (m, idx) {
-    const row = document.createElement("div");
-    row.style.cssText = "margin:4px 0;color:#111827;line-height:1.4;";
-    const r = document.createElement("input");
-    r.type = "radio";
-    r.name = "tournSrc";
-    r.value = m.id;
-    r.checked = idx === 0;
-    radios[m.id] = r;
-    row.appendChild(r);
-    const spanLab = document.createElement("span");
-    spanLab.style.cssText = "color:#111827;";
-    spanLab.textContent = " " + m.label;
-    row.appendChild(spanLab);
-    root.appendChild(row);
-  });
-
-  const ta = document.createElement("textarea");
-  ta.rows = 5;
-  ta.style.cssText =
-    "width:100%;box-sizing:border-box;margin-top:8px;font-size:11px;padding:6px;" +
-    "color:#111827;background-color:#ffffff;border:1px solid #64748b;border-radius:4px;resize:vertical;color-scheme:light;";
-  ta.placeholder = TOURNAMENT_IDS_IN_SCRIPT.join("\n");
-  ta.value = TOURNAMENT_IDS_IN_SCRIPT.join("\n");
-  root.appendChild(ta);
-
-  const fileIn = document.createElement("input");
-  fileIn.type = "file";
-  fileIn.accept = ".txt,.csv,text/plain,text/csv";
-  fileIn.style.cssText = "margin-top:8px;width:100%;";
-  root.appendChild(fileIn);
-
-  let lastFileText = "";
-
-  fileIn.addEventListener("change", function () {
-    const f = fileIn.files && fileIn.files[0];
-    if (!f) return;
-    const reader = new FileReader();
-    reader.onload = function () {
-      lastFileText = String(reader.result || "");
-      console.log("Файл прочитан, символов: " + lastFileText.length);
-    };
-    reader.readAsText(f, "UTF-8");
-  });
-
-  function makeStatusChecks(labels, container) {
-    const map = {};
-    labels.forEach(function (lbl) {
-      const row = document.createElement("div");
-      row.style.cssText = "margin:3px 0;color:#111827;line-height:1.35;";
-      const c = document.createElement("input");
-      c.type = "checkbox";
-      c.checked = true;
-      map[lbl] = c;
-      row.appendChild(c);
-      const sp = document.createElement("span");
-      sp.style.cssText = "color:#111827;";
-      sp.textContent = " " + lbl;
-      row.appendChild(sp);
-      container.appendChild(row);
-    });
-    return map;
-  }
-
-  const csv1box = document.createElement("div");
-  csv1box.style.cssText =
-    "margin-top:8px;padding:10px;background:#eef1f5;border:1px solid #cbd5e1;border-radius:6px;color:#111827;";
-  const csv1head = document.createElement("div");
-  csv1head.style.cssText = "font-weight:bold;margin-bottom:8px;color:rgb(15,23,42);";
-  csv1head.textContent = "Фильтр статусов (CSV1):";
-  csv1box.appendChild(csv1head);
-  const checks1 = makeStatusChecks(CSV1_STATUS_LABELS, csv1box);
-  root.appendChild(csv1box);
-
-  const csv2box = document.createElement("div");
-  csv2box.style.cssText =
-    "margin-top:8px;padding:10px;background:#e8f2fc;border:1px solid #93c5fd;border-radius:6px;color:#111827;";
-  const csv2head = document.createElement("div");
-  csv2head.style.cssText = "font-weight:bold;margin-bottom:8px;color:rgb(15,23,42);";
-  csv2head.textContent = "Фильтр статусов (CSV2):";
-  csv2box.appendChild(csv2head);
-  const checks2 = makeStatusChecks(CSV2_STATUS_LABELS, csv2box);
-  root.appendChild(csv2box);
-
   const logEl = document.createElement("div");
   logEl.style.cssText =
-    "margin-top:8px;font-size:11px;color:rgb(15,23,42);background:#f8fafc;max-height:120px;overflow:auto;border:1px solid #cbd5e1;border-radius:4px;padding:6px;";
+    "margin-top:10px;font-size:11px;color:rgb(15,23,42);background:#f8fafc;max-height:140px;overflow:auto;border:1px solid #cbd5e1;border-radius:8px;padding:8px;";
   logEl.textContent = "Лог: —";
-  root.appendChild(logEl);
 
   function log(msg) {
     logEl.textContent = msg;
     console.log(msg);
   }
 
-  const btnRun = document.createElement("button");
-  btnRun.type = "button";
-  btnRun.textContent = "Запустить выгрузку";
-  btnRun.style.cssText =
-    "margin-top:10px;padding:10px;width:100%;cursor:pointer;background:#0a0;color:#fff;border:none;border-radius:6px;font-weight:bold;";
-  btnRun.addEventListener("click", async function () {
-    let ids = [];
-    const picked =
-      modes.find(function (m) {
-        return radios[m.id].checked;
-      }) || modes[0];
+  const labTa = document.createElement("div");
+  labTa.style.cssText = "font-weight:600;font-size:11px;color:#475569;margin:10px 0 4px;";
+  labTa.textContent = "Общее поле — простые коды (кнопка «По тексту» или вставка после выбора .txt)";
+  root.appendChild(labTa);
 
-    if (picked.id === "m_script") {
-      ids = TOURNAMENT_IDS_IN_SCRIPT.slice();
-    } else if (picked.id === "m_ta") {
-      ids = parseTournamentCodesFromText(ta.value);
-    } else if (picked.id === "m_txt") {
-      ids = parseTournamentCodesFromText(lastFileText);
-    } else if (picked.id === "m_csv1") {
-      const allow = {};
-      Object.keys(checks1).forEach(function (k) {
-        allow[k] = checks1[k].checked;
-      });
-      ids = codesFromCsvVariant1(lastFileText, allow);
-    } else if (picked.id === "m_csv2") {
-      const allow = {};
-      Object.keys(checks2).forEach(function (k) {
-        allow[k] = checks2[k].checked;
-      });
-      ids = codesFromCsvVariant2(lastFileText, allow);
-    }
+  const ta = document.createElement("textarea");
+  ta.rows = 4;
+  ta.style.cssText =
+    "width:100%;box-sizing:border-box;font-size:11px;padding:10px;" +
+    "color:#111827;background-color:#ffffff;border:1px solid #94a3b8;border-radius:8px;resize:vertical;color-scheme:light;";
+  ta.placeholder = TOURNAMENT_IDS_IN_SCRIPT.join("\n");
+  ta.value = TOURNAMENT_IDS_IN_SCRIPT.join("\n");
+  root.appendChild(ta);
 
-    if (ids.length === 0) {
-      log("Нет кодов турнира. Проверьте источник и файл.");
+  /** Защита от повторного запуска, пока идёт цикл fetch. */
+  var exportBusy = false;
+
+  /**
+   * Общий цикл выгрузки по уже собранному списку кодов турнира.
+   * @param {string[]} ids
+   * @param {string} sourceTag — подпись для лога (источник кодов)
+   */
+  async function runExport(ids, sourceTag) {
+    if (exportBusy) {
+      log("Выгрузка уже выполняется, дождитесь окончания.");
       return;
     }
+    if (!ids || ids.length === 0) {
+      log("Нет кодов турнира (" + (sourceTag || "") + ").");
+      return;
+    }
+    exportBusy = true;
+    try {
+      var standKey =
+        TOURNAMENT_UI_STAND === "ALPHA" || TOURNAMENT_UI_STAND === "SIGMA"
+          ? TOURNAMENT_UI_STAND
+          : "ALPHA";
+      const baseUrl = TOURNAMENT_BASE[standKey] || TOURNAMENT_BASE.ALPHA;
 
-    var standKey =
-      TOURNAMENT_UI_STAND === "ALPHA" || TOURNAMENT_UI_STAND === "SIGMA"
-        ? TOURNAMENT_UI_STAND
-        : "ALPHA";
-    const baseUrl = TOURNAMENT_BASE[standKey] || TOURNAMENT_BASE.ALPHA;
+      log("Источник: " + (sourceTag || "") + " | кодов: " + ids.length + " | стенд: " + standKey);
+      const results = {};
+      let processed = 0;
+      let skipped = 0;
+      let errors = 0;
+      /** Турниры с ответом OK, но 0 лидеров — в JSON не попадают; полный список в консоли. */
+      const skippedZeroLeaders = [];
 
-    log("Кодов к запросу: " + ids.length + " | стенд: " + standKey);
-    const results = {};
-    let processed = 0;
-    let skipped = 0;
-    let errors = 0;
-
-    for (let i = 0; i < ids.length; i++) {
-      const tid = ids[i];
-      log("[" + (i + 1) + "/" + ids.length + "] " + tid);
-      try {
-        const fr = await fetchLeadersForAdmin(baseUrl, tid);
-        if (!fr.ok) {
-          console.warn("HTTP " + fr.status + " " + tid);
+      for (let i = 0; i < ids.length; i++) {
+        const tid = ids[i];
+        log("[" + (i + 1) + "/" + ids.length + "] " + tid);
+        try {
+          const fr = await fetchLeadersForAdmin(baseUrl, tid);
+          if (!fr.ok) {
+            console.warn("[ошибка HTTP " + fr.status + "] турнир:", tid);
+            errors++;
+            continue;
+          }
+          const leadersArr =
+            (fr.data &&
+              fr.data.body &&
+              fr.data.body.tournament &&
+              fr.data.body.tournament.leaders) ||
+            (fr.data && fr.data.body && fr.data.body.badge && fr.data.body.badge.leaders);
+          const cnt = Array.isArray(leadersArr) ? leadersArr.length : 0;
+          if (cnt === 0) {
+            skipped++;
+            skippedZeroLeaders.push(tid);
+            console.log("[пропуск: 0 лидеров в ответе] турнир:", tid);
+            continue;
+          }
+          results[tid] = [fr.data];
+          processed++;
+        } catch (e) {
+          console.error("[исключение] турнир:", tid, e);
           errors++;
-          continue;
         }
-        const leadersArr =
-          (fr.data &&
-            fr.data.body &&
-            fr.data.body.tournament &&
-            fr.data.body.tournament.leaders) ||
-          (fr.data && fr.data.body && fr.data.body.badge && fr.data.body.badge.leaders);
-        const cnt = Array.isArray(leadersArr) ? leadersArr.length : 0;
-        if (cnt === 0) {
-          skipped++;
-          continue;
-        }
-        results[tid] = [fr.data];
-        processed++;
-      } catch (e) {
-        console.error(tid, e);
-        errors++;
+        if (i < ids.length - 1) await delay(REQUEST_GAP_MS);
       }
-      if (i < ids.length - 1) await delay(REQUEST_GAP_MS);
-    }
 
-    if (cbPhoto.checked) {
-      log("Удаление photoData…");
-      removePhotoData(results);
-    }
+      if (skippedZeroLeaders.length > 0) {
+        console.log(
+          "Итого пропущено (0 лидеров), штук: " +
+            skippedZeroLeaders.length +
+            ". Коды турниров:",
+          skippedZeroLeaders
+        );
+      }
 
-    const fname = LEADERS_SERVICE + "_" + standKey + "_" + getTimestamp() + ".json";
-    downloadJson(fname, results);
-    log(
-      "Готово. Успех: " +
-        processed +
-        ", пропуск (0 лидеров): " +
-        skipped +
-        ", ошибок: " +
-        errors +
-        ". Файл: " +
-        fname
-    );
+      if (cbPhoto.checked) {
+        log("Удаление photoData…");
+        removePhotoData(results);
+      }
+
+      const fname = LEADERS_SERVICE + "_" + standKey + "_" + getTimestamp() + ".json";
+      downloadJson(fname, results);
+      log(
+        "Готово (" +
+          (sourceTag || "") +
+          "). Успех: " +
+          processed +
+          ", пропуск (0 лидеров): " +
+          skipped +
+          ", ошибок: " +
+          errors +
+          ". Файл: " +
+          fname +
+          (skipped > 0 ? " — список пропущенных кодов см. console.log выше." : "")
+      );
+    } finally {
+      exportBusy = false;
+    }
+  }
+
+  const labActions = document.createElement("div");
+  labActions.style.cssText = "font-weight:700;margin:12px 0 8px;color:#0f172a;font-size:12px;";
+  labActions.textContent = "Запуск: одна кнопка — сразу выгрузка (для .txt и CSV сначала откроется выбор файла)";
+  root.appendChild(labActions);
+
+  const actionGrid = document.createElement("div");
+  actionGrid.style.cssText =
+    "display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:10px;";
+  if (typeof window.matchMedia === "function" && window.matchMedia("(max-width:560px)").matches) {
+    actionGrid.style.gridTemplateColumns = "1fr";
+  }
+
+  const btnBase =
+    "padding:10px 12px;font-size:11px;cursor:pointer;border:none;border-radius:8px;font-weight:600;" +
+    "color:#fff;text-align:center;line-height:1.35;box-sizing:border-box;width:100%;";
+
+  function addGridButton(label, bg, onClick) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = label;
+    b.style.cssText = btnBase + "background:" + bg + ";";
+    b.addEventListener("click", onClick);
+    actionGrid.appendChild(b);
+    return b;
+  }
+
+  // Скрытый input: выбор .txt → чтение → разбор кодов → runExport
+  const fileInputTxtRun = document.createElement("input");
+  fileInputTxtRun.type = "file";
+  fileInputTxtRun.accept = ".txt,.csv,text/plain,text/csv";
+  fileInputTxtRun.setAttribute("aria-label", "Файл со списком кодов турнира");
+  fileInputTxtRun.style.cssText =
+    "position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;";
+  root.appendChild(fileInputTxtRun);
+  fileInputTxtRun.addEventListener("change", function () {
+    const f = fileInputTxtRun.files && fileInputTxtRun.files[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = function () {
+      const text = String(reader.result || "");
+      try {
+        fileInputTxtRun.value = "";
+      } catch (eClr) {}
+      const ids = parseTournamentCodesFromText(text);
+      if (ids.length === 0) {
+        log("В файле не найдено кодов турнира (ожидаются латиница, цифры, _ и -).");
+        return;
+      }
+      void runExport(ids, "файл .txt");
+    };
+    reader.readAsText(f, "UTF-8");
   });
-  root.appendChild(btnRun);
+
+  addGridButton("По массиву в скрипте", "#059669", function () {
+    void runExport(TOURNAMENT_IDS_IN_SCRIPT.slice(), "массив TOURNAMENT_IDS_IN_SCRIPT");
+  });
+  addGridButton("По тексту в поле выше", "#7c3aed", function () {
+    const ids = parseTournamentCodesFromText(ta.value);
+    if (ids.length === 0) {
+      log("В общем поле нет кодов турнира.");
+      return;
+    }
+    void runExport(ids, "текст в поле");
+  });
+
+  const btnTxtFile = document.createElement("button");
+  btnTxtFile.type = "button";
+  btnTxtFile.textContent = "Файл .txt — выбрать и сразу выгрузить";
+  btnTxtFile.style.cssText = btnBase + "background:#2563eb;";
+  btnTxtFile.style.gridColumn = "1 / -1";
+  btnTxtFile.addEventListener("click", function () {
+    fileInputTxtRun.click();
+  });
+  actionGrid.appendChild(btnTxtFile);
+
+  root.appendChild(actionGrid);
+
+  function makeStatusChecks(labels, container) {
+    const map = {};
+    labels.forEach(function (lbl) {
+      const row = document.createElement("div");
+      row.style.cssText = "margin:2px 0;color:#111827;line-height:1.35;display:flex;align-items:center;gap:6px;";
+      const c = document.createElement("input");
+      c.type = "checkbox";
+      c.checked = true;
+      map[lbl] = c;
+      row.appendChild(c);
+      const sp = document.createElement("span");
+      sp.style.cssText = "color:#334155;font-size:11px;";
+      sp.textContent = lbl;
+      row.appendChild(sp);
+      container.appendChild(row);
+    });
+    return map;
+  }
+
+  /**
+   * Подпись + поле ввода (имена колонок CSV).
+   * @param {HTMLElement} container
+   * @param {string} labelText
+   * @param {string} defaultValue
+   * @param {string} [placeholder]
+   * @returns {HTMLInputElement}
+   */
+  function addLabeledTextInput(container, labelText, defaultValue, placeholder) {
+    const lab = document.createElement("label");
+    lab.style.cssText =
+      "display:flex;flex-direction:column;gap:4px;font-size:10px;color:#334155;font-weight:600;margin:0;";
+    const span = document.createElement("span");
+    span.textContent = labelText;
+    const inp = document.createElement("input");
+    inp.type = "text";
+    inp.value = defaultValue || "";
+    if (placeholder) inp.placeholder = placeholder;
+    inp.style.cssText =
+      "padding:6px 8px;font-size:11px;border:1px solid #94a3b8;border-radius:6px;color:#111827;" +
+      "background:#fff;box-sizing:border-box;width:100%;color-scheme:light;";
+    lab.appendChild(span);
+    lab.appendChild(inp);
+    container.appendChild(lab);
+    return inp;
+  }
+
+  /**
+   * Колонка CSV: имена колонок (код / статус), фильтр чекбоксами, только выгрузка через выбор файла.
+   * @param {{ title: string, subtitle: string, border: string, bg: string, labels: string[], fileAria: string, defaultCodeColumn: string, defaultStatusColumn: string, runTag: string }} cfg
+   * @param {function(string[], string): void} runExportFn
+   */
+  function createCsvColumn(cfg, runExportFn) {
+    const col = document.createElement("div");
+    col.style.cssText =
+      "min-width:0;padding:12px;border-radius:10px;border:1px solid " +
+      cfg.border +
+      ";background:" +
+      cfg.bg +
+      ";box-sizing:border-box;display:flex;flex-direction:column;gap:8px;";
+
+    const h = document.createElement("div");
+    h.style.cssText = "font-weight:700;font-size:13px;color:#0f172a;";
+    h.textContent = cfg.title;
+    col.appendChild(h);
+
+    const sub = document.createElement("div");
+    sub.style.cssText = "font-size:10px;color:#64748b;line-height:1.35;margin-top:-4px;";
+    sub.textContent = cfg.subtitle;
+    col.appendChild(sub);
+
+    const inpCodeCol = addLabeledTextInput(
+      col,
+      "Колонка с кодом турнира (точно как заголовок в 1-й строке CSV)",
+      cfg.defaultCodeColumn,
+      cfg.defaultCodeColumn
+    );
+    const inpStatusCol = addLabeledTextInput(
+      col,
+      "Колонка со статусом для фильтра (значения — в чекбоксах ниже)",
+      cfg.defaultStatusColumn,
+      cfg.defaultStatusColumn
+    );
+
+    const fileInLocal = document.createElement("input");
+    fileInLocal.type = "file";
+    fileInLocal.accept = ".txt,.csv,text/plain,text/csv";
+    fileInLocal.setAttribute("aria-label", cfg.fileAria);
+    fileInLocal.style.cssText =
+      "position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;";
+
+    const fileStat = document.createElement("div");
+    fileStat.style.cssText = "font-size:10px;color:#64748b;line-height:1.35;word-break:break-all;";
+    fileStat.textContent = "Последний CSV-файл: не выбирали.";
+
+    let lastCsv = "";
+    let lastCsvName = "";
+
+    const filtWrap = document.createElement("div");
+    filtWrap.style.cssText = "margin-top:4px;padding-top:10px;border-top:1px solid rgba(15,23,42,.08);";
+    const filtLab = document.createElement("div");
+    filtLab.style.cssText = "font-weight:600;font-size:11px;color:#334155;margin-bottom:6px;";
+    filtLab.textContent = "Фильтр статусов (учитывается при выгрузке)";
+    filtWrap.appendChild(filtLab);
+    const checks = makeStatusChecks(cfg.labels, filtWrap);
+
+    function buildAllowMap() {
+      const allow = {};
+      Object.keys(checks).forEach(function (k) {
+        allow[k] = checks[k].checked;
+      });
+      return allow;
+    }
+
+    function codesFromCsvText(csvText) {
+      const allow = buildAllowMap();
+      const codeH = (inpCodeCol.value || "").trim() || cfg.defaultCodeColumn;
+      const statH = (inpStatusCol.value || "").trim() || cfg.defaultStatusColumn;
+      return codesFromCsvByColumns(csvText, allow, codeH, statH);
+    }
+
+    fileInLocal.addEventListener("change", function () {
+      const f = fileInLocal.files && fileInLocal.files[0];
+      if (!f) return;
+      lastCsvName = f.name || "";
+      const reader = new FileReader();
+      reader.onload = function () {
+        lastCsv = String(reader.result || "");
+        fileStat.textContent = "Последний файл: " + lastCsvName + " (" + lastCsv.length + " симв.)";
+        console.log("CSV «" + cfg.title + "»: " + lastCsvName + ", символов: " + lastCsv.length);
+        try {
+          fileInLocal.value = "";
+        } catch (eClr) {}
+        const ids = codesFromCsvText(lastCsv);
+        if (ids.length === 0) {
+          log("Нет кодов (" + cfg.runTag + " файл). Проверьте колонки CSV и фильтр статусов.");
+          return;
+        }
+        void runExportFn(ids, cfg.runTag + " файл");
+      };
+      reader.readAsText(f, "UTF-8");
+    });
+
+    const btnCsvFile = document.createElement("button");
+    btnCsvFile.type = "button";
+    btnCsvFile.textContent = "CSV: выбрать файл и сразу выгрузить";
+    btnCsvFile.style.cssText =
+      "padding:8px 10px;font-size:11px;cursor:pointer;background:#0f172a;color:#fff;border:none;border-radius:8px;font-weight:600;width:100%;box-sizing:border-box;";
+    btnCsvFile.addEventListener("click", function () {
+      fileInLocal.click();
+    });
+
+    col.appendChild(fileInLocal);
+    col.appendChild(filtWrap);
+    col.appendChild(btnCsvFile);
+    col.appendChild(fileStat);
+
+    return { col: col };
+  }
+
+  const csvColSectionLabel = document.createElement("div");
+  csvColSectionLabel.style.cssText =
+    "font-weight:700;margin:14px 0 8px;color:#0f172a;font-size:12px;padding-top:10px;border-top:1px solid #e2e8f0;";
+  csvColSectionLabel.textContent =
+    "Два блока CSV — имена колонок, фильтр статусов, выгрузка только через выбор файла";
+  root.appendChild(csvColSectionLabel);
+
+  const twoCol = document.createElement("div");
+  twoCol.style.cssText =
+    "display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:stretch;";
+  if (typeof window.matchMedia === "function" && window.matchMedia("(max-width:700px)").matches) {
+    twoCol.style.gridTemplateColumns = "1fr";
+  }
+
+  twoCol.appendChild(
+    createCsvColumn(
+      {
+        title: "Колонка CSV A (слева)",
+        subtitle:
+          "По умолчанию колонки TOURNAMENT_CODE и TOURNAMENT_STATUS — можно заменить на свои заголовки из файла.",
+        border: "#cbd5e1",
+        bg: "linear-gradient(180deg,#f8fafc 0%,#f1f5f9 100%)",
+        labels: CSV1_STATUS_LABELS,
+        fileAria: "CSV файл колонки A",
+        defaultCodeColumn: "TOURNAMENT_CODE",
+        defaultStatusColumn: "TOURNAMENT_STATUS",
+        runTag: "CSV-A"
+      },
+      runExport
+    ).col
+  );
+  twoCol.appendChild(
+    createCsvColumn(
+      {
+        title: "Колонка CSV B (справа)",
+        subtitle:
+          "По умолчанию «Код турнира» и «Бизнес-статус турнира» — задайте другие имена, если в выгрузке другие заголовки.",
+        border: "#93c5fd",
+        bg: "linear-gradient(180deg,#eff6ff 0%,#dbeafe 100%)",
+        labels: CSV2_STATUS_LABELS,
+        fileAria: "CSV файл колонки B",
+        defaultCodeColumn: "Код турнира",
+        defaultStatusColumn: "Бизнес-статус турнира",
+        runTag: "CSV-B"
+      },
+      runExport
+    ).col
+  );
+  root.appendChild(twoCol);
+
+  root.appendChild(logEl);
 
   const btnClose = document.createElement("button");
   btnClose.type = "button";
