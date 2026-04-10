@@ -6,6 +6,9 @@
 // ADDRESSBOOK_ORIGINS.ALPHA — справочный/запасной хост Omega, если origin вкладки пуст (редко: file:// и т.п.).
 // Карточка empInfoFull: empId = UUID (employeeId из search), не 8-значный ТН.
 // =============================================================================
+// Вся логика в IIFE: повторная вставка скрипта в консоль не падает на «уже объявлено» (const/let на верхнем уровне).
+(function () {
+  "use strict";
 
 /** Ключ стенда в логах и именах файлов (только ALPHA, вариантов SIGMA/TAB нет). */
 const ADDRESSBOOK_STAND_KEY = "ALPHA";
@@ -203,8 +206,8 @@ function startAddressBookPanel() {
   box.id = "addressBookExportPanelRoot";
   // Стиль как у панели профилей: читаемость на тёмных страницах (color + color-scheme).
   box.style.cssText =
-    "position:fixed;top:12px;right:12px;width:min(620px,calc(100vw - 24px));max-height:calc(100vh - 24px);overflow:auto;" +
-    "z-index:999999;box-sizing:border-box;padding:18px 18px 16px;" +
+    "position:fixed;top:12px;right:12px;width:min(700px,calc(100vw - 24px));max-height:calc(100vh - 24px);overflow:auto;" +
+    "z-index:999999;box-sizing:border-box;padding:20px 20px 18px;" +
     "background:#ffffff;border:1px solid #cbd5e1;border-radius:12px;" +
     "box-shadow:0 10px 40px rgba(15,23,42,.12);font-family:system-ui,-apple-system,sans-serif;" +
     "font-size:12px;color:#0f172a;color-scheme:light;";
@@ -223,7 +226,7 @@ function startAddressBookPanel() {
 
   const rowStand = document.createElement("div");
   rowStand.style.cssText =
-    "display:flex;align-items:flex-start;gap:10px;margin-bottom:14px;flex-wrap:wrap;padding:10px 12px;" +
+    "display:flex;align-items:flex-start;gap:12px;margin-bottom:16px;flex-wrap:wrap;padding:12px 14px;" +
     "background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;";
   const labSt = document.createElement("div");
   labSt.textContent = "Стенд";
@@ -253,20 +256,23 @@ function startAddressBookPanel() {
 
   const secParams = document.createElement("div");
   secParams.style.cssText =
-    "font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#64748b;margin:12px 0 8px 0;";
+    "font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#64748b;margin:0 0 6px 0;";
   secParams.textContent = "Параметры";
   box.appendChild(secParams);
 
   const rowParams = document.createElement("div");
   rowParams.style.cssText =
-    "display:flex;flex-wrap:wrap;gap:12px 20px;align-items:center;margin-bottom:14px;padding:10px 12px;" +
-    "background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;";
+    "display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:6px 14px;margin-bottom:14px;padding:8px 12px;" +
+    "background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;box-sizing:border-box;align-items:center;";
   function mkPauseField(labelText, defaultMs, idSuffix) {
     const wrap = document.createElement("label");
-    wrap.style.cssText = "display:inline-flex;align-items:center;gap:8px;font-size:12px;color:#334155;cursor:pointer;";
+    wrap.style.cssText =
+      "display:flex;flex-direction:row;align-items:center;justify-content:space-between;gap:8px;" +
+      "font-size:11px;color:#334155;cursor:pointer;min-width:0;";
     wrap.setAttribute("for", "addrBookPause" + idSuffix);
     const sp = document.createElement("span");
     sp.textContent = labelText;
+    sp.style.cssText = "line-height:1.25;flex:1 1 auto;min-width:0;";
     const inp = document.createElement("input");
     inp.type = "number";
     inp.id = "addrBookPause" + idSuffix;
@@ -276,7 +282,8 @@ function startAddressBookPanel() {
     inp.value = String(defaultMs);
     inp.title = "0 — без паузы; максимум " + REQUEST_PAUSE_MAX_MS + " мс.";
     inp.style.cssText =
-      "width:88px;padding:6px 8px;font-size:13px;color:#0f172a;border:1px solid #94a3b8;border-radius:6px;color-scheme:light;";
+      "flex:0 0 auto;width:64px;box-sizing:border-box;padding:4px 6px;font-size:12px;color:#0f172a;" +
+      "border:1px solid #94a3b8;border-radius:6px;color-scheme:light;";
     wrap.appendChild(sp);
     wrap.appendChild(inp);
     return { wrap: wrap, inp: inp };
@@ -286,6 +293,28 @@ function startAddressBookPanel() {
   rowParams.appendChild(fieldBetween.wrap);
   rowParams.appendChild(fieldAfterSearch.wrap);
   box.appendChild(rowParams);
+
+  // Выбор .txt: parseEmpIdsFromText; без записи в textarea — сразу цепочка карточек.
+  const inputFileTn = document.createElement("input");
+  inputFileTn.type = "file";
+  inputFileTn.accept = ".txt,text/plain";
+  inputFileTn.style.cssText = "display:none;";
+
+  const bLoadTn = document.createElement("button");
+  bLoadTn.type = "button";
+  bLoadTn.textContent = "Файл .txt → карточки сразу";
+  bLoadTn.title =
+    "UTF-8, любые разделители между числами. В лог — статистика; затем сразу search → empInfoFull по списку (поле ТН не трогаем).";
+  bLoadTn.style.cssText =
+    "width:100%;box-sizing:border-box;min-height:42px;padding:8px 10px;margin:0;font-size:11px;font-weight:600;cursor:pointer;" +
+    "border-radius:8px;border:1px solid #64748b;color:#1e293b;background:#e2e8f0;line-height:1.3;" +
+    "display:flex;align-items:center;justify-content:center;";
+
+  const rowFileTxt = document.createElement("div");
+  rowFileTxt.style.cssText = "width:100%;box-sizing:border-box;margin:0 0 14px 0;";
+  rowFileTxt.appendChild(inputFileTn);
+  rowFileTxt.appendChild(bLoadTn);
+  box.appendChild(rowFileTxt);
 
   const inpPauseBetween = fieldBetween.inp;
   const inpPauseAfterSearch = fieldAfterSearch.inp;
@@ -303,36 +332,38 @@ function startAddressBookPanel() {
     return n;
   }
 
+  // Заголовки колонок; подсказки — фиксированная высота + прокрутка, чтобы textarea и ряд кнопок совпадали в обеих колонках.
+  const secHdr =
+    "font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#64748b;margin:0;line-height:1.2;";
+  const labHint =
+    "font-size:11px;color:#475569;margin:0;line-height:1.45;box-sizing:border-box;" +
+    "height:5.5rem;min-height:5.5rem;max-height:5.5rem;overflow-y:auto;overflow-x:hidden;padding:2px 4px 2px 0;";
+
   const secTn = document.createElement("div");
-  secTn.style.cssText =
-    "font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#64748b;margin:0 0 8px 0;";
+  secTn.style.cssText = secHdr;
   secTn.textContent = "Табельные номера";
 
   const lab1 = document.createElement("div");
   lab1.textContent =
-    "По ТН из поля: карточка — search → empInfoFull; «POST search по ТН» — только поиск. Разделители между цифрами — любые. Кнопка с файлом: выбор .txt → статистика в логе и сразу выгрузка карточек (поле не меняется).";
-  lab1.style.cssText = "font-size:12px;color:#475569;margin:0 0 8px 0;line-height:1.4;";
+    "По ТН из поля: карточка — search → empInfoFull; «POST search по ТН» — только поиск. Разделители между цифрами — любые. Выгрузка из .txt — кнопка над колонками (поле ТН не меняется).";
+  lab1.style.cssText = labHint;
 
   const taIds = document.createElement("textarea");
-  taIds.rows = 3;
+  taIds.rows = 4;
   taIds.spellcheck = false;
   taIds.style.cssText =
-    "width:100%;box-sizing:border-box;margin:0 0 10px 0;padding:10px;font-size:12px;font-family:ui-monospace,monospace;" +
-    "color:#0f172a;background:#fff;border:1px solid #94a3b8;border-radius:8px;resize:vertical;min-height:80px;color-scheme:light;";
+    "width:100%;box-sizing:border-box;margin:0;padding:8px 10px;font-size:12px;font-family:ui-monospace,monospace;" +
+    "color:#0f172a;background:#fff;border:1px solid #94a3b8;border-radius:8px;resize:vertical;" +
+    "min-height:100px;height:100px;max-height:220px;color-scheme:light;";
   taIds.placeholder = EMP_IDS.join("\n");
   taIds.value = EMP_IDS.join("\n");
 
-  // Выбор .txt: parseEmpIdsFromText; без записи в textarea — сразу цепочка карточек.
-  const inputFileTn = document.createElement("input");
-  inputFileTn.type = "file";
-  inputFileTn.accept = ".txt,text/plain";
-  inputFileTn.style.cssText = "display:none;";
-
   const btnRowTn = document.createElement("div");
-  btnRowTn.style.cssText = "display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:4px;";
+  btnRowTn.style.cssText =
+    "display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;width:100%;box-sizing:border-box;";
   const btnCssHalf =
-    "padding:11px 10px;font-size:12px;font-weight:600;cursor:pointer;border-radius:8px;border:none;color:#fff;" +
-    "text-align:center;line-height:1.3;box-sizing:border-box;";
+    "min-width:0;min-height:42px;padding:8px 6px;font-size:10px;font-weight:600;cursor:pointer;border-radius:8px;border:none;color:#fff;" +
+    "text-align:center;line-height:1.2;box-sizing:border-box;display:flex;align-items:center;justify-content:center;";
   const b1 = document.createElement("button");
   b1.type = "button";
   b1.textContent = "Карточки по ТН (search → empInfoFull)";
@@ -342,73 +373,63 @@ function startAddressBookPanel() {
   b2.textContent = "POST search по ТН";
   b2.style.cssText = btnCssHalf + "background:linear-gradient(180deg,#14b8a6,#0d9488);box-shadow:0 2px 6px rgba(13,148,136,.3);";
 
-  const bLoadTn = document.createElement("button");
-  bLoadTn.type = "button";
-  bLoadTn.textContent = "Файл .txt → карточки сразу";
-  bLoadTn.title =
-    "UTF-8, любые разделители между числами. В лог — статистика; затем сраза search → empInfoFull по списку (поле ТН не трогаем).";
-  bLoadTn.style.cssText =
-    "width:100%;box-sizing:border-box;padding:9px 12px;margin:0;font-size:12px;font-weight:600;cursor:pointer;" +
-    "border-radius:8px;border:1px solid #64748b;color:#1e293b;background:#e2e8f0;line-height:1.3;";
 
   const mainGrid = document.createElement("div");
   mainGrid.style.cssText =
-    "display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;align-items:start;margin-bottom:8px;";
-
-  const colTn = document.createElement("div");
-  colTn.style.cssText = "min-width:0;";
-  colTn.appendChild(secTn);
-  colTn.appendChild(lab1);
-  colTn.appendChild(taIds);
-  colTn.appendChild(inputFileTn);
-
-  const colFio = document.createElement("div");
-  colFio.style.cssText = "min-width:0;";
+    "display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);column-gap:20px;row-gap:10px;" +
+    "align-items:start;margin-bottom:12px;box-sizing:border-box;";
 
   const secFio = document.createElement("div");
-  secFio.style.cssText =
-    "font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#64748b;margin:0 0 8px 0;";
+  secFio.style.cssText = secHdr;
   secFio.textContent = "Поиск по ФИО";
 
   const lab2 = document.createElement("div");
   lab2.textContent = "Каждая непустая строка — отдельный POST employees/search.";
-  lab2.style.cssText = "font-size:12px;color:#475569;margin:0 0 8px 0;line-height:1.4;";
+  lab2.style.cssText = labHint;
 
   const taFio = document.createElement("textarea");
-  taFio.rows = 3;
+  taFio.rows = 4;
   taFio.spellcheck = false;
   taFio.style.cssText =
-    "width:100%;box-sizing:border-box;margin:0 0 10px 0;padding:10px;font-size:12px;" +
-    "color:#0f172a;background:#fff;border:1px solid #94a3b8;border-radius:8px;resize:vertical;min-height:72px;color-scheme:light;";
+    "width:100%;box-sizing:border-box;margin:0;padding:8px 10px;font-size:12px;" +
+    "color:#0f172a;background:#fff;border:1px solid #94a3b8;border-radius:8px;resize:vertical;" +
+    "min-height:100px;height:100px;max-height:220px;color-scheme:light;";
   taFio.placeholder = "Например:\nИванов Иван Иванович";
 
   const b3 = document.createElement("button");
   b3.type = "button";
   b3.textContent = "POST search по ФИО (все строки)";
   b3.style.cssText =
-    "width:100%;box-sizing:border-box;padding:11px 14px;margin:0;font-size:13px;font-weight:600;" +
+    "width:100%;box-sizing:border-box;min-height:42px;padding:8px 10px;margin:0;font-size:11px;font-weight:600;" +
     "cursor:pointer;border-radius:8px;border:none;color:#fff;" +
-    "background:linear-gradient(180deg,#7c3aed,#6d28d9);box-shadow:0 2px 6px rgba(124,58,237,.35);";
+    "background:linear-gradient(180deg,#7c3aed,#6d28d9);box-shadow:0 2px 6px rgba(124,58,237,.35);" +
+    "display:flex;align-items:center;justify-content:center;line-height:1.25;";
 
   btnRowTn.appendChild(b1);
   btnRowTn.appendChild(b2);
-  colTn.appendChild(btnRowTn);
-  colTn.appendChild(bLoadTn);
 
-  colFio.appendChild(secFio);
-  colFio.appendChild(lab2);
-  colFio.appendChild(taFio);
-  colFio.appendChild(b3);
+  // Первая строка сетки — один контейнер на две колонки, чтобы заголовки «Табельные номера» и «Поиск по ФИО» были на одной линии.
+  const headerRow = document.createElement("div");
+  headerRow.style.cssText =
+    "grid-column:1 / -1;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);column-gap:20px;box-sizing:border-box;align-items:start;";
+  headerRow.appendChild(secTn);
+  headerRow.appendChild(secFio);
 
-  mainGrid.appendChild(colTn);
-  mainGrid.appendChild(colFio);
+  // Подсказки и поля в общих строках; кнопка .txt — отдельной полосой над сеткой (rowFileTxt).
+  mainGrid.appendChild(headerRow);
+  mainGrid.appendChild(lab1);
+  mainGrid.appendChild(lab2);
+  mainGrid.appendChild(taIds);
+  mainGrid.appendChild(taFio);
+  mainGrid.appendChild(btnRowTn);
+  mainGrid.appendChild(b3);
   box.appendChild(mainGrid);
 
   const logEl = document.createElement("div");
   logEl.style.cssText =
-    "margin-top:4px;font-size:11px;color:#0f172a;background:#f8fafc;max-height:200px;overflow:auto;" +
-    "border:1px solid #e2e8f0;border-radius:8px;padding:10px;font-family:ui-monospace,monospace;" +
-    "white-space:pre-wrap;word-break:break-word;line-height:1.45;";
+    "margin-top:0;font-size:11px;color:#0f172a;background:#f8fafc;min-height:168px;max-height:300px;overflow:auto;" +
+    "border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px;font-family:ui-monospace,monospace;" +
+    "white-space:pre-wrap;word-break:break-word;line-height:1.45;box-sizing:border-box;width:100%;";
   logEl.textContent = "Лог: —";
 
   /**
@@ -672,7 +693,7 @@ function startAddressBookPanel() {
 
   const logLab = document.createElement("div");
   logLab.style.cssText =
-    "font-size:11px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#64748b;margin:12px 0 6px 0;";
+    "font-size:11px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#64748b;margin:16px 0 8px 0;";
   logLab.textContent = "Лог";
   box.appendChild(logLab);
   box.appendChild(logEl);
@@ -680,11 +701,14 @@ function startAddressBookPanel() {
   const bClose = document.createElement("button");
   bClose.type = "button";
   bClose.textContent = "Закрыть панель";
-  bClose.title = "Снять панель. Повторный запуск — снова вставить скрипт (или обновить страницу при повторном const).";
+  bClose.title =
+    "Удаляет панель с DOM: поля, паузы и обработчики снимаются; скрипт можно снова вставить в консоль (обёртка IIFE не даёт ошибки повторного const).";
   bClose.style.cssText =
-    "margin-top:12px;width:100%;box-sizing:border-box;padding:9px 12px;font-size:12px;cursor:pointer;" +
+    "margin-top:14px;width:100%;box-sizing:border-box;min-height:44px;padding:10px 14px;font-size:12px;cursor:pointer;" +
     "background:#f1f5f9;color:#334155;border:1px solid #cbd5e1;border-radius:8px;font-weight:500;";
   bClose.addEventListener("click", function () {
+    // Удаление корня панели: замыкание сценария (requestBusy, ссылки на поля) перестаёт быть связанным с документом;
+    // незавершённые fetch могут ещё завершиться в фоне, но UI и «память» панели очищены.
     box.remove();
   });
   box.appendChild(bClose);
@@ -693,3 +717,4 @@ function startAddressBookPanel() {
 }
 
 startAddressBookPanel();
+})();
