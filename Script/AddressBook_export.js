@@ -1,26 +1,30 @@
 // =============================================================================
 // AddressBook_export.js — выгрузки из адресной книги (DevTools, консоль)
 // =============================================================================
-// Запросы всегда на стенд ALPHA: полный URL = ADDRESSBOOK_ORIGINS.ALPHA + /api/home/...
-// (хост веб-справочника Omega, см. HAR / profileLink в ответах API; не gamification.)
-// Карточка empInfoFull ожидает empId = UUID (employeeId из ответа search), не 8-значный ТН.
-// credentials: 'include' — куки текущей вкладки; при другом origin возможны CORS — открывайте консоль на странице того же хоста или с разрешённым CORS.
+// Стенд в смысле окружения — ALPHA; база URL для fetch = window.location.origin (как в успешном HAR: тот же хост, что у открытой вкладки).
+// Тогда credentials: 'include' отправляет куки сессии, привязанные к этому хосту (не к «чужому» origin вроде omega.sbrf.ru при вкладке https://addressbook/).
+// ADDRESSBOOK_ORIGINS.ALPHA — справочный/запасной хост Omega, если origin вкладки пуст (редко: file:// и т.п.).
+// Карточка empInfoFull: empId = UUID (employeeId из search), не 8-значный ТН.
 // =============================================================================
 
 /** Ключ стенда в логах и именах файлов (только ALPHA, вариантов SIGMA/TAB нет). */
 const ADDRESSBOOK_STAND_KEY = "ALPHA";
 
-// Базовый хост приложения «Адресная книга» (Omega). При необходимости замените на фактический URL.
+// Справочный хост Omega (подпись на панели, запасной origin, если у вкладки нет location.origin).
 const ADDRESSBOOK_ORIGINS = {
   ALPHA: "https://addressbook.omega.sbrf.ru"
 };
 
 const ADDRESSBOOK_API_HOME = "/api/home";
 
-// Табельные для режима «по списку из скрипта» (empInfoFull и поиск по числу).
-const EMP_IDS = ["02209710", "00673892"];
+// Табельные для подсказки в поле (empInfoFull / search по числу); тот же разбор, что из файла .txt.
+const EMP_IDS = ["00673892"];
 
+/** Значение по умолчанию для пауз на панели (мс). */
 const REQUEST_PAUSE_MS = 50;
+
+/** Верхняя граница паузы с панели (мс), защита от опечаток. */
+const REQUEST_PAUSE_MAX_MS = 300000;
 
 function delay(ms) {
   return new Promise(function (resolve) {
@@ -44,7 +48,7 @@ function normalizeEmpId(s) {
 }
 
 /**
- * Разбор списка ТН из текста (цифровые группы как в других скриптах проекта).
+ * Разбор списка ТН из текста или содержимого .txt: группы цифр, любые нецифры — разделители (как в Profile_GP / _from_file).
  * @param {string} text
  * @returns {string[]}
  */
@@ -88,15 +92,22 @@ function pickEmployeeIdFromSearchData(data) {
 }
 
 /**
- * Нормализованный ключ стенда и origin без завершающего слэша.
+ * Ключ стенда ALPHA и origin для URL запросов без завершающего слэша.
+ * Приоритет — origin текущей вкладки (куки сессии совпадают с документом); иначе ADDRESSBOOK_ORIGINS.ALPHA.
  * @returns {{ standKey: string, origin: string }}
  */
 function getAddressBookStandAndOrigin() {
-  var originFixed = ADDRESSBOOK_ORIGINS.ALPHA || "";
-  return {
-    standKey: ADDRESSBOOK_STAND_KEY,
-    origin: originFixed.replace(/\/$/, "")
-  };
+  var tabOrigin = "";
+  try {
+    tabOrigin = String(window.location.origin || "").replace(/\/$/, "");
+  } catch (e) {
+    tabOrigin = "";
+  }
+  if (tabOrigin && tabOrigin !== "null") {
+    return { standKey: ADDRESSBOOK_STAND_KEY, origin: tabOrigin };
+  }
+  var fallback = (ADDRESSBOOK_ORIGINS.ALPHA || "").replace(/\/$/, "");
+  return { standKey: ADDRESSBOOK_STAND_KEY, origin: fallback };
 }
 
 /**
@@ -112,7 +123,9 @@ async function fetchEmpInfoFull(empId) {
     encodeURIComponent(empId);
   const res = await fetch(url, {
     method: "GET",
+    mode: "cors",
     credentials: "include",
+    cache: "no-store",
     headers: { Accept: "application/json, text/plain, */*" }
   });
   const data = await res.json().catch(function () {
@@ -139,7 +152,9 @@ async function fetchEmployeesSearch(searchText, asNumber) {
     : { searchText: String(searchText), pageToken: null };
   const res = await fetch(o.origin + ADDRESSBOOK_API_HOME + "/employees/search", {
     method: "POST",
+    mode: "cors",
     credentials: "include",
+    cache: "no-store",
     headers: {
       "Content-Type": "application/json",
       Accept: "application/json, text/plain, */*"
@@ -188,7 +203,7 @@ function startAddressBookPanel() {
   box.id = "addressBookExportPanelRoot";
   // Стиль как у панели профилей: читаемость на тёмных страницах (color + color-scheme).
   box.style.cssText =
-    "position:fixed;top:12px;right:12px;width:min(440px,calc(100vw - 24px));max-height:calc(100vh - 24px);overflow:auto;" +
+    "position:fixed;top:12px;right:12px;width:min(620px,calc(100vw - 24px));max-height:calc(100vh - 24px);overflow:auto;" +
     "z-index:999999;box-sizing:border-box;padding:18px 18px 16px;" +
     "background:#ffffff;border:1px solid #cbd5e1;border-radius:12px;" +
     "box-shadow:0 10px 40px rgba(15,23,42,.12);font-family:system-ui,-apple-system,sans-serif;" +
@@ -203,7 +218,7 @@ function startAddressBookPanel() {
   const sub = document.createElement("div");
   sub.style.cssText = "font-size:12px;color:#64748b;margin:0 0 14px 0;line-height:1.45;";
   sub.textContent =
-    "Запросы только на стенд ALPHA (хост справочника ниже). Прогресс — в логе и в консоли.";
+    "Стенд ALPHA. Запросы идут на origin этой вкладки — с ним же уходят куки сессии (см. блок «Стенд»). Прогресс — в логе и в консоли.";
   box.appendChild(sub);
 
   const rowStand = document.createElement("div");
@@ -216,33 +231,102 @@ function startAddressBookPanel() {
   const standInfo = document.createElement("div");
   standInfo.style.cssText =
     "flex:1;min-width:200px;font-size:12px;color:#0f172a;line-height:1.45;word-break:break-all;";
-  standInfo.textContent =
-    "ALPHA — " + ADDRESSBOOK_ORIGINS.ALPHA + ADDRESSBOOK_API_HOME + "/…";
+  var oPanel = "";
+  try {
+    oPanel = String(window.location.origin || "").replace(/\/$/, "");
+  } catch (e) {
+    oPanel = "";
+  }
+  if (oPanel && oPanel !== "null") {
+    standInfo.textContent =
+      "ALPHA. База запросов (куки сессии): " + oPanel + ADDRESSBOOK_API_HOME + "/…";
+  } else {
+    standInfo.textContent =
+      "ALPHA. Нет origin вкладки — запасной хост: " +
+      ADDRESSBOOK_ORIGINS.ALPHA +
+      ADDRESSBOOK_API_HOME +
+      "/…";
+  }
   rowStand.appendChild(labSt);
   rowStand.appendChild(standInfo);
   box.appendChild(rowStand);
 
+  const secParams = document.createElement("div");
+  secParams.style.cssText =
+    "font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#64748b;margin:12px 0 8px 0;";
+  secParams.textContent = "Параметры";
+  box.appendChild(secParams);
+
+  const rowParams = document.createElement("div");
+  rowParams.style.cssText =
+    "display:flex;flex-wrap:wrap;gap:12px 20px;align-items:center;margin-bottom:14px;padding:10px 12px;" +
+    "background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;";
+  function mkPauseField(labelText, defaultMs, idSuffix) {
+    const wrap = document.createElement("label");
+    wrap.style.cssText = "display:inline-flex;align-items:center;gap:8px;font-size:12px;color:#334155;cursor:pointer;";
+    wrap.setAttribute("for", "addrBookPause" + idSuffix);
+    const sp = document.createElement("span");
+    sp.textContent = labelText;
+    const inp = document.createElement("input");
+    inp.type = "number";
+    inp.id = "addrBookPause" + idSuffix;
+    inp.min = "0";
+    inp.max = String(REQUEST_PAUSE_MAX_MS);
+    inp.step = "1";
+    inp.value = String(defaultMs);
+    inp.title = "0 — без паузы; максимум " + REQUEST_PAUSE_MAX_MS + " мс.";
+    inp.style.cssText =
+      "width:88px;padding:6px 8px;font-size:13px;color:#0f172a;border:1px solid #94a3b8;border-radius:6px;color-scheme:light;";
+    wrap.appendChild(sp);
+    wrap.appendChild(inp);
+    return { wrap: wrap, inp: inp };
+  }
+  var fieldBetween = mkPauseField("Пауза между сотрудниками в списке, мс", REQUEST_PAUSE_MS, "Between");
+  var fieldAfterSearch = mkPauseField("Пауза после search перед empInfoFull, мс", REQUEST_PAUSE_MS, "AfterSearch");
+  rowParams.appendChild(fieldBetween.wrap);
+  rowParams.appendChild(fieldAfterSearch.wrap);
+  box.appendChild(rowParams);
+
+  const inpPauseBetween = fieldBetween.inp;
+  const inpPauseAfterSearch = fieldAfterSearch.inp;
+
+  /**
+   * Читает паузу из поля: неотрицательное целое, с ограничением сверху.
+   * @param {HTMLInputElement} inp
+   * @param {number} fallback
+   * @returns {number}
+   */
+  function readPauseMsFromInput(inp, fallback) {
+    var n = parseInt(String(inp.value).trim(), 10);
+    if (isNaN(n) || n < 0) return fallback;
+    if (n > REQUEST_PAUSE_MAX_MS) return REQUEST_PAUSE_MAX_MS;
+    return n;
+  }
+
   const secTn = document.createElement("div");
   secTn.style.cssText =
-    "font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#64748b;margin:16px 0 8px 0;";
+    "font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#64748b;margin:0 0 8px 0;";
   secTn.textContent = "Табельные номера";
-  box.appendChild(secTn);
 
   const lab1 = document.createElement("div");
   lab1.textContent =
-    "По ТН: полная карточка — сначала POST search (число), затем GET empInfoFull по employeeId из ответа. «POST search по ТН» — только поиск. Разделители между цифрами в списке ТН допускаются.";
+    "По ТН из поля: карточка — search → empInfoFull; «POST search по ТН» — только поиск. Разделители между цифрами — любые. Кнопка с файлом: выбор .txt → статистика в логе и сразу выгрузка карточек (поле не меняется).";
   lab1.style.cssText = "font-size:12px;color:#475569;margin:0 0 8px 0;line-height:1.4;";
-  box.appendChild(lab1);
 
   const taIds = document.createElement("textarea");
-  taIds.rows = 4;
+  taIds.rows = 3;
   taIds.spellcheck = false;
   taIds.style.cssText =
     "width:100%;box-sizing:border-box;margin:0 0 10px 0;padding:10px;font-size:12px;font-family:ui-monospace,monospace;" +
     "color:#0f172a;background:#fff;border:1px solid #94a3b8;border-radius:8px;resize:vertical;min-height:80px;color-scheme:light;";
   taIds.placeholder = EMP_IDS.join("\n");
   taIds.value = EMP_IDS.join("\n");
-  box.appendChild(taIds);
+
+  // Выбор .txt: parseEmpIdsFromText; без записи в textarea — сразу цепочка карточек.
+  const inputFileTn = document.createElement("input");
+  inputFileTn.type = "file";
+  inputFileTn.accept = ".txt,text/plain";
+  inputFileTn.style.cssText = "display:none;";
 
   const btnRowTn = document.createElement("div");
   btnRowTn.style.cssText = "display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:4px;";
@@ -258,9 +342,32 @@ function startAddressBookPanel() {
   b2.textContent = "POST search по ТН";
   b2.style.cssText = btnCssHalf + "background:linear-gradient(180deg,#14b8a6,#0d9488);box-shadow:0 2px 6px rgba(13,148,136,.3);";
 
+  const bLoadTn = document.createElement("button");
+  bLoadTn.type = "button";
+  bLoadTn.textContent = "Файл .txt → карточки сразу";
+  bLoadTn.title =
+    "UTF-8, любые разделители между числами. В лог — статистика; затем сраза search → empInfoFull по списку (поле ТН не трогаем).";
+  bLoadTn.style.cssText =
+    "width:100%;box-sizing:border-box;padding:9px 12px;margin:0;font-size:12px;font-weight:600;cursor:pointer;" +
+    "border-radius:8px;border:1px solid #64748b;color:#1e293b;background:#e2e8f0;line-height:1.3;";
+
+  const mainGrid = document.createElement("div");
+  mainGrid.style.cssText =
+    "display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;align-items:start;margin-bottom:8px;";
+
+  const colTn = document.createElement("div");
+  colTn.style.cssText = "min-width:0;";
+  colTn.appendChild(secTn);
+  colTn.appendChild(lab1);
+  colTn.appendChild(taIds);
+  colTn.appendChild(inputFileTn);
+
+  const colFio = document.createElement("div");
+  colFio.style.cssText = "min-width:0;";
+
   const secFio = document.createElement("div");
   secFio.style.cssText =
-    "font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#64748b;margin:18px 0 8px 0;";
+    "font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#64748b;margin:0 0 8px 0;";
   secFio.textContent = "Поиск по ФИО";
 
   const lab2 = document.createElement("div");
@@ -279,13 +386,27 @@ function startAddressBookPanel() {
   b3.type = "button";
   b3.textContent = "POST search по ФИО (все строки)";
   b3.style.cssText =
-    "width:100%;box-sizing:border-box;padding:11px 14px;margin:0 0 12px 0;font-size:13px;font-weight:600;" +
+    "width:100%;box-sizing:border-box;padding:11px 14px;margin:0;font-size:13px;font-weight:600;" +
     "cursor:pointer;border-radius:8px;border:none;color:#fff;" +
     "background:linear-gradient(180deg,#7c3aed,#6d28d9);box-shadow:0 2px 6px rgba(124,58,237,.35);";
 
+  btnRowTn.appendChild(b1);
+  btnRowTn.appendChild(b2);
+  colTn.appendChild(btnRowTn);
+  colTn.appendChild(bLoadTn);
+
+  colFio.appendChild(secFio);
+  colFio.appendChild(lab2);
+  colFio.appendChild(taFio);
+  colFio.appendChild(b3);
+
+  mainGrid.appendChild(colTn);
+  mainGrid.appendChild(colFio);
+  box.appendChild(mainGrid);
+
   const logEl = document.createElement("div");
   logEl.style.cssText =
-    "margin-top:4px;font-size:11px;color:#0f172a;background:#f8fafc;max-height:160px;overflow:auto;" +
+    "margin-top:4px;font-size:11px;color:#0f172a;background:#f8fafc;max-height:200px;overflow:auto;" +
     "border:1px solid #e2e8f0;border-radius:8px;padding:10px;font-family:ui-monospace,monospace;" +
     "white-space:pre-wrap;word-break:break-word;line-height:1.45;";
   logEl.textContent = "Лог: —";
@@ -302,6 +423,145 @@ function startAddressBookPanel() {
     logEl.scrollTop = logEl.scrollHeight;
   }
 
+  /** Блокировка кнопок и полей паузы на время сценария. */
+  function setBusy(busy) {
+    requestBusy = busy;
+    b1.disabled = busy;
+    b2.disabled = busy;
+    b3.disabled = busy;
+    bLoadTn.disabled = busy;
+    inpPauseBetween.disabled = busy;
+    inpPauseAfterSearch.disabled = busy;
+  }
+
+  /**
+   * Цепочка search → empInfoFull по списку ТН; паузы задаются с панели.
+   * @param {string[]} ids
+   * @param {number} pauseBetweenMs — после обработки одного ТН перед следующим
+   * @param {number} pauseAfterSearchMs — после успешного search перед GET empInfoFull
+   * @param {string} [sourceTag] — метка в логе («Из поля» / «Из файла»)
+   */
+  async function runEmpInfoFullExport(ids, pauseBetweenMs, pauseAfterSearchMs, sourceTag) {
+    var prefix = sourceTag ? sourceTag + " — " : "";
+    appendLog(
+      prefix +
+        "Карточки по ТН (search → empInfoFull), шт.: " +
+        ids.length +
+        ", стенд: " +
+        ADDRESSBOOK_STAND_KEY
+    );
+    const results = [];
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i];
+      const searchNum = tabNumToSearchNumber(id);
+      appendLog("[" + (i + 1) + "/" + ids.length + "] ТН " + id + " → search(" + searchNum + ") …");
+      try {
+        const searchRes = await fetchEmployeesSearch(searchNum, true);
+        appendLog(
+          "    → search HTTP " + searchRes.status + (searchRes.ok ? "" : " — ошибка")
+        );
+        var totalHits =
+          searchRes.data && typeof searchRes.data.total === "number"
+            ? searchRes.data.total
+            : searchRes.data && Array.isArray(searchRes.data.hits)
+              ? searchRes.data.hits.length
+              : 0;
+        if (totalHits > 1) {
+          appendLog("    → внимание: в ответе search несколько записей, берётся первая (hits[0])");
+        }
+        const empUuid = pickEmployeeIdFromSearchData(searchRes.data);
+        if (!empUuid) {
+          results.push({
+            tabNumNormalized: id,
+            search: searchRes,
+            employeeId: null,
+            empInfoFull: null,
+            error: "Нет employeeId в ответе search (пустые hits или неуспех)"
+          });
+          appendLog("    → пропуск: нет employeeId после search");
+        } else {
+          appendLog("    → employeeId " + empUuid + " → GET empInfoFull …");
+          if (pauseAfterSearchMs > 0) await delay(pauseAfterSearchMs);
+          const full = await fetchEmpInfoFull(empUuid);
+          results.push({
+            tabNumNormalized: id,
+            search: searchRes,
+            employeeId: empUuid,
+            empInfoFull: full
+          });
+          appendLog("    → empInfoFull HTTP " + full.status + (full.ok ? " OK" : " ошибка"));
+        }
+      } catch (e) {
+        results.push({ tabNumNormalized: id, error: String(e) });
+        appendLog("    → исключение: " + e);
+      }
+      if (i < ids.length - 1 && pauseBetweenMs > 0) await delay(pauseBetweenMs);
+    }
+    const fname = "addressbook_empInfoFull_" + ADDRESSBOOK_STAND_KEY + "_" + Date.now() + ".json";
+    downloadJson(fname, results);
+    appendLog("Готово. Файл: " + fname + " (записей: " + results.length + ")");
+  }
+
+  // Файл .txt: статистика в лог, без заполнения textarea — сразу runEmpInfoFullExport.
+  inputFileTn.addEventListener("change", function () {
+    var file = inputFileTn.files && inputFileTn.files[0];
+    inputFileTn.value = "";
+    if (!file) return;
+    if (requestBusy) {
+      appendLog("Уже выполняется запрос — дождитесь окончания.");
+      return;
+    }
+    var reader = new FileReader();
+    reader.onload = function () {
+      var text = typeof reader.result === "string" ? reader.result : "";
+      var digitGroups = text.match(/\d+/g) || [];
+      var ids = parseEmpIdsFromText(text);
+      if (ids.length === 0) {
+        appendLog(
+          "Файл «" +
+            file.name +
+            "»: уникальных ТН нет (групп цифр в тексте: " +
+            digitGroups.length +
+            ")."
+        );
+        return;
+      }
+      appendLog(
+        "Файл «" +
+          file.name +
+          "»: статистика — групп цифр: " +
+          digitGroups.length +
+          ", уникальных ТН: " +
+          ids.length +
+          ". Запуск выгрузки карточек…"
+      );
+      var pb = readPauseMsFromInput(inpPauseBetween, REQUEST_PAUSE_MS);
+      var pa = readPauseMsFromInput(inpPauseAfterSearch, REQUEST_PAUSE_MS);
+      setBusy(true);
+      void (async function () {
+        try {
+          await runEmpInfoFullExport(ids, pb, pa, "Из файла");
+        } catch (err) {
+          appendLog("Сбой сценария: " + err);
+        } finally {
+          setBusy(false);
+        }
+      })();
+    };
+    reader.onerror = function () {
+      appendLog("Ошибка чтения файла «" + file.name + "».");
+    };
+    reader.readAsText(file, "UTF-8");
+  });
+
+  bLoadTn.addEventListener("click", function () {
+    if (requestBusy) {
+      appendLog("Уже выполняется запрос — дождитесь окончания.");
+      return;
+    }
+    inputFileTn.click();
+  });
+
   b1.addEventListener("click", async function () {
     if (requestBusy) {
       appendLog("Уже выполняется запрос — дождитесь окончания.");
@@ -312,79 +572,15 @@ function startAddressBookPanel() {
       appendLog("Нет табельных в поле (нужны группы цифр).");
       return;
     }
-    requestBusy = true;
-    b1.disabled = true;
-    b2.disabled = true;
-    b3.disabled = true;
+    var pb = readPauseMsFromInput(inpPauseBetween, REQUEST_PAUSE_MS);
+    var pa = readPauseMsFromInput(inpPauseAfterSearch, REQUEST_PAUSE_MS);
+    setBusy(true);
     try {
-      appendLog(
-        "— Карточки по ТН (search → empInfoFull), шт.: " +
-          ids.length +
-          ", стенд: " +
-          ADDRESSBOOK_STAND_KEY
-      );
-      const results = [];
-      for (let i = 0; i < ids.length; i++) {
-        const id = ids[i];
-        const searchNum = tabNumToSearchNumber(id);
-        appendLog(
-          "[" + (i + 1) + "/" + ids.length + "] ТН " + id + " → search(" + searchNum + ") …"
-        );
-        try {
-          const searchRes = await fetchEmployeesSearch(searchNum, true);
-          appendLog(
-            "    → search HTTP " +
-              searchRes.status +
-              (searchRes.ok ? "" : " — ошибка")
-          );
-          var totalHits =
-            searchRes.data && typeof searchRes.data.total === "number"
-              ? searchRes.data.total
-              : searchRes.data && Array.isArray(searchRes.data.hits)
-                ? searchRes.data.hits.length
-                : 0;
-          if (totalHits > 1) {
-            appendLog("    → внимание: в ответе search несколько записей, берётся первая (hits[0])");
-          }
-          const empUuid = pickEmployeeIdFromSearchData(searchRes.data);
-          if (!empUuid) {
-            results.push({
-              tabNumNormalized: id,
-              search: searchRes,
-              employeeId: null,
-              empInfoFull: null,
-              error: "Нет employeeId в ответе search (пустые hits или неуспех)"
-            });
-            appendLog("    → пропуск: нет employeeId после search");
-          } else {
-            appendLog("    → employeeId " + empUuid + " → GET empInfoFull …");
-            await delay(REQUEST_PAUSE_MS);
-            const full = await fetchEmpInfoFull(empUuid);
-            results.push({
-              tabNumNormalized: id,
-              search: searchRes,
-              employeeId: empUuid,
-              empInfoFull: full
-            });
-            appendLog(
-              "    → empInfoFull HTTP " + full.status + (full.ok ? " OK" : " ошибка")
-            );
-          }
-        } catch (e) {
-          results.push({ tabNumNormalized: id, error: String(e) });
-          appendLog("    → исключение: " + e);
-        }
-        if (i < ids.length - 1) await delay(REQUEST_PAUSE_MS);
-      }
-      const fname =
-        "addressbook_empInfoFull_" + ADDRESSBOOK_STAND_KEY + "_" + Date.now() + ".json";
-      downloadJson(fname, results);
-      appendLog("Готово. Файл: " + fname + " (записей: " + results.length + ")");
+      await runEmpInfoFullExport(ids, pb, pa, "Из поля");
+    } catch (err) {
+      appendLog("Сбой сценария: " + err);
     } finally {
-      requestBusy = false;
-      b1.disabled = false;
-      b2.disabled = false;
-      b3.disabled = false;
+      setBusy(false);
     }
   });
 
@@ -398,10 +594,8 @@ function startAddressBookPanel() {
       appendLog("Нет табельных в поле.");
       return;
     }
-    requestBusy = true;
-    b1.disabled = true;
-    b2.disabled = true;
-    b3.disabled = true;
+    var pb = readPauseMsFromInput(inpPauseBetween, REQUEST_PAUSE_MS);
+    setBusy(true);
     try {
       appendLog("— POST search по ТН (число), запросов: " + ids.length + ", стенд: " + ADDRESSBOOK_STAND_KEY);
       const results = [];
@@ -416,16 +610,13 @@ function startAddressBookPanel() {
           results.push({ searchText: num, error: String(e) });
           appendLog("    → исключение: " + e);
         }
-        if (i < ids.length - 1) await delay(REQUEST_PAUSE_MS);
+        if (i < ids.length - 1 && pb > 0) await delay(pb);
       }
       const fname = "addressbook_search_by_tn_" + ADDRESSBOOK_STAND_KEY + "_" + Date.now() + ".json";
       downloadJson(fname, results);
       appendLog("Готово. Файл: " + fname);
     } finally {
-      requestBusy = false;
-      b1.disabled = false;
-      b2.disabled = false;
-      b3.disabled = false;
+      setBusy(false);
     }
   });
 
@@ -444,10 +635,8 @@ function startAddressBookPanel() {
       appendLog("Нет непустых строк ФИО.");
       return;
     }
-    requestBusy = true;
-    b1.disabled = true;
-    b2.disabled = true;
-    b3.disabled = true;
+    var pb = readPauseMsFromInput(inpPauseBetween, REQUEST_PAUSE_MS);
+    setBusy(true);
     try {
       appendLog("— POST search по ФИО, строк: " + lines.length + ", стенд: " + ADDRESSBOOK_STAND_KEY);
       const results = [];
@@ -471,26 +660,15 @@ function startAddressBookPanel() {
           results.push({ searchText: line, error: String(e) });
           appendLog("    → исключение: " + e);
         }
-        if (i < lines.length - 1) await delay(REQUEST_PAUSE_MS);
+        if (i < lines.length - 1 && pb > 0) await delay(pb);
       }
       const fname = "addressbook_search_by_fio_" + ADDRESSBOOK_STAND_KEY + "_" + Date.now() + ".json";
       downloadJson(fname, results);
       appendLog("Готово. Файл: " + fname);
     } finally {
-      requestBusy = false;
-      b1.disabled = false;
-      b2.disabled = false;
-      b3.disabled = false;
+      setBusy(false);
     }
   });
-
-  btnRowTn.appendChild(b1);
-  btnRowTn.appendChild(b2);
-  box.appendChild(btnRowTn);
-  box.appendChild(secFio);
-  box.appendChild(lab2);
-  box.appendChild(taFio);
-  box.appendChild(b3);
 
   const logLab = document.createElement("div");
   logLab.style.cssText =
