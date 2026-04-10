@@ -1,26 +1,19 @@
 // =============================================================================
 // AddressBook_export.js — выгрузки из адресной книги (DevTools, консоль)
 // =============================================================================
-// Запросы: полный URL = ORIGIN + /api/home/...
-// По умолчанию ORIGIN = window.location.origin (режим TAB) — same-origin, куки с вкладки, без CORS.
-// ALPHA/SIGMA — фиксированные хосты; использовать только если консоль открыта на том же origin.
-// Карточка empInfoFull на прокси адресной книги ожидает empId = UUID (employeeId из ответа search), не 8-значный ТН.
-// credentials: 'include' — куки текущей вкладки.
+// Запросы всегда на стенд ALPHA: полный URL = ADDRESSBOOK_ORIGINS.ALPHA + /api/home/...
+// (хост веб-справочника Omega, см. HAR / profileLink в ответах API; не gamification.)
+// Карточка empInfoFull ожидает empId = UUID (employeeId из ответа search), не 8-значный ТН.
+// credentials: 'include' — куки текущей вкладки; при другом origin возможны CORS — открывайте консоль на странице того же хоста или с разрешённым CORS.
 // =============================================================================
 
-// Ключ «текущая вкладка»: URL берётся из location.origin, не из таблицы ниже.
-const ADDRESSBOOK_STAND_TAB = "TAB";
+/** Ключ стенда в логах и именах файлов (только ALPHA, вариантов SIGMA/TAB нет). */
+const ADDRESSBOOK_STAND_KEY = "ALPHA";
 
-// Фиксированные хосты (перекрёстные запросы с https://addressbook/ к ним дают CORS/401 без настройки сервера).
+// Базовый хост приложения «Адресная книга» (Omega). При необходимости замените на фактический URL.
 const ADDRESSBOOK_ORIGINS = {
-  ALPHA: "https://efs-our-business-prom.omega.sbrf.ru",
-  SIGMA: "https://salesheroes.sberbank.ru"
+  ALPHA: "https://addressbook.omega.sbrf.ru"
 };
-
-const DEFAULT_ADDRESSBOOK_STAND = ADDRESSBOOK_STAND_TAB;
-
-/** Выбранный на панели стенд: TAB | ALPHA | SIGMA. */
-var ADDRESSBOOK_ACTIVE_STAND = DEFAULT_ADDRESSBOOK_STAND;
 
 const ADDRESSBOOK_API_HOME = "/api/home";
 
@@ -99,23 +92,11 @@ function pickEmployeeIdFromSearchData(data) {
  * @returns {{ standKey: string, origin: string }}
  */
 function getAddressBookStandAndOrigin() {
-  var k = ADDRESSBOOK_ACTIVE_STAND;
-  if (k === "ALPHA" || k === "SIGMA") {
-    var originFixed = ADDRESSBOOK_ORIGINS[k] || ADDRESSBOOK_ORIGINS.SIGMA;
-    return { standKey: k, origin: originFixed.replace(/\/$/, "") };
-  }
-  // TAB и любое неизвестное значение — origin страницы (адресная книга в той же вкладке).
-  var tabOrigin = "";
-  try {
-    tabOrigin = String(window.location.origin || "").replace(/\/$/, "");
-  } catch (e) {
-    tabOrigin = "";
-  }
-  if (!tabOrigin) {
-    var fallback = ADDRESSBOOK_ORIGINS.SIGMA || "";
-    return { standKey: "TAB", origin: fallback.replace(/\/$/, "") };
-  }
-  return { standKey: "TAB", origin: tabOrigin };
+  var originFixed = ADDRESSBOOK_ORIGINS.ALPHA || "";
+  return {
+    standKey: ADDRESSBOOK_STAND_KEY,
+    origin: originFixed.replace(/\/$/, "")
+  };
 }
 
 /**
@@ -222,49 +203,23 @@ function startAddressBookPanel() {
   const sub = document.createElement("div");
   sub.style.cssText = "font-size:12px;color:#64748b;margin:0 0 14px 0;line-height:1.45;";
   sub.textContent =
-    "Стенд «Текущая вкладка» — запросы на origin страницы (рекомендуется для https://addressbook/…). ALPHA/SIGMA — только с той же вкладки на этом хосте, иначе CORS. Прогресс — в логе и в консоли.";
+    "Запросы только на стенд ALPHA (хост справочника ниже). Прогресс — в логе и в консоли.";
   box.appendChild(sub);
 
   const rowStand = document.createElement("div");
   rowStand.style.cssText =
-    "display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;padding:10px 12px;" +
+    "display:flex;align-items:flex-start;gap:10px;margin-bottom:14px;flex-wrap:wrap;padding:10px 12px;" +
     "background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;";
-  const labSt = document.createElement("label");
+  const labSt = document.createElement("div");
   labSt.textContent = "Стенд";
-  labSt.setAttribute("for", "addrBookStandSel");
-  labSt.style.cssText = "font-weight:600;font-size:13px;color:#334155;min-width:52px;";
-  const selStand = document.createElement("select");
-  selStand.id = "addrBookStandSel";
-  selStand.style.cssText =
-    "flex:1;min-width:200px;padding:8px 10px;font-size:13px;cursor:pointer;" +
-    "color:#0f172a;background:#fff;border:1px solid #94a3b8;border-radius:6px;color-scheme:light;";
-  var tabOriginSafe = "";
-  try {
-    tabOriginSafe = window.location.origin || "";
-  } catch (e) {
-    tabOriginSafe = "";
-  }
-  [
-    { key: ADDRESSBOOK_STAND_TAB, label: "Текущая вкладка — " + (tabOriginSafe || "(нет origin)") },
-    { key: "ALPHA", label: "ALPHA — " + ADDRESSBOOK_ORIGINS.ALPHA },
-    { key: "SIGMA", label: "SIGMA — " + ADDRESSBOOK_ORIGINS.SIGMA }
-  ].forEach(function (item) {
-    const opt = document.createElement("option");
-    opt.value = item.key;
-    opt.textContent = item.label;
-    opt.style.cssText = "color:#0f172a;background:#fff;";
-    if (item.key === ADDRESSBOOK_ACTIVE_STAND) opt.selected = true;
-    selStand.appendChild(opt);
-  });
-  if (!selStand.value || selStand.selectedIndex < 0) {
-    ADDRESSBOOK_ACTIVE_STAND = ADDRESSBOOK_STAND_TAB;
-    selStand.value = ADDRESSBOOK_STAND_TAB;
-  }
-  selStand.addEventListener("change", function () {
-    ADDRESSBOOK_ACTIVE_STAND = selStand.value;
-  });
+  labSt.style.cssText = "font-weight:600;font-size:13px;color:#334155;min-width:52px;flex-shrink:0;padding-top:2px;";
+  const standInfo = document.createElement("div");
+  standInfo.style.cssText =
+    "flex:1;min-width:200px;font-size:12px;color:#0f172a;line-height:1.45;word-break:break-all;";
+  standInfo.textContent =
+    "ALPHA — " + ADDRESSBOOK_ORIGINS.ALPHA + ADDRESSBOOK_API_HOME + "/…";
   rowStand.appendChild(labSt);
-  rowStand.appendChild(selStand);
+  rowStand.appendChild(standInfo);
   box.appendChild(rowStand);
 
   const secTn = document.createElement("div");
@@ -366,7 +321,7 @@ function startAddressBookPanel() {
         "— Карточки по ТН (search → empInfoFull), шт.: " +
           ids.length +
           ", стенд: " +
-          ADDRESSBOOK_ACTIVE_STAND
+          ADDRESSBOOK_STAND_KEY
       );
       const results = [];
       for (let i = 0; i < ids.length; i++) {
@@ -422,7 +377,7 @@ function startAddressBookPanel() {
         if (i < ids.length - 1) await delay(REQUEST_PAUSE_MS);
       }
       const fname =
-        "addressbook_empInfoFull_" + ADDRESSBOOK_ACTIVE_STAND + "_" + Date.now() + ".json";
+        "addressbook_empInfoFull_" + ADDRESSBOOK_STAND_KEY + "_" + Date.now() + ".json";
       downloadJson(fname, results);
       appendLog("Готово. Файл: " + fname + " (записей: " + results.length + ")");
     } finally {
@@ -448,7 +403,7 @@ function startAddressBookPanel() {
     b2.disabled = true;
     b3.disabled = true;
     try {
-      appendLog("— POST search по ТН (число), запросов: " + ids.length + ", стенд: " + ADDRESSBOOK_ACTIVE_STAND);
+      appendLog("— POST search по ТН (число), запросов: " + ids.length + ", стенд: " + ADDRESSBOOK_STAND_KEY);
       const results = [];
       for (let i = 0; i < ids.length; i++) {
         const num = tabNumToSearchNumber(ids[i]);
@@ -463,7 +418,7 @@ function startAddressBookPanel() {
         }
         if (i < ids.length - 1) await delay(REQUEST_PAUSE_MS);
       }
-      const fname = "addressbook_search_by_tn_" + ADDRESSBOOK_ACTIVE_STAND + "_" + Date.now() + ".json";
+      const fname = "addressbook_search_by_tn_" + ADDRESSBOOK_STAND_KEY + "_" + Date.now() + ".json";
       downloadJson(fname, results);
       appendLog("Готово. Файл: " + fname);
     } finally {
@@ -494,7 +449,7 @@ function startAddressBookPanel() {
     b2.disabled = true;
     b3.disabled = true;
     try {
-      appendLog("— POST search по ФИО, строк: " + lines.length + ", стенд: " + ADDRESSBOOK_ACTIVE_STAND);
+      appendLog("— POST search по ФИО, строк: " + lines.length + ", стенд: " + ADDRESSBOOK_STAND_KEY);
       const results = [];
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
@@ -518,7 +473,7 @@ function startAddressBookPanel() {
         }
         if (i < lines.length - 1) await delay(REQUEST_PAUSE_MS);
       }
-      const fname = "addressbook_search_by_fio_" + ADDRESSBOOK_ACTIVE_STAND + "_" + Date.now() + ".json";
+      const fname = "addressbook_search_by_fio_" + ADDRESSBOOK_STAND_KEY + "_" + Date.now() + ".json";
       downloadJson(fname, results);
       appendLog("Готово. Файл: " + fname);
     } finally {
