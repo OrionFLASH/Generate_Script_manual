@@ -2,7 +2,7 @@
 // Tournament_LeadersForAdmin.js — выгрузка leadersForAdmin по кодам турниров
 // =============================================================================
 // DevTools на странице стенда (ALPHA omega / SIGMA salesheroes). GET JSON.
-// Источники кодов: массив в скрипте, текстовое поле, файл .txt, CSV (два варианта колонок).
+// Источники кодов: текстовое поле, файл .txt, CSV (общие имена колонок + два фильтра статусов / SHEDULE и LIST).
 // =============================================================================
 // Повторная вставка в консоль: весь код в IIFE — иначе глобальные const (TOURNAMENT_BASE и др.) дают SyntaxError.
 (function () {
@@ -18,15 +18,11 @@ const TOURNAMENT_BASE = {
   SIGMA: "https://salesheroes.sberbank.ru/bo/rmkib.gamification/api/v1/tournaments/"
 };
 
-// Коды по умолчанию (если не заданы в поле / файле).
-const TOURNAMENT_IDS_IN_SCRIPT = [
-  "t_01_2026-1_05-1_1_3031",
-  "TOURNAMENT_05_02"
-];
-
 const LEADERS_SERVICE = "leadersForAdmin";
-const REQUEST_GAP_MS = 5;
-const STRIP_PHOTO_DATA_DEFAULT = true;
+/** Значение по умолчанию для поля «Пауза между запросами» на панели (мс). */
+const DEFAULT_REQUEST_GAP_MS = 5;
+/** Плейсхолдер поля префикса имени файла: пустое значение = авто `leadersForAdmin_{стенд}_`. */
+const DEFAULT_EXPORT_FILENAME_PREFIX_PLACEHOLDER = "авто: leadersForAdmin + стенд + _";
 
 /** Статусы CSV вариант 1 (колонка TOURNAMENT_STATUS). */
 const CSV1_STATUS_LABELS = [
@@ -45,6 +41,25 @@ const CSV2_STATUS_LABELS = [
   "Отменен",
   "Подведение итогов",
   "Удален"
+];
+
+/** По умолчанию в фильтре CSV отмечены только «активные» статусы (остальные чекбоксы сняты). */
+const CSV1_DEFAULT_CHECKED_STATUSES = ["АКТИВНЫЙ"];
+const CSV2_DEFAULT_CHECKED_STATUSES = ["Активный"];
+
+/** Варианты в combobox для колонки кода (можно ввести свой заголовок). */
+const CSV_CODE_COLUMN_PRESETS = ["TOURNAMENT_CODE", "Код турнира"];
+/** Варианты в combobox для колонки статуса. */
+const CSV_STATUS_COLUMN_PRESETS = ["TOURNAMENT_STATUS", "Бизнес-статус турнира"];
+
+/** Коды турнира по умолчанию в общем поле ввода при открытии панели. */
+const DEFAULT_TOURNAMENT_CODES_TEXTAREA = [
+  "TOURNAMENT_91_01",
+  "TOURNAMENT_92_01",
+  "TOURNAMENT_93_01",
+  "TOURNAMENT_94_01",
+  "TOURNAMENT_95_01",
+  "TOURNAMENT_96_01"
 ];
 
 function delay(ms) {
@@ -178,15 +193,142 @@ function codesFromCsvByColumns(csvText, allowedStatus, codeColumnName, statusCol
   return out;
 }
 
-function removePhotoData(obj) {
-  if (Array.isArray(obj)) {
-    obj.forEach(removePhotoData);
-  } else if (obj && typeof obj === "object") {
-    Object.keys(obj).forEach(function (key) {
-      if (key === "photoData") delete obj[key];
-      else removePhotoData(obj[key]);
-    });
+/**
+ * Сколько лидеров в ответе API; null — ответ считаем пустым/без тела (в JSON не сохраняем).
+ * @param {*} data — объект после res.json()
+ * @returns {number|null}
+ */
+function countLeadersInResponseData(data) {
+  if (data == null || typeof data !== "object") return null;
+  const leadersArr =
+    (data.body && data.body.tournament && data.body.tournament.leaders) ||
+    (data.body && data.body.badge && data.body.badge.leaders);
+  if (!Array.isArray(leadersArr)) return 0;
+  return leadersArr.length;
+}
+
+/**
+ * Сколько раз в дереве JSON встречается непустое поле employeeNumber (участники по данным API).
+ * @param {*} obj
+ * @returns {number}
+ */
+function countEmployeeNumberFieldsInTree(obj) {
+  let n = 0;
+  function walk(o) {
+    if (o == null) return;
+    if (Array.isArray(o)) {
+      for (let i = 0; i < o.length; i++) walk(o[i]);
+      return;
+    }
+    if (typeof o !== "object") return;
+    const keys = Object.keys(o);
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i];
+      const v = o[k];
+      if (k === "employeeNumber") {
+        if (v != null && v !== "") n++;
+      } else {
+        walk(v);
+      }
+    }
   }
+  walk(obj);
+  return n;
+}
+
+/**
+ * Безопасный префикс имени файла (до таймштампа): без путей и запрещённых символов.
+ * @param {string} raw
+ * @returns {string}
+ */
+function sanitizeExportFilenamePrefix(raw) {
+  var t = String(raw || "").trim();
+  if (!t) return "";
+  t = t.replace(/[/\\:*?"<>|\x00-\x1f]+/g, "_").replace(/\s+/g, "_");
+  if (t.length > 100) t = t.slice(0, 100);
+  while (t.length && (t.endsWith("_") || t.endsWith("."))) t = t.slice(0, -1);
+  return t;
+}
+
+/**
+ * Одна запись в массиве по ключу турнира в итоговом JSON.
+ * — Успех с лидерами: как вернул API `[data]`.
+ * — 0 лидеров: `{ success:false, body:{ tournament:{…, contestants:"0 участников", leaders:[] }}}`.
+ * — Ошибка API (`success:false` + `error`): как в ответе `[data]`.
+ * — HTTP не OK: если в теле уже есть `error` — как есть; иначе синтетический объект с `error`.
+ * — Нет JSON-тела при OK: `null` (в файл не включаем).
+ * @param {string} tid
+ * @param {{ ok: boolean, status: number, tournamentId: string, data: * }} fr
+ * @returns {unknown[]|null}
+ */
+function buildLeadersExportRecordArray(tid, fr) {
+  if (!fr.ok) {
+    const d = fr.data;
+    if (d && typeof d === "object" && d.success === false && d.error && typeof d.error === "object") {
+      return [d];
+    }
+    return [
+      {
+        success: false,
+        error: {
+          code: "HTTP-" + fr.status,
+          title: "Ошибка HTTP",
+          text:
+            "Запрос GET leadersForAdmin для «" +
+            tid +
+            "» завершился со статусом " +
+            fr.status +
+            ".",
+          type: "error",
+          tournamentId: tid
+        }
+      }
+    ];
+  }
+
+  const data = fr.data;
+  if (data == null || typeof data !== "object") {
+    return null;
+  }
+
+  if (data.success === false && data.error && typeof data.error === "object") {
+    return [data];
+  }
+
+  const cnt = countLeadersInResponseData(data);
+  if (cnt === null) {
+    return null;
+  }
+
+  if (cnt === 0) {
+    const src =
+      (data.body && data.body.tournament && typeof data.body.tournament === "object" && data.body.tournament) ||
+      (data.body && data.body.badge && typeof data.body.badge === "object" && data.body.badge) ||
+      {};
+    const leadersArr = Array.isArray(src.leaders) ? src.leaders.slice() : [];
+    const tObj = {
+      tournamentId:
+        src.tournamentId != null && String(src.tournamentId) !== ""
+          ? src.tournamentId
+          : src.id != null && String(src.id) !== ""
+            ? src.id
+            : tid,
+      tournamentIndicator: src.tournamentIndicator != null ? String(src.tournamentIndicator) : "",
+      status: src.status != null ? String(src.status) : "",
+      contestants: "0 участников",
+      leaders: leadersArr
+    };
+    return [
+      {
+        success: false,
+        body: {
+          tournament: tObj
+        }
+      }
+    ];
+  }
+
+  return [data];
 }
 
 async function fetchLeadersForAdmin(baseUrl, tournamentId) {
@@ -229,8 +371,10 @@ function startTournamentPanel() {
   const root = document.createElement("div");
   root.id = "tournamentLeadersForAdminRoot";
   // color + color-scheme: на тёмной странице иначе наследуется светлый текст — нечитаемо на белом фоне панели.
+  // Колонка flex + overflow:hidden: прокрутка только у средней части и внутри лога, панель не раздувает страницу.
   root.style.cssText =
-    "position:fixed;left:10px;top:10px;width:min(920px,calc(100vw - 16px));max-height:92vh;overflow:auto;z-index:999999;" +
+    "position:fixed;left:10px;top:10px;width:min(920px,calc(100vw - 16px));max-height:92vh;height:92vh;" +
+    "display:flex;flex-direction:column;overflow:hidden;z-index:999999;" +
     "background:#ffffff;border:1px solid #cbd5e1;padding:14px 16px;box-shadow:0 12px 40px rgba(15,23,42,.12);border-radius:12px;" +
     "font-family:system-ui,-apple-system,sans-serif;font-size:12px;color:#111827;color-scheme:light;box-sizing:border-box;";
 
@@ -242,12 +386,13 @@ function startTournamentPanel() {
   const titleSub = document.createElement("div");
   titleSub.style.cssText = "font-size:11px;color:#64748b;margin-bottom:10px;line-height:1.4;";
   titleSub.textContent =
-    "Каждая кнопка сразу запускает выгрузку. Для .txt и CSV сначала откроется выбор файла. Стенд и «Удалять photoData» задайте до нажатия.";
+    "Каждая кнопка сразу запускает выгрузку. Для .txt и CSV сначала откроется выбор файла. Стенд, префикс имени файла и паузу задайте до нажатия. В JSON попадают и ошибки, и «0 участников»; без тела ответа при HTTP OK строка не пишется; файл из одного «{}» не создаётся.";
   root.appendChild(titleSub);
 
   const stRow = document.createElement("div");
   stRow.style.cssText =
-    "display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap;font-size:12px;color:#111827;";
+    "display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap;font-size:12px;color:#111827;" +
+    "width:100%;box-sizing:border-box;";
   const labSt = document.createElement("label");
   labSt.textContent = "Стенд:";
   labSt.setAttribute("for", "tournamentStandSel");
@@ -271,41 +416,153 @@ function startTournamentPanel() {
   });
   stRow.appendChild(labSt);
   stRow.appendChild(selStand);
+
+  /** Справа: префикс имени файла и пауза между запросами. */
+  const stRowRight = document.createElement("div");
+  stRowRight.style.cssText =
+    "display:flex;align-items:center;flex-wrap:wrap;gap:10px 14px;margin-left:auto;justify-content:flex-end;";
+
+  const labPrefix = document.createElement("label");
+  labPrefix.setAttribute("for", "tournamentExportFnamePrefix");
+  labPrefix.style.cssText =
+    "display:inline-flex;align-items:center;gap:6px;color:#111827;white-space:nowrap;font-size:12px;";
+  labPrefix.appendChild(document.createTextNode("Префикс имени файла (до даты):"));
+  const inpFnamePrefix = document.createElement("input");
+  inpFnamePrefix.id = "tournamentExportFnamePrefix";
+  inpFnamePrefix.type = "text";
+  inpFnamePrefix.value = "";
+  inpFnamePrefix.placeholder = DEFAULT_EXPORT_FILENAME_PREFIX_PLACEHOLDER;
+  inpFnamePrefix.title =
+    "Часть имени до таймштампа, например leadersForAdmin_SIGMA_. Пусто — автоматически leadersForAdmin_{стенд}_";
+  inpFnamePrefix.style.cssText =
+    "width:min(240px,36vw);min-width:120px;padding:4px 8px;font-size:12px;box-sizing:border-box;" +
+    "color:#111827;background:#fff;border:1px solid #64748b;border-radius:4px;color-scheme:light;";
+  labPrefix.appendChild(inpFnamePrefix);
+  stRowRight.appendChild(labPrefix);
+
+  const labGap = document.createElement("label");
+  labGap.setAttribute("for", "tournamentRequestGapMs");
+  labGap.style.cssText =
+    "display:inline-flex;align-items:center;gap:6px;color:#111827;white-space:nowrap;font-size:12px;";
+  labGap.appendChild(document.createTextNode("Пауза, мс:"));
+  const inpGapMs = document.createElement("input");
+  inpGapMs.id = "tournamentRequestGapMs";
+  inpGapMs.type = "number";
+  inpGapMs.min = "0";
+  inpGapMs.max = "60000";
+  inpGapMs.step = "1";
+  inpGapMs.value = String(DEFAULT_REQUEST_GAP_MS);
+  inpGapMs.title = "Задержка после каждого турнира перед следующим GET (0–60000 мс).";
+  inpGapMs.style.cssText =
+    "width:72px;padding:4px 6px;font-size:12px;box-sizing:border-box;" +
+    "color:#111827;background:#fff;border:1px solid #64748b;border-radius:4px;color-scheme:light;";
+  labGap.appendChild(inpGapMs);
+  stRowRight.appendChild(labGap);
+
+  stRow.appendChild(stRowRight);
   root.appendChild(stRow);
 
-  const cbPhoto = document.createElement("input");
-  cbPhoto.type = "checkbox";
-  cbPhoto.checked = STRIP_PHOTO_DATA_DEFAULT;
-  const lbPhoto = document.createElement("label");
-  lbPhoto.style.cssText = "margin-left:6px;color:#111827;cursor:pointer;";
-  lbPhoto.appendChild(cbPhoto);
-  lbPhoto.appendChild(document.createTextNode(" Удалять photoData из JSON"));
-  root.appendChild(lbPhoto);
-  root.appendChild(document.createElement("br"));
+  /** Прокручиваемая средняя часть панели (поля, кнопки, CSV); min-height:0 — чтобы flex не раздувал родителя. */
+  const panelScroll = document.createElement("div");
+  panelScroll.style.cssText =
+    "flex:1 1 0;min-height:0;overflow-y:auto;overflow-x:hidden;box-sizing:border-box;-webkit-overflow-scrolling:touch;";
+  root.appendChild(panelScroll);
+
+  /** Читает паузу из поля панели; при ошибке — DEFAULT_REQUEST_GAP_MS, верхняя граница 60000. */
+  function readRequestGapMs() {
+    const n = parseInt(String(inpGapMs.value || "").trim(), 10);
+    if (!Number.isFinite(n) || n < 0) return DEFAULT_REQUEST_GAP_MS;
+    if (n > 60000) return 60000;
+    return n;
+  }
+
+  /**
+   * Префикс имени выгрузки до таймштампа (с завершающим «_», если нужно).
+   * @param {string} standKey
+   * @returns {string}
+   */
+  function buildExportFilenamePrefix(standKey) {
+    var custom = sanitizeExportFilenamePrefix(inpFnamePrefix.value);
+    if (custom) return custom.endsWith("_") ? custom : custom + "_";
+    return LEADERS_SERVICE + "_" + standKey + "_";
+  }
+
+  /** Верхняя граница строк в ленте (старые удаляются сверху). */
+  const LOG_MAX_LINES = 1200;
+
+  const logWrap = document.createElement("div");
+  // Компактная высота лога — больше места под кнопки CSV; прокрутка только внутри ленты.
+  logWrap.style.cssText =
+    "margin-top:8px;flex-shrink:0;display:flex;flex-direction:column;" +
+    "height:min(168px,22vh);min-height:88px;max-height:24vh;box-sizing:border-box;";
+  const logLab = document.createElement("div");
+  logLab.style.cssText = "font-weight:600;font-size:11px;color:#475569;margin-bottom:4px;flex-shrink:0;";
+  logLab.textContent = "Лог (лента, новые строки снизу):";
+  logWrap.appendChild(logLab);
 
   const logEl = document.createElement("div");
+  logEl.setAttribute("role", "log");
+  logEl.setAttribute("aria-live", "polite");
+  // Явная высота + overflow только здесь — лента не растёт наружу, полоса прокрутки у блока лога.
   logEl.style.cssText =
-    "margin-top:10px;font-size:11px;color:rgb(15,23,42);background:#f8fafc;max-height:140px;overflow:auto;border:1px solid #cbd5e1;border-radius:8px;padding:8px;";
-  logEl.textContent = "Лог: —";
+    "flex:1 1 auto;min-height:0;width:100%;box-sizing:border-box;" +
+    "font-size:11px;color:rgb(15,23,42);background:#f8fafc;" +
+    "overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;" +
+    "border:1px solid #cbd5e1;border-radius:8px;padding:8px;";
+  logWrap.appendChild(logEl);
 
+  /** Метка времени для строки ленты (чч:мм:сс.ммм). */
+  function formatLogTime() {
+    const d = new Date();
+    const p = function (n) {
+      return n.toString().padStart(2, "0");
+    };
+    return (
+      p(d.getHours()) +
+      ":" +
+      p(d.getMinutes()) +
+      ":" +
+      p(d.getSeconds()) +
+      "." +
+      d.getMilliseconds().toString().padStart(3, "0")
+    );
+  }
+
+  /**
+   * Добавляет строку в ленту лога (не затирает предыдущие сообщения).
+   * @param {string} msg
+   */
   function log(msg) {
-    logEl.textContent = msg;
+    const line = document.createElement("div");
+    line.style.cssText =
+      "margin:0 0 3px 0;line-height:1.35;word-break:break-word;" +
+      "font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:10px;color:#0f172a;";
+    line.textContent = formatLogTime() + "  " + msg;
+    logEl.appendChild(line);
+    while (logEl.childElementCount > LOG_MAX_LINES) {
+      logEl.removeChild(logEl.firstElementChild);
+    }
+    logEl.scrollTop = logEl.scrollHeight;
     console.log(msg);
   }
+
+  log("Панель открыта. Сообщения выгрузки добавляются в ленту ниже.");
 
   const labTa = document.createElement("div");
   labTa.style.cssText = "font-weight:600;font-size:11px;color:#475569;margin:10px 0 4px;";
   labTa.textContent = "Общее поле — простые коды (кнопка «По тексту» или вставка после выбора .txt)";
-  root.appendChild(labTa);
+  panelScroll.appendChild(labTa);
 
   const ta = document.createElement("textarea");
-  ta.rows = 4;
+  // Компактная высота: шесть строк по умолчаню — с небольшой прокруткой при необходимости.
+  ta.rows = 5;
   ta.style.cssText =
     "width:100%;box-sizing:border-box;font-size:11px;padding:10px;" +
     "color:#111827;background-color:#ffffff;border:1px solid #94a3b8;border-radius:8px;resize:vertical;color-scheme:light;";
-  ta.placeholder = TOURNAMENT_IDS_IN_SCRIPT.join("\n");
-  ta.value = TOURNAMENT_IDS_IN_SCRIPT.join("\n");
-  root.appendChild(ta);
+  ta.placeholder =
+    "Коды турнира: по строке или через пробел (латиница, цифры, _ и -). Поле можно очистить и вставить свой список.";
+  ta.value = DEFAULT_TOURNAMENT_CODES_TEXTAREA.join("\n");
+  panelScroll.appendChild(ta);
 
   /** Защита от повторного запуска, пока идёт цикл fetch. */
   var exportBusy = false;
@@ -332,13 +589,27 @@ function startTournamentPanel() {
           : "ALPHA";
       const baseUrl = TOURNAMENT_BASE[standKey] || TOURNAMENT_BASE.ALPHA;
 
-      log("Источник: " + (sourceTag || "") + " | кодов: " + ids.length + " | стенд: " + standKey);
+      const gapMs = readRequestGapMs();
+      const prefixForFile = buildExportFilenamePrefix(standKey);
+      log(
+        "Старт выгрузки | источник: " +
+          (sourceTag || "") +
+          " | кодов в очереди: " +
+          ids.length +
+          " | стенд: " +
+          standKey +
+          " | пауза: " +
+          gapMs +
+          " мс | префикс файла: " +
+          prefixForFile.replace(/_$/, "") +
+          "_<дата>.json"
+      );
       const results = {};
-      let processed = 0;
+      let savedCount = 0;
       let skipped = 0;
       let errors = 0;
-      /** Турниры с ответом OK, но 0 лидеров — в JSON не попадают; полный список в консоли. */
-      const skippedZeroLeaders = [];
+      /** Только ответы без тела при HTTP OK — в файл не пишутся. */
+      const skippedNotSaved = [];
 
       for (let i = 0; i < ids.length; i++) {
         const tid = ids[i];
@@ -346,61 +617,134 @@ function startTournamentPanel() {
         try {
           const fr = await fetchLeadersForAdmin(baseUrl, tid);
           if (!fr.ok) {
-            console.warn("[ошибка HTTP " + fr.status + "] турнир:", tid);
-            errors++;
-            continue;
+            console.warn("[HTTP " + fr.status + "] турнир:", tid);
+            log("[HTTP " + fr.status + "] «" + tid + "» — в файл пойдёт запись об ошибке.");
           }
-          const leadersArr =
-            (fr.data &&
-              fr.data.body &&
-              fr.data.body.tournament &&
-              fr.data.body.tournament.leaders) ||
-            (fr.data && fr.data.body && fr.data.body.badge && fr.data.body.badge.leaders);
-          const cnt = Array.isArray(leadersArr) ? leadersArr.length : 0;
-          if (cnt === 0) {
+          const pack = buildLeadersExportRecordArray(tid, fr);
+          if (pack == null) {
             skipped++;
-            skippedZeroLeaders.push(tid);
-            console.log("[пропуск: 0 лидеров в ответе] турнир:", tid);
+            skippedNotSaved.push({ tid: tid, reason: "пустой ответ" });
+            console.log("[пропуск: пустой ответ] турнир:", tid);
+            log("Пропуск «" + tid + "»: нет JSON-тела при успешном HTTP — в файл не попадает.");
             continue;
           }
-          results[tid] = [fr.data];
-          processed++;
+          results[tid] = pack;
+          savedCount++;
+          const root = pack[0];
+          const empInTree = countEmployeeNumberFieldsInTree(root);
+          if (root && root.success === false && root.error) {
+            log(
+              "  → в файл «" +
+                tid +
+                "»: ERROR (блок error" +
+                (root.error.code ? ", код " + root.error.code : "") +
+                "), employeeNumber в дереве: " +
+                empInTree +
+                "."
+            );
+          } else if (root && root.success === false && root.body && root.body.tournament) {
+            const lc = Array.isArray(root.body.tournament.leaders)
+              ? root.body.tournament.leaders.length
+              : 0;
+            log(
+              "  → в файл «" +
+                tid +
+                "»: «0 участников», leaders=" +
+                lc +
+                ", employeeNumber в дереве: " +
+                empInTree +
+                "."
+            );
+          } else {
+            const cnt = countLeadersInResponseData(root);
+            log(
+              "  → в файл «" +
+                tid +
+                "»: записей в leaders — " +
+                (cnt == null ? "?" : cnt) +
+                ", непустых employeeNumber в дереве: " +
+                empInTree +
+                "."
+            );
+          }
         } catch (e) {
           console.error("[исключение] турнир:", tid, e);
+          log("[исключение] " + tid + (e && e.message ? ": " + e.message : ""));
           errors++;
         }
-        if (i < ids.length - 1) await delay(REQUEST_GAP_MS);
+        if (i < ids.length - 1) await delay(gapMs);
       }
 
-      if (skippedZeroLeaders.length > 0) {
-        console.log(
-          "Итого пропущено (0 лидеров), штук: " +
-            skippedZeroLeaders.length +
-            ". Коды турниров:",
-          skippedZeroLeaders
+      if (skippedNotSaved.length > 0) {
+        console.log("Итого без записи в JSON (нет тела), штук: " + skippedNotSaved.length + ":", skippedNotSaved);
+      }
+
+      if (savedCount === 0 || Object.keys(results).length === 0) {
+        log(
+          "Файл не создан: нечего записать (все ответы без тела при OK или сбой до записи). Пропусков: " +
+            skipped +
+            ", исключений: " +
+            errors +
+            "."
         );
+        return;
       }
 
-      if (cbPhoto.checked) {
-        log("Удаление photoData…");
-        removePhotoData(results);
+      const jsonOut = JSON.stringify(results);
+      if (jsonOut === "{}" || jsonOut.trim() === "{}") {
+        log("Файл не создан: итоговый объект пустой {}.");
+        return;
       }
 
-      const fname = LEADERS_SERVICE + "_" + standKey + "_" + getTimestamp() + ".json";
+      const fname = prefixForFile + getTimestamp() + ".json";
+      let totalEmp = 0;
+      const perTournament = [];
+      Object.keys(results).forEach(function (k) {
+        const pack = results[k];
+        const rootData = pack && pack[0];
+        const em = countEmployeeNumberFieldsInTree(rootData);
+        totalEmp += em;
+        var line = "«" + k + "»:";
+        if (rootData && rootData.success === false && rootData.error) {
+          line +=
+            " ERROR, код " +
+            (rootData.error.code != null ? String(rootData.error.code) : "?") +
+            ", employeeNumber=" +
+            em;
+        } else if (rootData && rootData.success === false && rootData.body && rootData.body.tournament) {
+          var t = rootData.body.tournament;
+          line +=
+            " " +
+            (t.contestants != null ? String(t.contestants) : "0 участников") +
+            ", leaders=" +
+            (Array.isArray(t.leaders) ? t.leaders.length : 0) +
+            ", employeeNumber=" +
+            em;
+        } else {
+          const lc = countLeadersInResponseData(rootData);
+          line += " leaders=" + (lc == null ? "?" : lc) + ", employeeNumber=" + em;
+        }
+        perTournament.push(line);
+      });
       downloadJson(fname, results);
       log(
-        "Готово (" +
+        "Готово («" +
           (sourceTag || "") +
-          "). Успех: " +
-          processed +
-          ", пропуск (0 лидеров): " +
+          "»). Записей в файле: " +
+          savedCount +
+          " | Σ employeeNumber по дереву: " +
+          totalEmp +
+          " | пропусков (без тела): " +
           skipped +
-          ", ошибок: " +
+          ", исключений: " +
           errors +
-          ". Файл: " +
-          fname +
-          (skipped > 0 ? " — список пропущенных кодов см. console.log выше." : "")
+          "."
       );
+      log("  Детально по турнирам в файле: " + perTournament.join(" | "));
+      log("  Файл: " + fname);
+      if (skipped > 0) {
+        log("  Пропуски — в console.log (skippedNotSaved).");
+      }
     } finally {
       exportBusy = false;
     }
@@ -409,7 +753,7 @@ function startTournamentPanel() {
   const labActions = document.createElement("div");
   labActions.style.cssText = "font-weight:700;margin:12px 0 8px;color:#0f172a;font-size:12px;";
   labActions.textContent = "Запуск: одна кнопка — сразу выгрузка (для .txt и CSV сначала откроется выбор файла)";
-  root.appendChild(labActions);
+  panelScroll.appendChild(labActions);
 
   const actionGrid = document.createElement("div");
   actionGrid.style.cssText =
@@ -439,7 +783,7 @@ function startTournamentPanel() {
   fileInputTxtRun.setAttribute("aria-label", "Файл со списком кодов турнира");
   fileInputTxtRun.style.cssText =
     "position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;";
-  root.appendChild(fileInputTxtRun);
+  panelScroll.appendChild(fileInputTxtRun);
   fileInputTxtRun.addEventListener("change", function () {
     const f = fileInputTxtRun.files && fileInputTxtRun.files[0];
     if (!f) return;
@@ -459,9 +803,6 @@ function startTournamentPanel() {
     reader.readAsText(f, "UTF-8");
   });
 
-  addGridButton("По массиву в скрипте", "#059669", function () {
-    void runExport(TOURNAMENT_IDS_IN_SCRIPT.slice(), "массив TOURNAMENT_IDS_IN_SCRIPT");
-  });
   addGridButton("По тексту в поле выше", "#7c3aed", function () {
     const ids = parseTournamentCodesFromText(ta.value);
     if (ids.length === 0) {
@@ -475,66 +816,130 @@ function startTournamentPanel() {
   btnTxtFile.type = "button";
   btnTxtFile.textContent = "Файл .txt — выбрать и сразу выгрузить";
   btnTxtFile.style.cssText = btnBase + "background:#2563eb;";
-  btnTxtFile.style.gridColumn = "1 / -1";
   btnTxtFile.addEventListener("click", function () {
     fileInputTxtRun.click();
   });
   actionGrid.appendChild(btnTxtFile);
 
-  root.appendChild(actionGrid);
+  panelScroll.appendChild(actionGrid);
 
-  function makeStatusChecks(labels, container) {
+  /**
+   * Чекбоксы фильтра статусов CSV.
+   * @param {string[]} labels — подписи статусов (как в CSV)
+   * @param {HTMLElement} container
+   * @param {string[]} defaultChecked — какие из labels отмечены при открытии панели
+   */
+  function makeStatusChecks(labels, container, defaultChecked) {
     const map = {};
+    const onByDefault = {};
+    (defaultChecked || []).forEach(function (s) {
+      onByDefault[s] = true;
+    });
+    const grid = document.createElement("div");
+    grid.style.cssText =
+      "display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 12px;align-items:center;";
     labels.forEach(function (lbl) {
       const row = document.createElement("div");
-      row.style.cssText = "margin:2px 0;color:#111827;line-height:1.35;display:flex;align-items:center;gap:6px;";
+      row.style.cssText =
+        "margin:0;color:#111827;line-height:1.35;display:flex;align-items:center;gap:6px;min-width:0;";
       const c = document.createElement("input");
       c.type = "checkbox";
-      c.checked = true;
+      c.checked = !!onByDefault[lbl];
       map[lbl] = c;
       row.appendChild(c);
       const sp = document.createElement("span");
-      sp.style.cssText = "color:#334155;font-size:11px;";
+      sp.style.cssText = "color:#334155;font-size:11px;word-break:break-word;";
       sp.textContent = lbl;
       row.appendChild(sp);
-      container.appendChild(row);
+      grid.appendChild(row);
     });
+    container.appendChild(grid);
     return map;
   }
 
+  /** Значение option «свой заголовок» в select колонок CSV. */
+  const CSV_COLUMN_SELECT_CUSTOM = "__custom__";
+
   /**
-   * Подпись + поле ввода (имена колонок CSV).
+   * Выпадающий список имён колонки (пресеты как раньше в отдельных полях) + при выборе «Другой…» — поле ввода.
    * @param {HTMLElement} container
    * @param {string} labelText
-   * @param {string} defaultValue
-   * @param {string} [placeholder]
-   * @returns {HTMLInputElement}
+   * @param {string} selectId
+   * @param {string[]} presets
+   * @param {string} initialValue
+   * @returns {{ getHeader: function(): string }}
    */
-  function addLabeledTextInput(container, labelText, defaultValue, placeholder) {
+  function appendLabeledColumnSelect(container, labelText, selectId, presets, initialValue) {
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "min-width:0;display:flex;flex-direction:column;gap:6px;";
     const lab = document.createElement("label");
+    lab.setAttribute("for", selectId);
     lab.style.cssText =
       "display:flex;flex-direction:column;gap:4px;font-size:10px;color:#334155;font-weight:600;margin:0;";
     const span = document.createElement("span");
     span.textContent = labelText;
-    const inp = document.createElement("input");
-    inp.type = "text";
-    inp.value = defaultValue || "";
-    if (placeholder) inp.placeholder = placeholder;
-    inp.style.cssText =
+    const sel = document.createElement("select");
+    sel.id = selectId;
+    sel.style.cssText =
       "padding:6px 8px;font-size:11px;border:1px solid #94a3b8;border-radius:6px;color:#111827;" +
+      "background:#fff;box-sizing:border-box;width:100%;color-scheme:light;cursor:pointer;";
+    const init = initialValue || presets[0] || "";
+    presets.forEach(function (p) {
+      const opt = document.createElement("option");
+      opt.value = p;
+      opt.textContent = p;
+      if (p === init) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    const optCustom = document.createElement("option");
+    optCustom.value = CSV_COLUMN_SELECT_CUSTOM;
+    optCustom.textContent = "Другой заголовок…";
+    sel.appendChild(optCustom);
+
+    const customInp = document.createElement("input");
+    customInp.type = "text";
+    customInp.setAttribute("aria-label", labelText + " — свой текст");
+    customInp.autocomplete = "off";
+    customInp.placeholder = "Имя колонки как в 1-й строке CSV";
+    customInp.style.cssText =
+      "display:none;padding:6px 8px;font-size:11px;border:1px solid #64748b;border-radius:6px;color:#111827;" +
       "background:#fff;box-sizing:border-box;width:100%;color-scheme:light;";
+
+    function syncCustomVisibility() {
+      const show = sel.value === CSV_COLUMN_SELECT_CUSTOM;
+      customInp.style.display = show ? "block" : "none";
+      if (!show) customInp.value = "";
+    }
+    sel.addEventListener("change", syncCustomVisibility);
+    syncCustomVisibility();
+
     lab.appendChild(span);
-    lab.appendChild(inp);
-    container.appendChild(lab);
-    return inp;
+    lab.appendChild(sel);
+    wrap.appendChild(lab);
+    wrap.appendChild(customInp);
+    container.appendChild(wrap);
+
+    return {
+      getHeader: function () {
+        if (sel.value === CSV_COLUMN_SELECT_CUSTOM) {
+          var t = (customInp.value || "").trim();
+          return t || presets[0] || "";
+        }
+        return (sel.value || "").trim() || presets[0] || "";
+      }
+    };
   }
 
   /**
-   * Колонка CSV: имена колонок (код / статус), фильтр чекбоксами, только выгрузка через выбор файла.
-   * @param {{ title: string, subtitle: string, border: string, bg: string, labels: string[], fileAria: string, defaultCodeColumn: string, defaultStatusColumn: string, runTag: string }} cfg
+   * Нижняя половина CSV: фильтр статусов только этого блока + кнопка выбора файла.
+   * Имена колонок кода и статуса всегда берутся из общего верха (csvCodeCtl / csvStatusCtl);
+   * набор чекбоксов allow — только из makeStatusChecks(cfg.labels) этого экземпляра.
+   * @param {{ border: string, bg: string, labels: string[], defaultCheckedStatusLabels: string[], fileAria: string, runTag: string, filterBlockTitle: string, filterBlockSubtitle: string, buttonLabel: string }} cfg
+   * @param {{ getHeader: function(): string }} csvCodeCtl
+   * @param {{ getHeader: function(): string }} csvStatusCtl
    * @param {function(string[], string): void} runExportFn
    */
-  function createCsvColumn(cfg, runExportFn) {
+  function createCsvSideBlock(cfg, csvCodeCtl, csvStatusCtl, runExportFn) {
     const col = document.createElement("div");
     col.style.cssText =
       "min-width:0;padding:12px;border-radius:10px;border:1px solid " +
@@ -544,27 +949,14 @@ function startTournamentPanel() {
       ";box-sizing:border-box;display:flex;flex-direction:column;gap:8px;";
 
     const h = document.createElement("div");
-    h.style.cssText = "font-weight:700;font-size:13px;color:#0f172a;";
-    h.textContent = cfg.title;
+    h.style.cssText = "font-weight:700;font-size:12px;color:#0f172a;";
+    h.textContent = cfg.filterBlockTitle;
     col.appendChild(h);
 
     const sub = document.createElement("div");
-    sub.style.cssText = "font-size:10px;color:#64748b;line-height:1.35;margin-top:-4px;";
-    sub.textContent = cfg.subtitle;
+    sub.style.cssText = "font-size:10px;color:#64748b;line-height:1.35;";
+    sub.textContent = cfg.filterBlockSubtitle;
     col.appendChild(sub);
-
-    const inpCodeCol = addLabeledTextInput(
-      col,
-      "Колонка с кодом турнира (точно как заголовок в 1-й строке CSV)",
-      cfg.defaultCodeColumn,
-      cfg.defaultCodeColumn
-    );
-    const inpStatusCol = addLabeledTextInput(
-      col,
-      "Колонка со статусом для фильтра (значения — в чекбоксах ниже)",
-      cfg.defaultStatusColumn,
-      cfg.defaultStatusColumn
-    );
 
     const fileInLocal = document.createElement("input");
     fileInLocal.type = "file";
@@ -577,18 +969,16 @@ function startTournamentPanel() {
     fileStat.style.cssText = "font-size:10px;color:#64748b;line-height:1.35;word-break:break-all;";
     fileStat.textContent = "Последний CSV-файл: не выбирали.";
 
-    let lastCsv = "";
-    let lastCsvName = "";
-
     const filtWrap = document.createElement("div");
     filtWrap.style.cssText = "margin-top:4px;padding-top:10px;border-top:1px solid rgba(15,23,42,.08);";
     const filtLab = document.createElement("div");
     filtLab.style.cssText = "font-weight:600;font-size:11px;color:#334155;margin-bottom:6px;";
-    filtLab.textContent = "Фильтр статусов (учитывается при выгрузке)";
+    filtLab.textContent =
+      "Фильтр статусов только для этой кнопки («" + cfg.runTag + "»). Имена колонок — из блока выше.";
     filtWrap.appendChild(filtLab);
-    const checks = makeStatusChecks(cfg.labels, filtWrap);
+    const checks = makeStatusChecks(cfg.labels, filtWrap, cfg.defaultCheckedStatusLabels);
 
-    function buildAllowMap() {
+    function buildAllowMapFromThisBlockOnly() {
       const allow = {};
       Object.keys(checks).forEach(function (k) {
         allow[k] = checks[k].checked;
@@ -596,28 +986,29 @@ function startTournamentPanel() {
       return allow;
     }
 
+    /** Колонки из общей панели; фильтр статусов — только чекбоксы этого нижнего блока. */
     function codesFromCsvText(csvText) {
-      const allow = buildAllowMap();
-      const codeH = (inpCodeCol.value || "").trim() || cfg.defaultCodeColumn;
-      const statH = (inpStatusCol.value || "").trim() || cfg.defaultStatusColumn;
+      const allow = buildAllowMapFromThisBlockOnly();
+      var codeH = csvCodeCtl.getHeader() || CSV_CODE_COLUMN_PRESETS[0];
+      var statH = csvStatusCtl.getHeader() || CSV_STATUS_COLUMN_PRESETS[0];
       return codesFromCsvByColumns(csvText, allow, codeH, statH);
     }
 
     fileInLocal.addEventListener("change", function () {
       const f = fileInLocal.files && fileInLocal.files[0];
       if (!f) return;
-      lastCsvName = f.name || "";
+      const lastCsvName = f.name || "";
       const reader = new FileReader();
       reader.onload = function () {
-        lastCsv = String(reader.result || "");
+        const lastCsv = String(reader.result || "");
         fileStat.textContent = "Последний файл: " + lastCsvName + " (" + lastCsv.length + " симв.)";
-        console.log("CSV «" + cfg.title + "»: " + lastCsvName + ", символов: " + lastCsv.length);
+        console.log("CSV «" + cfg.runTag + "»: " + lastCsvName + ", символов: " + lastCsv.length);
         try {
           fileInLocal.value = "";
         } catch (eClr) {}
         const ids = codesFromCsvText(lastCsv);
         if (ids.length === 0) {
-          log("Нет кодов (" + cfg.runTag + " файл). Проверьте колонки CSV и фильтр статусов.");
+          log("Нет кодов (" + cfg.runTag + " файл). Проверьте имена колонок вверху и фильтр статусов в этом блоке.");
           return;
         }
         void runExportFn(ids, cfg.runTag + " файл");
@@ -627,9 +1018,9 @@ function startTournamentPanel() {
 
     const btnCsvFile = document.createElement("button");
     btnCsvFile.type = "button";
-    btnCsvFile.textContent = "CSV: выбрать файл и сразу выгрузить";
+    btnCsvFile.textContent = cfg.buttonLabel;
     btnCsvFile.style.cssText =
-      "padding:8px 10px;font-size:11px;cursor:pointer;background:#0f172a;color:#fff;border:none;border-radius:8px;font-weight:600;width:100%;box-sizing:border-box;";
+      "padding:8px 10px;font-size:11px;cursor:pointer;background:#0f172a;color:#fff;border:none;border-radius:8px;font-weight:600;width:100%;box-sizing:border-box;line-height:1.35;";
     btnCsvFile.addEventListener("click", function () {
       fileInLocal.click();
     });
@@ -639,15 +1030,47 @@ function startTournamentPanel() {
     col.appendChild(btnCsvFile);
     col.appendChild(fileStat);
 
-    return { col: col };
+    return col;
   }
 
-  const csvColSectionLabel = document.createElement("div");
-  csvColSectionLabel.style.cssText =
-    "font-weight:700;margin:14px 0 8px;color:#0f172a;font-size:12px;padding-top:10px;border-top:1px solid #e2e8f0;";
-  csvColSectionLabel.textContent =
-    "Два блока CSV — имена колонок, фильтр статусов, выгрузка только через выбор файла";
-  root.appendChild(csvColSectionLabel);
+  const csvOuter = document.createElement("div");
+  csvOuter.style.cssText =
+    "margin-top:14px;padding:12px;border-radius:10px;border:1px solid #cbd5e1;" +
+    "background:linear-gradient(180deg,#f8fafc 0%,#eef2ff 55%,#eff6ff 100%);box-sizing:border-box;";
+
+  const csvMainTitle = document.createElement("div");
+  csvMainTitle.style.cssText = "font-weight:700;font-size:14px;color:#0f172a;margin-bottom:4px;";
+  csvMainTitle.textContent = "Загрузка из TOURNAMENT_SHEDULE / LIST";
+  csvOuter.appendChild(csvMainTitle);
+
+  const csvMainSub = document.createElement("div");
+  csvMainSub.style.cssText = "font-size:10px;color:#64748b;line-height:1.4;margin-bottom:10px;";
+  csvMainSub.textContent =
+    "Имена колонок кода и статуса — один раз сверху для обеих кнопок. Ниже у каждой кнопки свой фильтр статусов (SHEDULE и LIST); при выгрузке берутся чекбоксы только из того блока, чью кнопку нажали. Выгрузка — после выбора файла.";
+  csvOuter.appendChild(csvMainSub);
+
+  const csvColsRow = document.createElement("div");
+  csvColsRow.style.cssText =
+    "display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 14px;margin-bottom:12px;align-items:end;";
+  if (typeof window.matchMedia === "function" && window.matchMedia("(max-width:560px)").matches) {
+    csvColsRow.style.gridTemplateColumns = "1fr";
+  }
+
+  const csvCodeCtl = appendLabeledColumnSelect(
+    csvColsRow,
+    "Колонка с кодом турнира (1-я строка CSV)",
+    "tournamentCsvColCode",
+    CSV_CODE_COLUMN_PRESETS,
+    CSV_CODE_COLUMN_PRESETS[0]
+  );
+  const csvStatusCtl = appendLabeledColumnSelect(
+    csvColsRow,
+    "Колонка со статусом для фильтра",
+    "tournamentCsvColStatus",
+    CSV_STATUS_COLUMN_PRESETS,
+    CSV_STATUS_COLUMN_PRESETS[0]
+  );
+  csvOuter.appendChild(csvColsRow);
 
   const twoCol = document.createElement("div");
   twoCol.style.cssText =
@@ -657,49 +1080,54 @@ function startTournamentPanel() {
   }
 
   twoCol.appendChild(
-    createCsvColumn(
+    createCsvSideBlock(
       {
-        title: "Колонка CSV A (слева)",
-        subtitle:
-          "По умолчанию колонки TOURNAMENT_CODE и TOURNAMENT_STATUS — можно заменить на свои заголовки из файла.",
-        border: "#cbd5e1",
+        border: "#94a3b8",
         bg: "linear-gradient(180deg,#f8fafc 0%,#f1f5f9 100%)",
         labels: CSV1_STATUS_LABELS,
-        fileAria: "CSV файл колонки A",
-        defaultCodeColumn: "TOURNAMENT_CODE",
-        defaultStatusColumn: "TOURNAMENT_STATUS",
-        runTag: "CSV-A"
+        defaultCheckedStatusLabels: CSV1_DEFAULT_CHECKED_STATUSES,
+        fileAria: "CSV файл TOURNAMENT-SHEDULE",
+        runTag: "TOURNAMENT-SHEDULE",
+        filterBlockTitle: "Статусы как в TOURNAMENT-SHEDULE",
+        filterBlockSubtitle:
+          "Подписи чекбоксов должны совпадать со значениями в колонке статуса вашего CSV (часто АКТИВНЫЙ, ЗАВЕРШЕН…).",
+        buttonLabel: "Выгрузить из TOURNAMENT-SHEDULE — выбрать CSV-файл"
       },
+      csvCodeCtl,
+      csvStatusCtl,
       runExport
-    ).col
+    )
   );
   twoCol.appendChild(
-    createCsvColumn(
+    createCsvSideBlock(
       {
-        title: "Колонка CSV B (справа)",
-        subtitle:
-          "По умолчанию «Код турнира» и «Бизнес-статус турнира» — задайте другие имена, если в выгрузке другие заголовки.",
-        border: "#93c5fd",
+        border: "#3b82f6",
         bg: "linear-gradient(180deg,#eff6ff 0%,#dbeafe 100%)",
         labels: CSV2_STATUS_LABELS,
-        fileAria: "CSV файл колонки B",
-        defaultCodeColumn: "Код турнира",
-        defaultStatusColumn: "Бизнес-статус турнира",
-        runTag: "CSV-B"
+        defaultCheckedStatusLabels: CSV2_DEFAULT_CHECKED_STATUSES,
+        fileAria: "CSV файл TOURNAMENT-LIST",
+        runTag: "TOURNAMENT-LIST",
+        filterBlockTitle: "Статусы как в TOURNAMENT-LIST",
+        filterBlockSubtitle:
+          "Подписи — как в колонке «Бизнес-статус турнира» (Активный, Завершен…).",
+        buttonLabel: "Выгрузить из TOURNAMENT-LIST — выбрать CSV-файл"
       },
+      csvCodeCtl,
+      csvStatusCtl,
       runExport
-    ).col
+    )
   );
-  root.appendChild(twoCol);
+  csvOuter.appendChild(twoCol);
+  panelScroll.appendChild(csvOuter);
 
-  root.appendChild(logEl);
+  root.appendChild(logWrap);
 
   const btnClose = document.createElement("button");
   btnClose.type = "button";
   btnClose.textContent = "Закрыть панель";
   // rgb() вместо #hex: при копировании в некоторых средах «#» мог пропасть и ломал color.
   btnClose.style.cssText =
-    "margin-top:6px;width:100%;padding:8px;cursor:pointer;background:#f1f5f9;color:rgb(15,23,42);border:1px solid #94a3b8;border-radius:4px;font-size:12px;";
+    "margin-top:8px;width:100%;padding:8px;cursor:pointer;background:#f1f5f9;color:rgb(15,23,42);border:1px solid #94a3b8;border-radius:4px;font-size:12px;flex-shrink:0;";
   btnClose.addEventListener("click", function () {
     root.remove();
   });
