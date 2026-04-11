@@ -6,7 +6,7 @@
 
 `{TOURNAMENT_BASE}/{tournamentId}/leadersForAdmin?pageNum=1`
 
-Ответы JSON собираются в **один** файл: ключи — коды турниров, значения — массив из **одного** объекта. Успешный ответ с лидерами пишется **как вернул API**. **0 лидеров** — нормализованная запись `success: false` с `body.tournament` и `contestants: «0 участников»`. **Ошибка** (`success: false` и блок `error`, или HTTP без ожидаемого JSON) — в файле сохраняется объект с **`error`**; в сводке лога помечается как **ERROR**. При HTTP OK и **полностью пустом теле** (`null`) строка в JSON **не** создаётся. Файл **не** скачивается, если нечего записать или итог — только `{}`.
+Ответы JSON собираются в **один** файл: ключи — коды турниров, значения — массив из **одного** объекта. Успешный ответ с лидерами пишется **как вернул API**. **0 лидеров** — нормализованная запись `success: false` с `body.tournament` и `contestants: «0 участников»`. При **ошибке** (`success: false` и блок `error` в ответе API, либо синтетический HTTP-`error`) в файле **одна** запись: `success: true`, `body.tournament` с `tournamentId` = ключу в JSON, пустыми `tournamentIndicator` / `contestants`, `leaders: []`, **`status: "ERROR"`**, а объект **`error`** (uuid, code, title, text и т.д.) — **внутри** `body.tournament.error` — чтобы при развороте в плоскую таблицу была **одна строка** на турнир. В сводке лога **ERROR** определяется по `tournament.error` (или устаревшему плоскому `success:false` + `error`, если такой JSON уже лежит у вас). При HTTP OK и **полностью пустом теле** (`null`) строка в JSON **не** создаётся. Файл **не** скачивается, если нечего записать или итог — только `{}`.
 
 ## 2. Запуск
 
@@ -52,7 +52,7 @@
 
 ## 6. Извлечение лидеров и запись в файл
 
-Число лидеров берётся из `data.body.tournament.leaders`, иначе из `data.body.badge.leaders`. Пустое тело при **успешном** HTTP — ключ в JSON **не** добавляется. Ноль лидеров — в файл пишется **нормализованная** запись через `buildLeadersExportRecordArray` (см. §1). Для лога «участники» по сохранённым записям считаются вхождения непустого поля `employeeNumber` в дереве объекта.
+Число лидеров берётся из `data.body.tournament.leaders`, иначе из `data.body.badge.leaders`. Пустое тело при **успешном** HTTP — ключ в JSON **не** добавляется. Ноль лидеров — в файл пишется **нормализованная** запись через `buildLeadersExportRecordArray` (см. §1). Ошибка API/HTTP — одна запись с `body.tournament.error` и `status: "ERROR"` (`buildTournamentWrappedErrorRecord`). Для лога «участники» по сохранённым записям считаются вхождения непустого поля `employeeNumber` в дереве объекта; текст **ERROR** в логе и в итоговой строке по файлу берётся через `getExportErrorPayload` (вложенный `tournament.error` или устаревший плоский `error`).
 
 ## 7. Функции (кратко)
 
@@ -64,6 +64,8 @@
 | `fetchLeadersForAdmin` | Один GET |
 | `countLeadersInResponseData` | Число лидеров в `data` или `null`, если ответ пустой |
 | `buildLeadersExportRecordArray` | Какую запись положить в JSON по одному турниру (успех / 0 участников / ошибка / HTTP) |
+| `buildTournamentWrappedErrorRecord` | Сборка одной записи при ошибке: `success: true`, `body.tournament` с `status: "ERROR"` и вложенным объектом `error` |
+| `getExportErrorPayload` | Достаёт объект `error` из записи экспорта (для лога и сводки; поддержка вложенного и плоского вида) |
 | `countEmployeeNumberFieldsInTree` | Сколько раз в дереве ответа встречается непустое поле `employeeNumber` (для лога «участники») |
 | `sanitizeExportFilenamePrefix` | Очистка строки префикса имени файла |
 | `readRequestGapMs` (внутри панели) | Чтение паузы из поля ввода (мс) |
@@ -98,5 +100,8 @@
 | 1.16 | Имена колонок CSV: нативные `<select>` с пресетами + «Другой заголовок…» и поле ввода. |
 | 1.17 | Уточнены подписи и документация: колонки общие, фильтр статусов — только из блока нажатой кнопки (логика была изначально). |
 | 1.18 | В JSON: ошибки и «0 участников»; не скачивать пустой `{}`; пропуск только при `null` теле при HTTP OK. |
+| 1.19 | При ошибке в массив по ключу турнира добавлялся второй объект-маркер (заменено в 1.20). |
+| 1.20 | Ошибка API вложена в `body.tournament.error` при `success: true` и `status: "ERROR"` — одна запись в массиве, плоский экспорт в одну строку (`buildTournamentWrappedErrorRecord`). |
+| 1.21 | §6–7: связка ошибки с функциями экспорта; в таблицу функций — `buildTournamentWrappedErrorRecord`, `getExportErrorPayload`. |
 
 *Актуальность проверяйте по `Script/Tournament_LeadersForAdmin.js`.*

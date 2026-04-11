@@ -251,11 +251,50 @@ function sanitizeExportFilenamePrefix(raw) {
 }
 
 /**
+ * Ошибку API/HTTP кладём внутрь `body.tournament.error` при `success:true` и `status:"ERROR"` —
+ * одна запись в массиве по ключу турнира, удобно разворачивать в плоскую таблицу (одна строка на турнир).
+ * @param {string} tid — код турнира из запроса (ключ в JSON и `tournamentId`).
+ * @param {Record<string, unknown>} errObj — объект `error` как от API или синтетический.
+ * @returns {{ success: true, body: { tournament: Record<string, unknown> } }}
+ */
+function buildTournamentWrappedErrorRecord(tid, errObj) {
+  const id = tid != null ? String(tid) : "";
+  return {
+    success: true,
+    body: {
+      tournament: {
+        tournamentId: id,
+        tournamentIndicator: "",
+        status: "ERROR",
+        contestants: "",
+        leaders: [],
+        error: errObj
+      }
+    }
+  };
+}
+
+/**
+ * Достаёт объект ошибки из записи экспорта (вложенный вариант или устаревший плоский `success:false`).
+ * @param {*} root — первый элемент массива по ключу турнира
+ * @returns {Record<string, unknown>|null}
+ */
+function getExportErrorPayload(root) {
+  if (root == null || typeof root !== "object") return null;
+  if (root.success === false && root.error && typeof root.error === "object") return root.error;
+  const t = root.body && root.body.tournament;
+  if (root.success === true && t && typeof t === "object" && t.status === "ERROR" && t.error && typeof t.error === "object") {
+    return t.error;
+  }
+  return null;
+}
+
+/**
  * Одна запись в массиве по ключу турнира в итоговом JSON.
  * — Успех с лидерами: как вернул API `[data]`.
  * — 0 лидеров: `{ success:false, body:{ tournament:{…, contestants:"0 участников", leaders:[] }}}`.
- * — Ошибка API (`success:false` + `error`): как в ответе `[data]`.
- * — HTTP не OK: если в теле уже есть `error` — как есть; иначе синтетический объект с `error`.
+ * — Ошибка API (`success:false` + `error`): одна запись `{ success:true, body:{ tournament:{ tournamentId, …пустые…, status:"ERROR", error:<как в API> }}}`.
+ * — HTTP не OK: тело с `error` — то же оборачивание; иначе синтетический `error` внутри турнира.
  * — Нет JSON-тела при OK: `null` (в файл не включаем).
  * @param {string} tid
  * @param {{ ok: boolean, status: number, tournamentId: string, data: * }} fr
@@ -265,24 +304,21 @@ function buildLeadersExportRecordArray(tid, fr) {
   if (!fr.ok) {
     const d = fr.data;
     if (d && typeof d === "object" && d.success === false && d.error && typeof d.error === "object") {
-      return [d];
+      return [buildTournamentWrappedErrorRecord(tid, d.error)];
     }
     return [
-      {
-        success: false,
-        error: {
-          code: "HTTP-" + fr.status,
-          title: "Ошибка HTTP",
-          text:
-            "Запрос GET leadersForAdmin для «" +
-            tid +
-            "» завершился со статусом " +
-            fr.status +
-            ".",
-          type: "error",
-          tournamentId: tid
-        }
-      }
+      buildTournamentWrappedErrorRecord(tid, {
+        code: "HTTP-" + fr.status,
+        title: "Ошибка HTTP",
+        text:
+          "Запрос GET leadersForAdmin для «" +
+          tid +
+          "» завершился со статусом " +
+          fr.status +
+          ".",
+        type: "error",
+        tournamentId: tid
+      })
     ];
   }
 
@@ -292,7 +328,7 @@ function buildLeadersExportRecordArray(tid, fr) {
   }
 
   if (data.success === false && data.error && typeof data.error === "object") {
-    return [data];
+    return [buildTournamentWrappedErrorRecord(tid, data.error)];
   }
 
   const cnt = countLeadersInResponseData(data);
@@ -632,12 +668,13 @@ function startTournamentPanel() {
           savedCount++;
           const root = pack[0];
           const empInTree = countEmployeeNumberFieldsInTree(root);
-          if (root && root.success === false && root.error) {
+          const errPay = getExportErrorPayload(root);
+          if (errPay) {
             log(
               "  → в файл «" +
                 tid +
-                "»: ERROR (блок error" +
-                (root.error.code ? ", код " + root.error.code : "") +
+                "»: ERROR (tournament.error" +
+                (errPay.code ? ", код " + errPay.code : "") +
                 "), employeeNumber в дереве: " +
                 empInTree +
                 "."
@@ -705,10 +742,11 @@ function startTournamentPanel() {
         const em = countEmployeeNumberFieldsInTree(rootData);
         totalEmp += em;
         var line = "«" + k + "»:";
-        if (rootData && rootData.success === false && rootData.error) {
+        const errP = getExportErrorPayload(rootData);
+        if (errP) {
           line +=
             " ERROR, код " +
-            (rootData.error.code != null ? String(rootData.error.code) : "?") +
+            (errP.code != null ? String(errP.code) : "?") +
             ", employeeNumber=" +
             em;
         } else if (rootData && rootData.success === false && rootData.body && rootData.body.tournament) {
