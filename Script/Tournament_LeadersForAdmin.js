@@ -159,23 +159,32 @@ function indexOfHeader(headers, name) {
  * @param {Record<string, boolean>} allowedStatus — какие значения статуса включены
  * @param {string} codeColumnName — заголовок колонки с кодом турнира
  * @param {string} statusColumnName — заголовок колонки со статусом (фильтр чекбоксов)
+ * @param {function(string): void} [warnToJournal] — опционально: предупреждения в «Журнал работы» (не в консоль)
  * @returns {string[]}
  */
-function codesFromCsvByColumns(csvText, allowedStatus, codeColumnName, statusColumnName) {
+function codesFromCsvByColumns(csvText, allowedStatus, codeColumnName, statusColumnName, warnToJournal) {
   const { headers, rows } = parseCsv(csvText);
   const ch = (codeColumnName || "").trim();
   const sh = (statusColumnName || "").trim();
   if (!ch || !sh) {
-    console.warn("CSV: не заданы имена колонок (код и/или статус).");
+    if (typeof warnToJournal === "function") {
+      warnToJournal("CSV: не заданы имена колонок (код и/или статус).");
+    }
     return [];
   }
   const ic = indexOfHeader(headers, ch);
   const is = indexOfHeader(headers, sh);
   if (ic < 0 || is < 0) {
-    console.warn(
-      "CSV: колонки не найдены. Ожидались «" + ch + "» и «" + sh + "». Заголовки в файле:",
-      headers
-    );
+    if (typeof warnToJournal === "function") {
+      warnToJournal(
+        "CSV: колонки не найдены. Ожидались «" +
+          ch +
+          "» и «" +
+          sh +
+          "». Заголовки в файле: " +
+          headers.join(" | ")
+      );
+    }
     return [];
   }
   const out = [];
@@ -422,7 +431,7 @@ function startTournamentPanel() {
   const titleSub = document.createElement("div");
   titleSub.style.cssText = "font-size:11px;color:#64748b;margin-bottom:10px;line-height:1.4;";
   titleSub.textContent =
-    "Каждая кнопка сразу запускает выгрузку. Для .txt и CSV сначала откроется выбор файла. Стенд, префикс имени файла и паузу задайте до нажатия. В JSON попадают и ошибки, и «0 участников»; без тела ответа при HTTP OK строка не пишется; файл из одного «{}» не создаётся.";
+    "Каждая кнопка сразу запускает выгрузку. Для .txt и CSV сначала откроется выбор файла. Стенд, префикс имени файла и паузу задайте до нажатия. В JSON попадают и ошибки, и «0 участников»; без тела ответа при HTTP OK строка не пишется; файл из одного «{}» не создаётся. Ход выгрузки — в «Журнал работы»; в консоли — кратко о старте и итоге.";
   root.appendChild(titleSub);
 
   const stRow = document.createElement("div");
@@ -533,7 +542,7 @@ function startTournamentPanel() {
     "height:min(168px,22vh);min-height:88px;max-height:24vh;box-sizing:border-box;";
   const logLab = document.createElement("div");
   logLab.style.cssText = "font-weight:600;font-size:11px;color:#475569;margin-bottom:4px;flex-shrink:0;";
-  logLab.textContent = "Лог (лента, новые строки снизу):";
+  logLab.textContent = "Журнал работы (лента, новые строки снизу):";
   logWrap.appendChild(logLab);
 
   const logEl = document.createElement("div");
@@ -579,7 +588,6 @@ function startTournamentPanel() {
       logEl.removeChild(logEl.firstElementChild);
     }
     logEl.scrollTop = logEl.scrollHeight;
-    console.log(msg);
   }
 
   log("Панель открыта. Сообщения выгрузки добавляются в ленту ниже.");
@@ -627,6 +635,13 @@ function startTournamentPanel() {
 
       const gapMs = readRequestGapMs();
       const prefixForFile = buildExportFilenamePrefix(standKey);
+      console.log(
+        "[Турниры leadersForAdmin] Выгрузка запущена. Кодов: " +
+          ids.length +
+          " | стенд: " +
+          standKey +
+          ". Подробности — в «Журнал работы»."
+      );
       log(
         "Старт выгрузки | источник: " +
           (sourceTag || "") +
@@ -653,14 +668,12 @@ function startTournamentPanel() {
         try {
           const fr = await fetchLeadersForAdmin(baseUrl, tid);
           if (!fr.ok) {
-            console.warn("[HTTP " + fr.status + "] турнир:", tid);
             log("[HTTP " + fr.status + "] «" + tid + "» — в файл пойдёт запись об ошибке.");
           }
           const pack = buildLeadersExportRecordArray(tid, fr);
           if (pack == null) {
             skipped++;
             skippedNotSaved.push({ tid: tid, reason: "пустой ответ" });
-            console.log("[пропуск: пустой ответ] турнир:", tid);
             log("Пропуск «" + tid + "»: нет JSON-тела при успешном HTTP — в файл не попадает.");
             continue;
           }
@@ -705,7 +718,6 @@ function startTournamentPanel() {
             );
           }
         } catch (e) {
-          console.error("[исключение] турнир:", tid, e);
           log("[исключение] " + tid + (e && e.message ? ": " + e.message : ""));
           errors++;
         }
@@ -713,7 +725,16 @@ function startTournamentPanel() {
       }
 
       if (skippedNotSaved.length > 0) {
-        console.log("Итого без записи в JSON (нет тела), штук: " + skippedNotSaved.length + ":", skippedNotSaved);
+        log(
+          "Пропуски без записи в JSON (нет тела), шт.: " +
+            skippedNotSaved.length +
+            ": " +
+            skippedNotSaved
+              .map(function (x) {
+                return x.tid;
+              })
+              .join(", ")
+        );
       }
 
       if (savedCount === 0 || Object.keys(results).length === 0) {
@@ -724,12 +745,16 @@ function startTournamentPanel() {
             errors +
             "."
         );
+        console.log(
+          "[Турниры leadersForAdmin] Файл не создан. Пропусков: " + skipped + " | исключений: " + errors
+        );
         return;
       }
 
       const jsonOut = JSON.stringify(results);
       if (jsonOut === "{}" || jsonOut.trim() === "{}") {
         log("Файл не создан: итоговый объект пустой {}.");
+        console.log("[Турниры leadersForAdmin] Файл не создан: пустой объект {}.");
         return;
       }
 
@@ -780,9 +805,18 @@ function startTournamentPanel() {
       );
       log("  Детально по турнирам в файле: " + perTournament.join(" | "));
       log("  Файл: " + fname);
-      if (skipped > 0) {
-        log("  Пропуски — в console.log (skippedNotSaved).");
-      }
+      console.log(
+        "[Турниры leadersForAdmin] Готово. Файл: " +
+          fname +
+          " | записей в файле: " +
+          savedCount +
+          " | пропусков (без тела): " +
+          skipped +
+          " | исключений: " +
+          errors +
+          " | Σ employeeNumber по дереву: " +
+          totalEmp
+      );
     } finally {
       exportBusy = false;
     }
@@ -1029,7 +1063,9 @@ function startTournamentPanel() {
       const allow = buildAllowMapFromThisBlockOnly();
       var codeH = csvCodeCtl.getHeader() || CSV_CODE_COLUMN_PRESETS[0];
       var statH = csvStatusCtl.getHeader() || CSV_STATUS_COLUMN_PRESETS[0];
-      return codesFromCsvByColumns(csvText, allow, codeH, statH);
+      return codesFromCsvByColumns(csvText, allow, codeH, statH, function (w) {
+        log(w);
+      });
     }
 
     fileInLocal.addEventListener("change", function () {
@@ -1040,7 +1076,7 @@ function startTournamentPanel() {
       reader.onload = function () {
         const lastCsv = String(reader.result || "");
         fileStat.textContent = "Последний файл: " + lastCsvName + " (" + lastCsv.length + " симв.)";
-        console.log("CSV «" + cfg.runTag + "»: " + lastCsvName + ", символов: " + lastCsv.length);
+        log("CSV «" + cfg.runTag + "»: " + lastCsvName + ", символов: " + lastCsv.length);
         try {
           fileInLocal.value = "";
         } catch (eClr) {}
@@ -1172,6 +1208,9 @@ function startTournamentPanel() {
   root.appendChild(btnClose);
 
   document.body.appendChild(root);
+  console.log(
+    "[Турниры leadersForAdmin] Панель открыта. Подробный журнал — в окне «Журнал работы» на панели."
+  );
 }
 
 startTournamentPanel();

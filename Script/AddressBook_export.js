@@ -4,7 +4,7 @@
 // Стенд в смысле окружения — ALPHA; база URL для fetch = window.location.origin (как в успешном HAR: тот же хост, что у открытой вкладки).
 // Тогда credentials: 'include' отправляет куки сессии, привязанные к этому хосту (не к «чужому» origin вроде omega.sbrf.ru при вкладке https://addressbook/).
 // ADDRESSBOOK_ORIGINS.ALPHA — справочный/запасной хост Omega, если origin вкладки пуст (редко: file:// и т.п.).
-// Карточка empInfoFull: empId = UUID (employeeId из search), не 8-значный ТН.
+// Карточка empInfoFull: empId = UUID (employeeId из search), не 8-значный ТН. Если в hits несколько записей — GET по каждому уникальному employeeId.
 // =============================================================================
 // Вся логика в IIFE: повторная вставка скрипта в консоль не падает на «уже объявлено» (const/let на верхнем уровне).
 (function () {
@@ -80,18 +80,26 @@ function tabNumToSearchNumber(normalizedEightDigits) {
 }
 
 /**
- * Берёт employeeId (UUID) из ответа POST employees/search.
+ * Собирает все employeeId (UUID) из ответа POST employees/search (массив hits).
+ * Порядок как в ответе; повторяющиеся UUID пропускаются.
  * @param {*} data — распарсенный JSON
- * @returns {string|null}
+ * @returns {string[]}
  */
-function pickEmployeeIdFromSearchData(data) {
-  if (!data || typeof data !== "object") return null;
+function pickEmployeeIdsFromSearchData(data) {
+  if (!data || typeof data !== "object") return [];
   var hits = data.hits;
-  if (!Array.isArray(hits) || hits.length === 0) return null;
-  var h0 = hits[0];
-  if (!h0 || typeof h0.employeeId !== "string") return null;
-  var id = h0.employeeId.trim();
-  return id.length > 0 ? id : null;
+  if (!Array.isArray(hits) || hits.length === 0) return [];
+  var seen = {};
+  var out = [];
+  for (var hi = 0; hi < hits.length; hi++) {
+    var h = hits[hi];
+    if (!h || typeof h.employeeId !== "string") continue;
+    var id = h.employeeId.trim();
+    if (id.length === 0 || seen[id]) continue;
+    seen[id] = true;
+    out.push(id);
+  }
+  return out;
 }
 
 /**
@@ -221,7 +229,7 @@ function startAddressBookPanel() {
   const sub = document.createElement("div");
   sub.style.cssText = "font-size:12px;color:#64748b;margin:0 0 14px 0;line-height:1.45;";
   sub.textContent =
-    "Стенд ALPHA. Запросы идут на origin этой вкладки — с ним же уходят куки сессии (см. блок «Стенд»). Прогресс — в логе и в консоли.";
+    "Стенд ALPHA. Запросы идут на origin этой вкладки — с ним же уходят куки сессии (см. блок «Стенд»). Ход работы — в «Журнал работы»; в консоли — кратко о запуске и итоге.";
   box.appendChild(sub);
 
   const rowStand = document.createElement("div");
@@ -430,16 +438,15 @@ function startAddressBookPanel() {
     "margin-top:0;font-size:11px;color:#0f172a;background:#f8fafc;min-height:168px;max-height:300px;overflow:auto;" +
     "border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px;font-family:ui-monospace,monospace;" +
     "white-space:pre-wrap;word-break:break-word;line-height:1.45;box-sizing:border-box;width:100%;";
-  logEl.textContent = "Лог: —";
+  logEl.textContent = "—";
 
   /**
-   * Добавляет строку в поле лога на панели и дублирует в консоль.
+   * Добавляет строку только в «Журнал работы» на панели (подробные сообщения не дублируются в консоль).
    * @param {string} line
    */
   function appendLog(line) {
     const s = typeof line === "string" ? line : String(line);
-    console.log("[Адресная книга]", s);
-    if (logEl.textContent === "Лог: —") logEl.textContent = s;
+    if (logEl.textContent === "—") logEl.textContent = s;
     else logEl.textContent = logEl.textContent + "\n" + s;
     logEl.scrollTop = logEl.scrollHeight;
   }
@@ -464,6 +471,11 @@ function startAddressBookPanel() {
    */
   async function runEmpInfoFullExport(ids, pauseBetweenMs, pauseAfterSearchMs, sourceTag) {
     var prefix = sourceTag ? sourceTag + " — " : "";
+    console.log(
+      "[Адресная книга] Запущена выгрузка карточек (search → empInfoFull). Табельных: " +
+        ids.length +
+        ". Подробности — в «Журнал работы» на панели."
+    );
     appendLog(
       prefix +
         "Карточки по ТН (search → empInfoFull), шт.: " +
@@ -472,6 +484,7 @@ function startAddressBookPanel() {
         ADDRESSBOOK_STAND_KEY
     );
     const results = [];
+    var totalEmpInfoFullCalls = 0;
     for (let i = 0; i < ids.length; i++) {
       const id = ids[i];
       const searchNum = tabNumToSearchNumber(id);
@@ -487,30 +500,53 @@ function startAddressBookPanel() {
             : searchRes.data && Array.isArray(searchRes.data.hits)
               ? searchRes.data.hits.length
               : 0;
-        if (totalHits > 1) {
-          appendLog("    → внимание: в ответе search несколько записей, берётся первая (hits[0])");
-        }
-        const empUuid = pickEmployeeIdFromSearchData(searchRes.data);
-        if (!empUuid) {
+        const empUuids = pickEmployeeIdsFromSearchData(searchRes.data);
+        if (empUuids.length === 0) {
           results.push({
             tabNumNormalized: id,
             search: searchRes,
-            employeeId: null,
-            empInfoFull: null,
+            cards: [],
             error: "Нет employeeId в ответе search (пустые hits или неуспех)"
           });
           appendLog("    → пропуск: нет employeeId после search");
         } else {
-          appendLog("    → employeeId " + empUuid + " → GET empInfoFull …");
-          if (pauseAfterSearchMs > 0) await delay(pauseAfterSearchMs);
-          const full = await fetchEmpInfoFull(empUuid);
+          if (totalHits > 1 || empUuids.length > 1) {
+            appendLog(
+              "    → в ответе search записей (hits с id): " +
+                empUuids.length +
+                (totalHits > empUuids.length
+                  ? " (всего элементов hits: " + totalHits + ")"
+                  : "") +
+                " — для каждого id выполняется GET empInfoFull"
+            );
+          }
+          var cards = [];
+          for (var j = 0; j < empUuids.length; j++) {
+            var empUuid = empUuids[j];
+            appendLog(
+              "    → [" +
+                (j + 1) +
+                "/" +
+                empUuids.length +
+                "] employeeId " +
+                empUuid +
+                " → GET empInfoFull …"
+            );
+            if (j === 0) {
+              if (pauseAfterSearchMs > 0) await delay(pauseAfterSearchMs);
+            } else if (pauseBetweenMs > 0) {
+              await delay(pauseBetweenMs);
+            }
+            const full = await fetchEmpInfoFull(empUuid);
+            totalEmpInfoFullCalls++;
+            cards.push({ employeeId: empUuid, empInfoFull: full });
+            appendLog("    → empInfoFull HTTP " + full.status + (full.ok ? " OK" : " ошибка"));
+          }
           results.push({
             tabNumNormalized: id,
             search: searchRes,
-            employeeId: empUuid,
-            empInfoFull: full
+            cards: cards
           });
-          appendLog("    → empInfoFull HTTP " + full.status + (full.ok ? " OK" : " ошибка"));
         }
       } catch (e) {
         results.push({ tabNumNormalized: id, error: String(e) });
@@ -520,7 +556,23 @@ function startAddressBookPanel() {
     }
     const fname = "addressbook_empInfoFull_" + ADDRESSBOOK_STAND_KEY + "_" + Date.now() + ".json";
     downloadJson(fname, results);
-    appendLog("Готово. Файл: " + fname + " (записей: " + results.length + ")");
+    appendLog(
+      "Готово. Файл: " +
+        fname +
+        " (строк по ТН: " +
+        results.length +
+        ", всего GET empInfoFull: " +
+        totalEmpInfoFullCalls +
+        ")"
+    );
+    console.log(
+      "[Адресная книга] Готово. Файл: " +
+        fname +
+        " | строк по ТН: " +
+        results.length +
+        " | запросов empInfoFull: " +
+        totalEmpInfoFullCalls
+    );
   }
 
   // Файл .txt: статистика в лог, без заполнения textarea — сразу runEmpInfoFullExport.
@@ -618,6 +670,11 @@ function startAddressBookPanel() {
     var pb = readPauseMsFromInput(inpPauseBetween, REQUEST_PAUSE_MS);
     setBusy(true);
     try {
+      console.log(
+        "[Адресная книга] Запущен только POST search по ТН, запросов: " +
+          ids.length +
+          ". Подробности — в «Журнал работы»."
+      );
       appendLog("— POST search по ТН (число), запросов: " + ids.length + ", стенд: " + ADDRESSBOOK_STAND_KEY);
       const results = [];
       for (let i = 0; i < ids.length; i++) {
@@ -636,6 +693,7 @@ function startAddressBookPanel() {
       const fname = "addressbook_search_by_tn_" + ADDRESSBOOK_STAND_KEY + "_" + Date.now() + ".json";
       downloadJson(fname, results);
       appendLog("Готово. Файл: " + fname);
+      console.log("[Адресная книга] POST search по ТН завершён. Файл: " + fname + " | запросов: " + ids.length);
     } finally {
       setBusy(false);
     }
@@ -659,6 +717,11 @@ function startAddressBookPanel() {
     var pb = readPauseMsFromInput(inpPauseBetween, REQUEST_PAUSE_MS);
     setBusy(true);
     try {
+      console.log(
+        "[Адресная книга] Запущен POST search по ФИО, строк: " +
+          lines.length +
+          ". Подробности — в «Журнал работы»."
+      );
       appendLog("— POST search по ФИО, строк: " + lines.length + ", стенд: " + ADDRESSBOOK_STAND_KEY);
       const results = [];
       for (let i = 0; i < lines.length; i++) {
@@ -686,6 +749,7 @@ function startAddressBookPanel() {
       const fname = "addressbook_search_by_fio_" + ADDRESSBOOK_STAND_KEY + "_" + Date.now() + ".json";
       downloadJson(fname, results);
       appendLog("Готово. Файл: " + fname);
+      console.log("[Адресная книга] POST search по ФИО завершён. Файл: " + fname + " | строк: " + lines.length);
     } finally {
       setBusy(false);
     }
@@ -694,7 +758,7 @@ function startAddressBookPanel() {
   const logLab = document.createElement("div");
   logLab.style.cssText =
     "font-size:11px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#64748b;margin:16px 0 8px 0;";
-  logLab.textContent = "Лог";
+  logLab.textContent = "Журнал работы";
   box.appendChild(logLab);
   box.appendChild(logEl);
 
@@ -717,4 +781,7 @@ function startAddressBookPanel() {
 }
 
 startAddressBookPanel();
+console.log(
+  "[Адресная книга] Панель открыта. Подробный журнал — в окне «Журнал работы» на панели выгрузок."
+);
 })();

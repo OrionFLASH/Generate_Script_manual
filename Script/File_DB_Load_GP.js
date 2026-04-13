@@ -3,7 +3,7 @@
 // =============================================================================
 // POST к эндпоинтам .../file-download — ответ: бинарный файл (скачивание в браузере).
 // Куки берутся из текущей сессии (credentials: "include"), на странице нужного стенда.
-// Панель: основные выгрузки, группы «Рейтинг» и «Заказы», чекбоксы и «Скачать выделенное» с паузой; стиль как у других панелей; лог на панели дублирует консоль.
+// Панель: основные выгрузки, группы «Рейтинг» и «Заказы», чекбоксы и «Скачать выделенное» с паузой; подробный журнал — только в окне «Журнал работы», в консоли — кратко.
 // Табельные номера не используются.
 // =============================================================================
 
@@ -366,21 +366,36 @@ function syncFileDlRewardsDateFromPanel() {
 var fileDlPanelLogAppend = null;
 
 /**
- * Дублирует сообщение в консоль и в лог панели (если панель открыта и задан приёмник).
+ * Записывает сообщение в «Журнал работы» на панели; уровень error дополнительно дублируется в console.error.
  * @param {"log"|"warn"|"error"} level
  * @param {string} msg
  */
 function fileDlPanelEcho(level, msg) {
   var s = typeof msg === "string" ? msg : String(msg);
   if (level === "error") console.error(s);
-  else if (level === "warn") console.warn(s);
-  else console.log(s);
   if (typeof fileDlPanelLogAppend === "function") {
     try {
       fileDlPanelLogAppend(s);
     } catch (e) {
       /* панель могла быть снята с DOM */
     }
+  }
+}
+
+/**
+ * Краткая строка в консоль после одиночной загрузки (не пакет с порядковым номером в пакете).
+ * @param {object} ctx
+ * @param {{ ok: boolean, fileName?: string, status?: number, error?: string }} result
+ */
+function fileDlConsoleSingleJobSummary(ctx, result) {
+  if (typeof ctx.index === "number" && typeof ctx.total === "number") return;
+  var r = result || {};
+  if (r.ok && r.fileName) {
+    console.log("[File_DB_Load_GP] Одиночная загрузка: OK | " + r.fileName);
+  } else {
+    var tail = r.status != null ? " | HTTP " + r.status : "";
+    var errS = r.error != null ? " | " + String(r.error).slice(0, 160) : "";
+    console.log("[File_DB_Load_GP] Одиночная загрузка: ошибка" + tail + errS);
   }
 }
 
@@ -417,7 +432,7 @@ function isJsonContentType(ct) {
 }
 
 /**
- * Компактная строка тела POST для логов консоли (параметры выгрузки).
+ * Компактная строка тела POST для журнала (параметры выгрузки).
  * @param {object} bodyObj
  * @returns {string}
  */
@@ -437,6 +452,8 @@ function formatPostBodyForLog(bodyObj) {
  */
 async function downloadOneJob(job, ctx) {
   ctx = ctx || {};
+  var _dlExit = null;
+  try {
   const standKey = FILE_DL_ACTIVE_STAND === "ALPHA" || FILE_DL_ACTIVE_STAND === "SIGMA" ? FILE_DL_ACTIVE_STAND : "SIGMA";
   const origin = STAND_ORIGINS[standKey] || STAND_ORIGINS.SIGMA;
   const path = job.apiPath || DEFAULT_FILE_DOWNLOAD_PATH;
@@ -494,7 +511,8 @@ async function downloadOneJob(job, ctx) {
   } catch (e) {
     // id задачи уже в предыдущем логе «СТАРТ загрузки» — не дублируем.
     fileDlPanelEcho("error", "ОШИБКА (сеть / исключение)\n" + String(e));
-    return { ok: false, error: String(e) };
+    _dlExit = { ok: false, error: String(e) };
+    return _dlExit;
   }
 
   if (!res.ok) {
@@ -502,7 +520,8 @@ async function downloadOneJob(job, ctx) {
       "warn",
       "ОШИБКА HTTP\nСтатус: " + res.status + " " + (res.statusText || "")
     );
-    return { ok: false, status: res.status };
+    _dlExit = { ok: false, status: res.status };
+    return _dlExit;
   }
 
   // Сервер может вернуть HTTP 200 и JSON с success:false (таймаут и т.д.) — не сохранять как файл.
@@ -517,7 +536,8 @@ async function downloadOneJob(job, ctx) {
         "warn",
         "ОШИБКА: ответ помечен как JSON, разбор не удался\n" + String(parseErr)
       );
-      return { ok: false, error: "invalid_json_body" };
+      _dlExit = { ok: false, error: "invalid_json_body" };
+      return _dlExit;
     }
     if (data && data.success === false && data.error) {
       const err = data.error;
@@ -537,20 +557,23 @@ async function downloadOneJob(job, ctx) {
           (err.text || "—") +
           (err.uuid ? "\nuuid: " + err.uuid : "")
       );
-      return { ok: false, apiError: err };
+      _dlExit = { ok: false, apiError: err };
+      return _dlExit;
     }
     if (data && data.success === true) {
       fileDlPanelEcho(
         "warn",
         "Ответ JSON с success:true — не файл выгрузки, скачивание отменено"
       );
-      return { ok: false, error: "unexpected_json_success" };
+      _dlExit = { ok: false, error: "unexpected_json_success" };
+      return _dlExit;
     }
     fileDlPanelEcho(
       "warn",
       "Ответ application/json непохож на файл выгрузки — скачивание отменено"
     );
-    return { ok: false, error: "unexpected_json_shape" };
+    _dlExit = { ok: false, error: "unexpected_json_shape" };
+    return _dlExit;
   }
 
   const blob = await res.blob();
@@ -574,7 +597,7 @@ async function downloadOneJob(job, ctx) {
     URL.revokeObjectURL(objectUrl);
   }, 0);
 
-  // При параллельном (скользящем) старте в консоли несколько потоков — дублируем id и payload.
+  // При параллельном (скользящем) старте подробности по каждому файлу — в «Журнал работы».
   fileDlPanelEcho(
     "log",
     "ЗАВЕРШЕНО: файл скачан\n" +
@@ -593,7 +616,11 @@ async function downloadOneJob(job, ctx) {
       " байт"
   );
 
-  return { ok: true, fileName: fileName };
+  _dlExit = { ok: true, fileName: fileName };
+  return _dlExit;
+  } finally {
+    if (_dlExit != null) fileDlConsoleSingleJobSummary(ctx, _dlExit);
+  }
 }
 
 /**
@@ -605,6 +632,13 @@ async function downloadJobsSequentially(jobs, logLabel) {
   syncFileDlDelaysFromPanel();
   const pauseMs = fileDlDelayBetweenMs;
   const total = jobs.length;
+  console.log(
+    "[File_DB_Load_GP] Пакет «" +
+      logLabel +
+      "» (последовательно), задач: " +
+      total +
+      ". Подробности — в «Журнал работы»."
+  );
   fileDlPanelEcho(
     "log",
     "ПАКЕТ: " +
@@ -651,6 +685,16 @@ async function downloadJobsSequentially(jobs, logLabel) {
       "\nС ошибкой: " +
       errCount
   );
+  console.log(
+    "[File_DB_Load_GP] Пакет «" +
+      logLabel +
+      "» завершён (последовательно). Задач: " +
+      total +
+      ", успешно: " +
+      okCount +
+      ", ошибок: " +
+      errCount
+  );
 }
 
 /**
@@ -663,6 +707,13 @@ async function downloadJobsStaggered(jobs, logLabel) {
   const staggerMs = fileDlStaggerMinMs;
   const pauseAfterOkMs = fileDlDelayBetweenMs;
   const total = jobs.length;
+  console.log(
+    "[File_DB_Load_GP] Пакет «" +
+      logLabel +
+      "» (скользящий старт), задач: " +
+      total +
+      ". Подробности — в «Журнал работы»."
+  );
   fileDlPanelEcho(
     "log",
     "ПАКЕТ: " +
@@ -715,6 +766,16 @@ async function downloadJobsStaggered(jobs, logLabel) {
       "\nУспешно (файл инициирован): " +
       okCount +
       "\nС ошибкой: " +
+      errCount
+  );
+  console.log(
+    "[File_DB_Load_GP] Пакет «" +
+      logLabel +
+      "» завершён (скользящий старт). Задач: " +
+      total +
+      ", успешно: " +
+      okCount +
+      ", ошибок: " +
       errCount
   );
 }
@@ -786,7 +847,7 @@ function fileDlDetachPanelAndResetRuntime() {
 
 /**
  * Панель: кнопка на каждую задачу + чекбокс для пакета «Скачать выделенное».
- * Стиль окна и кнопок — в одном ключе с AddressBook_export / Tournament_LeadersForAdmin; внизу лог (дубль консоли).
+ * Стиль окна и кнопок — в одном ключе с AddressBook_export / Tournament_LeadersForAdmin; внизу «Журнал работы».
  */
 function startDownloadPanel() {
   var prevRoot = document.getElementById("fileDlGamificationPanelRoot");
@@ -1221,7 +1282,7 @@ function startDownloadPanel() {
   const logLab = document.createElement("div");
   logLab.style.cssText =
     "font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#64748b;margin:0 0 5px;";
-  logLab.textContent = "Лог";
+  logLab.textContent = "Журнал работы";
   container.appendChild(logLab);
 
   const logEl = document.createElement("div");
@@ -1229,12 +1290,12 @@ function startDownloadPanel() {
     "margin:0 0 6px;font-size:9px;color:#0f172a;background:#f8fafc;min-height:76px;max-height:148px;overflow:auto;" +
     "border:1px solid #e2e8f0;border-radius:8px;padding:6px 8px;font-family:ui-monospace,monospace;" +
     "white-space:pre-wrap;word-break:break-word;line-height:1.35;box-sizing:border-box;width:100%;";
-  logEl.textContent = "Лог: —";
+  logEl.textContent = "—";
   container.appendChild(logEl);
 
   fileDlPanelLogAppend = function (line) {
     const s = typeof line === "string" ? line : String(line);
-    if (logEl.textContent === "Лог: —") logEl.textContent = s;
+    if (logEl.textContent === "—") logEl.textContent = s;
     else logEl.textContent = logEl.textContent + "\n" + s;
     logEl.scrollTop = logEl.scrollHeight;
   };
@@ -1253,6 +1314,9 @@ function startDownloadPanel() {
 
   refreshPanelSubSummary();
   document.body.appendChild(container);
+  console.log(
+    "[File_DB_Load_GP] Панель открыта. Подробный журнал — в окне «Журнал работы» на панели."
+  );
 }
 
 // При вставке скрипта в консоль на странице стенда показывается панель.

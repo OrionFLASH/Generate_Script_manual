@@ -84,7 +84,8 @@ const SIGMA_ORIGIN = "https://salesheroes.sberbank.ru";
 var profileGpPanelLogAppend = null;
 
 /**
- * Дублирует сообщение в консоль и в блок лога на панели (аргументы склеиваются через пробел).
+ * Записывает сообщение в «Журнал работы» на панели (аргументы склеиваются через пробел).
+ * Уровень error дополнительно выводится в console.error.
  * @param {"log"|"warn"|"error"} level
  */
 function profileGpPanelEcho(level) {
@@ -94,8 +95,6 @@ function profileGpPanelEcho(level) {
   }
   var s = parts.join(" ");
   if (level === "error") console.error(s);
-  else if (level === "warn") console.warn(s);
-  else console.log(s);
   if (typeof profileGpPanelLogAppend === "function") {
     try {
       profileGpPanelLogAppend(s);
@@ -488,6 +487,12 @@ async function runCollectProfiles(tabNums, runOpts) {
     return;
   }
 
+  console.log(
+    "[Профили героев] Сбор запущен. ТН: " +
+      list.length +
+      ". Подробности — в «Журнал работы» на панели. Идёт обработка…"
+  );
+
   // Освобождаем старые blob:URL со ссылок прошлого прогона (панель).
   if (cfg.photoDownloadLinkHost) {
     var oldLinks = cfg.photoDownloadLinkHost.querySelectorAll("a[data-blob-url]");
@@ -626,6 +631,17 @@ async function runCollectProfiles(tabNums, runOpts) {
   profileGpPanelEcho("log", "Успешных:", totalOk, "| Ошибок:", totalErr);
   profileGpPanelEcho("log", "Суммарный размер ответов ДО обработки:", totalSizeBefore, "bytes");
   profileGpPanelEcho("log", "Суммарный размер ответов ПОСЛЕ обработки:", totalSizeAfter, "bytes");
+
+  console.log(
+    "[Профили героев] Сбор завершён. Всего ТН: " +
+      list.length +
+      " | успешно: " +
+      totalOk +
+      " | ошибок: " +
+      totalErr +
+      " | обработано записей: " +
+      totalCount
+  );
 }
 
 // =============================================================================
@@ -957,7 +973,7 @@ function startWithChoice() {
       return;
     }
     profileGpPanelEcho("log", "Запуск по тексту из поля, ТН:", tabNums.length);
-    profileGpPanelEcho("log", "Сбор в фоне — панель не закрывается; по окончании смотрите консоль, журнал ниже и загрузки.");
+    profileGpPanelEcho("log", "Сбор в фоне — панель не закрывается; по окончании смотрите «Журнал работы» ниже и загрузки.");
     runCollectProfiles(tabNums, readRunOptsForCollect());
   });
 
@@ -979,7 +995,7 @@ function startWithChoice() {
       return;
     }
     profileGpPanelEcho("log", "Запуск по TAB_NUMS, ТН:", TAB_NUMS.length);
-    profileGpPanelEcho("log", "Сбор в фоне — панель не закрывается; по окончании смотрите консоль, журнал ниже и загрузки.");
+    profileGpPanelEcho("log", "Сбор в фоне — панель не закрывается; по окончании смотрите «Журнал работы» ниже и загрузки.");
     runCollectProfiles(TAB_NUMS, readRunOptsForCollect());
   });
 
@@ -1026,6 +1042,9 @@ function startWithChoice() {
   container.appendChild(btnClose);
   container.appendChild(input);
   document.body.appendChild(container);
+  console.log(
+    "[Профили героев] Панель открыта. Подробный журнал — в окне «Журнал работы» на панели."
+  );
 
   input.addEventListener("change", function () {
     const file = input.files && input.files[0];
@@ -1035,7 +1054,7 @@ function startWithChoice() {
       const text = typeof reader.result === "string" ? reader.result : "";
       const tabNums = parseTabNumbersFromText(text);
       profileGpPanelEcho("log", "Из файла извлечено ТН:", tabNums.length);
-      profileGpPanelEcho("log", "Сбор в фоне — панель не закрывается; по окончании смотрите консоль, журнал ниже и загрузки.");
+      profileGpPanelEcho("log", "Сбор в фоне — панель не закрывается; по окончании смотрите «Журнал работы» ниже и загрузки.");
       runCollectProfiles(tabNums, readRunOptsForCollect());
       try {
         input.value = "";
