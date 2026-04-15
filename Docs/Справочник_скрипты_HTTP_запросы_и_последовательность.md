@@ -1,0 +1,184 @@
+# Справочник: скрипты каталога `Script/` — HTTP-запросы, payload и порядок выполнения
+
+Документ описывает **все скрипты** из `Script/`: какие обращения к сети выполняются, **тело запроса (payload)** где применимо, и **логическая последовательность** шагов. Аутентификация везде опирается на **куки текущей вкладки** (`credentials: "include"`); URL-ы стендов приведены как в коде (без реальных секретов).
+
+Подробные ТЗ по отдельным скриптам остаются в профильных файлах `Docs/*.md`; здесь — **единая сводка для быстрого поиска**.
+
+---
+
+## 1. `Profile_GP_LOAD_file.js`
+
+**Назначение:** пакетная выгрузка профилей героев по **табельным номерам** (поле, вставка списка, файл `.txt`).
+
+**Origin:** таблица `PROFILE_ORIGINS` по выбору на панели **стенд** `PROM` | `PSI` и **контур** `ALPHA` | `SIGMA`.
+
+| Шаг | Метод | Путь (относительно origin) | Payload (JSON) | Примечание |
+|-----|--------|-----------------------------|----------------|------------|
+| 1..N | **POST** | `/bo/rmkib.gamification/proxy/v1/profile` | `{ "employeeNumber": "<табельный>" }` | Один POST **на каждый** табельный из очереди. Для контура **SIGMA** в заголовках добавляются `Origin` и `Referer` (как в коде). |
+
+**Последовательность:**
+
+1. Пользователь задаёт список ТН (текст / файл), параметры паузы и retry на панели.
+2. Для **каждого** ТН по очереди: сформировать `makeRequestBody(tn)` → `POST` профиля → разбор JSON → опционально вырезание/скачивание фото (`photoData` / `photoDataKpk`), запись в журнал.
+3. При ошибках HTTP или `success: false` в JSON — запись в результат и журнал; при настроенном retry — повтор с задержкой.
+4. Сохранение итогового JSON (и при необходимости отдельных файлов фото).
+
+---
+
+## 2. `File_DB_Load_GP.js`
+
+**Назначение:** инициирование **скачивания файлов** (CSV и др.) с API gamification через `POST …/file-download`.
+
+**Origin:** выбор **стенд** × **контур** на панели (`STAND_ORIGINS` в коде скрипта).
+
+Общий шаблон: **`POST`** `origin + <apiPath из задачи>`, заголовки `Accept: */*`, `Content-Type: application/json`, тело — **JSON из поля `body` задачи** (клонируется перед отправкой).
+
+### 2.1. Основные три задачи (`DOWNLOAD_JOBS`)
+
+| Задача (id) | Путь | Payload по умолчанию | Дополнения |
+|-------------|------|------------------------|------------|
+| `tournamentListCsv` | `/bo/rmkib.gamification/proxy/v1/tournaments/file-download` | `{}` | — |
+| `employeeRewardsSummary` | `/bo/rmkib.gamification/proxy/v1/employee-rewards/file-download` | `{}` → перед отправкой подставляется **`dateFrom`** с панели (`<input type="date">`, строка вида `YYYY-MM-DD`) | Итоговое тело: `{ "dateFrom": "…" }` |
+| `administrationStatisticCsv` | `/bo/rmkib.gamification/proxy/v1/administration/statistic/file-download` | `{}` | — |
+
+### 2.2. Группа «Рейтинг» (`RATING_GROUP_JOBS`)
+
+- **POST** `/bo/rmkib.gamification/proxy/v1/ratinglist/file-download`
+- **Payload:** `{ "businessBlock": "<KMKKSB|MNS>", "timePeriod": "<ACTIVESEASON|SEASON_…|ALLTHETIME|…>" }` — набор пар задан константами в скрипте (10 вариантов).
+
+### 2.3. Группа «Заказы» (`ORDERS_GROUP_JOBS`)
+
+- **POST** `/bo/rmkib.gamification/proxy/v1/orders/file-download`
+- **Payload:** `{ "businessBlock": "<KMKKSB|MNS>", "listType": "<NONSEASON|SEASON_…|…>" }` — 10 вариантов в коде.
+
+**Последовательность пакета:**
+
+1. Пользователь отмечает задачи чекбоксами (или запускает группу «Рейтинг» / «Заказы»).
+2. Режим **последовательно**: после **успешного** завершения POST N ждётся пауза с панели → POST N+1.
+3. Режим **с перекрытием**: старт следующего POST не раньше минимального интервала после **старта** предыдущего; до **успеха** предыдущего следующий не начинается (логика в коде).
+4. Ответ: ожидается **бинарное тело** (файл). Если `Content-Type` указывает на JSON и в теле **`success: false`** — файл **не** сохраняется, сообщение в журнал.
+
+---
+
+## 3. `AddressBook_export.js`
+
+**Назначение:** выгрузка данных адресной книги: **поиск** сотрудников и/или **карточка** по UUID.
+
+**Origin:** приоритетно **`window.location.origin`** текущей вкладки; если недоступен — fallback `ADDRESSBOOK_ORIGINS.ALPHA` (`https://addressbook.omega.sbrf.ru`). Базовый префикс API: **`ADDRESSBOOK_API_HOME` = `/api/home`**.
+
+### 3.1. POST `employees/search`
+
+| Поле | Описание |
+|------|----------|
+| `searchText` | Число (табельный как **number**, ведущие нули сняты) **или** строка (ФИО и т.д.) |
+| `pageToken` | `null` на первой странице; со значения из ответа для следующих |
+
+**Тело:** `{ "searchText": <number|string>, "pageToken": <string|null> }`.
+
+**Последовательность для search:** при наличии пагинации — цикл POST с обновлением `pageToken`, пока токен не закончится.
+
+### 3.2. GET `empInfoFull`
+
+**URL:** `origin + /api/home/empInfoFull?empId=<UUID>`  
+**Тело:** нет (GET).  
+**Параметр:** `empId` — **UUID** `employeeId` из ответа search (не 8-значный табельный номер).
+
+### 3.3. Сценарии на панели (логика)
+
+| Сценарий | Последовательность |
+|----------|-------------------|
+| **Search → empInfoFull** | Для каждого ввода: POST search (все страницы) → сбор уникальных `employeeId` из `hits` → пауза «после search» → для **каждого** UUID: GET empInfoFull (с паузами по панели). |
+| **Только Search** | Только цепочка POST search по каждому значению (с пагинацией). |
+| **Только empInfoFull** | Ввод трактуется как список **UUID** (или табельные в режиме разбора — см. код): GET по каждому id. |
+
+Те же три сценария доступны **из файла** (после выбора `.txt`).
+
+---
+
+## 4. `Parameters_Actual_Export.js`
+
+**Назначение:** работа с параметрами gamification: **список/детали**, **создание**, **обновление**.
+
+**Origin:** `PARAMETER_ORIGINS` по **стенд** `PROM|PSI` и **контур** `SIGMA|ALPHA` (например `https://salesheroes.sberbank.ru` для PROM+SIGMA).
+
+### 4.1. Вкладка «Выгрузка»
+
+| Шаг | Метод | Путь | Payload |
+|-----|--------|------|---------|
+| 1 | **POST** | `/bo/rmkib.gamification/proxy/v1/parameters` | `{ "status": "ACTUAL" }` или `{ "status": "ARCHIVE" }` — как выбрано на панели |
+| 2..K+1 | **POST** | тот же путь | `{ "objectIds": [ "<objectId>" ] }` — **по одному** id из шага 1; между запросами — пауза с панели (мс) |
+
+**Последовательность:** сначала список → извлечь все `objectId` → для каждого id отдельный POST детализации → объединить в JSON и скачать файл.
+
+### 4.2. Вкладка «Создание» (`param-create`)
+
+| Метод | Путь | Payload |
+|--------|------|---------|
+| **POST** | `/bo/rmkib.gamification/proxy/v1/parameters/param-create` | `{ "parameterCode", "parameterType", "parameterName", "parameterValue" }` — все строки из формы или из файла |
+
+**Последовательность:** перед формой/файлом — **`ensureCachesForCreateOperation()`**: при необходимости один раз `POST` списка `ACTUAL` (кэш **`parameterCode`**) и при отсутствии типов из API — детализация **`parameterTypes`** (кэш допустимых типов, обновление селекта на вкладке «Создание»). Валидация → при необходимости проверка, что **`parameterCode`** ещё не в ACTUAL (иначе сообщение и **без** `param-create`) → подтверждение → **`POST …/param-create`**. Из файла: тот же разбор, что в документе по скрипту (в т.ч. блоки `{...}`), пауза **`PARAM_BATCH_REQUEST_GAP_MS`** между запросами, дубли по коду отфильтровываются. Успех: **`success === true`**.
+
+Дополнительно по кнопке **⬇** на вкладке «Создание»: **всегда** `POST` списка `ACTUAL` и **один** `POST` детализации с фиксированным **`objectId`** мета-параметра — **`parameterTypes.types`** → селект **`parameterType`** только на вкладке 2 (без `param-create`).
+
+### 4.3. Вкладка «Редактирование» (`param-update`)
+
+| Шаг | Метод | Путь | Payload |
+|-----|--------|------|---------|
+| (подготовка) | **POST** | `/bo/rmkib.gamification/proxy/v1/parameters` | `{ "status": "ACTUAL" }` — при отсутствии кэша или по кнопке ⬇ на вкладке 3: кэши **`parameterCode`**, **`objectId`**, типы из **`parameterTypes`** |
+| (подготовка) | **POST** | тот же | `{ "objectIds": [ "<metaObjectId>" ] }` — только детализация справочника типов (как на вкладке 2) |
+| B | **POST** | тот же | `{ "objectIds": [ "<objectId>" ] }` — получение актуального **`version`** для выбранного параметра |
+| C | **POST** | `/bo/rmkib.gamification/proxy/v1/parameters/param-update` | `{ "parameterCode", "parameterType", "parameterName", "parameterValue", "objectId", "version", "status" }` — **`version`** из шага B |
+
+**Последовательность:** при необходимости автоматически тот же поток, что и кнопка ⬇ вкладки 3 (**`ensureEditTabListsForUpdate`**) → проверки: **`objectId`** ∈ сохранённому множеству из шага ACTUAL, **`parameterCode`** ∈ кэшу кодов (иначе — указание создавать на вкладке 2) → **без повторного** `POST { status: ACTUAL }` на каждое нажатие — шаг B → подтверждение → шаг C. **Из файла:** тот же разбор, что для создания; для **каждой** записи — проверки по кэшу, затем B и C (без повторного запроса списка ACTUAL на каждую строку), пауза между **`param-update`**.
+
+---
+
+## 5. `Tournament_LeadersForAdmin.js`
+
+**Назначение:** выгрузка лидеров турнира для админки по **коду турнира**.
+
+**Base URL:** `TOURNAMENT_BASE[стенд][контур]` — путь вида  
+`https://…/bo/rmkib.gamification/api/v1/tournaments/`  
+(без `/proxy/` — **прямой** API v1 tournaments из кода).
+
+| Шаг | Метод | URL (шаблон) | Payload |
+|-----|--------|----------------|---------|
+| 1..N | **GET** | `<baseUrl><tournamentId>/leadersForAdmin?pageNum=1` | Нет (query только `pageNum=1`) |
+
+**Последовательность:**
+
+1. Сбор списка кодов турниров из поля, `.txt` или CSV (колонка кода + фильтр статусов).
+2. Для **каждого** кода: `GET` → разбор JSON → при необходимости нормализация записи (в т.ч. «0 участников», вложенные ошибки в `body.tournament.error`).
+3. Пауза между турнирами — значение с панели (мс).
+4. Сохранение одного JSON и/или CSV на диск.
+
+---
+
+## 6. `UI_AutoTest.js`
+
+**Назначение:** локальная автоматизация UI **без HTTP**: поиск в DOM элемента `a[href="/rating"]` и вызов **`click()`**.
+
+**Запросы к API:** не выполняются.
+
+---
+
+## Сводная таблица по типам операций
+
+| Скрипт | Основной тип запросов | Типичный контент-тело |
+|--------|------------------------|------------------------|
+| `Profile_GP_LOAD_file.js` | POST JSON | `{ employeeNumber }` |
+| `File_DB_Load_GP.js` | POST JSON | `{}`, `{ dateFrom }`, `{ businessBlock, timePeriod }`, `{ businessBlock, listType }` |
+| `AddressBook_export.js` | POST JSON + GET | search: `{ searchText, pageToken }`; empInfoFull: query `empId` |
+| `Parameters_Actual_Export.js` | POST JSON | `{ status }`, `{ objectIds }`, create body, update body |
+| `Tournament_LeadersForAdmin.js` | GET JSON | — |
+| `UI_AutoTest.js` | — | — |
+
+---
+
+## История версий (этот справочник)
+
+| Версия | Изменения |
+|--------|-----------|
+| 1.0 | Первый выпуск: сводка по всем скриптам `Script/`, методы, пути, payload, порядок шагов. |
+| 1.1 | `Parameters_Actual_Export`: кнопка ⬇ — один `objectId` для справочника типов, без обхода всех id. |
+| **1.2** | `Parameters_Actual_Export`: кэш **`objectId`** из ACTUAL; вкладка 3 — отдельная ⬇, **`ensureEditTabListsForUpdate`**; `param-update` без повторного POST списка на каждую операцию/строку файла; подробности в `Docs/Скрипт_выгрузка_актуальных_параметров_Parameters_Actual_Export.md` v3.1. |

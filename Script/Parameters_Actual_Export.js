@@ -31,6 +31,12 @@
   let cachedActualParameterCodes = null;
 
   /**
+   * objectId из последнего ответа списка ACTUAL (тот же запрос, что и кэш кодов) — для проверок перед param-update без повторного POST списка.
+   * @type {Set<string> | null}
+   */
+  let cachedActualObjectIds = null;
+
+  /**
    * Вкладка «3. Редактирование»: пользователь нажал «загрузить допустимые значения» — можно выбирать parameterCode и parameterType из списков.
    * @type {boolean}
    */
@@ -977,6 +983,7 @@
    */
   function invalidateParameterCachesOnEnvChange() {
     cachedActualParameterCodes = null;
+    cachedActualObjectIds = null;
     cachedAllowedParameterTypes = null;
     editTabAllowedListsLoaded = false;
     fillParameterTypeSelect(cType);
@@ -1110,6 +1117,7 @@
     }
     const listData = listRes.data;
     cachedActualParameterCodes = extractParameterCodesFromListData(listData);
+    cachedActualObjectIds = new Set(extractObjectIds(listData));
     const rows = countParametersRowsInResponse(listData);
     if (verbose) {
       log(
@@ -1120,6 +1128,8 @@
           rows +
           ", parameterCode в кэше: " +
           cachedActualParameterCodes.size +
+          ", objectId в кэше: " +
+          cachedActualObjectIds.size +
           ".",
       );
     }
@@ -1238,9 +1248,10 @@
 
   /**
    * Вкладка «3»: POST ACTUAL + детализация «parameterTypes» — только заполнение селектов parameterCode и parameterType (без param-update).
+   * @returns {Promise<boolean>} true — справочники готовы (п. 7.1 / 7.2).
    */
   async function refreshEditTabAllowedListsFromApi() {
-    if (busy) return;
+    if (busy) return false;
     setBusy(true);
     try {
       const origin = getOrigin(standSel.value, contourSel.value);
@@ -1251,7 +1262,7 @@
       if (!ok) {
         editTabAllowedListsLoaded = false;
         clearEditTabParameterSelects(uCode, uType);
-        return;
+        return false;
       }
       await fetchParameterTypesDetailAndApply(origin, true, "[Редактирование]");
       if (
@@ -1265,24 +1276,42 @@
         log(
           "[Редактирование] Списки для полей: parameterCode — " +
             cachedActualParameterCodes.size +
+            " шт., objectId (сохранено для проверок) — " +
+            (cachedActualObjectIds ? cachedActualObjectIds.size : 0) +
             " шт., parameterType — " +
             cachedAllowedParameterTypes.length +
             " шт.",
         );
-      } else {
-        editTabAllowedListsLoaded = false;
-        clearEditTabParameterSelects(uCode, uType);
-        log(
-          "[Редактирование] Справочники из API неполные — выбор parameterCode/parameterType недоступен. Повторите загрузку или проверьте ответ API.",
-        );
+        return true;
       }
+      editTabAllowedListsLoaded = false;
+      clearEditTabParameterSelects(uCode, uType);
+      log(
+        "[Редактирование] Справочники из API неполные — выбор parameterCode/parameterType недоступен. Повторите загрузку или проверьте ответ API.",
+      );
+      return false;
     } catch (e) {
       editTabAllowedListsLoaded = false;
       clearEditTabParameterSelects(uCode, uType);
       log("[Редактирование] Ошибка загрузки: " + (e && e.message ? e.message : String(e)));
+      return false;
     } finally {
       setBusy(false);
     }
+  }
+
+  /**
+   * Перед param-update: если справочники п. 7.1 не готовы — выполнить п. 7.2 (тот же поток, что кнопка ⬇).
+   * @returns {Promise<boolean>}
+   */
+  async function ensureEditTabListsForUpdate() {
+    if (editTabAllowedListsLoaded && cachedActualObjectIds !== null && cachedActualParameterCodes !== null) {
+      return true;
+    }
+    log(
+      "[Редактирование] Допустимые значения из п. 7.1 ещё не готовы — автоматически выполняется п. 7.2 (загрузка без param-update).",
+    );
+    return await refreshEditTabAllowedListsFromApi();
   }
 
   refreshTypesBtn.addEventListener("click", function () {
@@ -1647,10 +1676,8 @@
 
   updateBtn.addEventListener("click", async () => {
     if (busy) return;
-    if (!editTabAllowedListsLoaded) {
-      log(
-        "[Редактирование] Сначала нажмите кнопку загрузки допустимых значений (⬇) и дождитесь заполнения списков parameterCode и parameterType. param-update без этого не выполняется.",
-      );
+    if (!(await ensureEditTabListsForUpdate())) {
+      log("[Редактирование] Не удалось подготовить справочники для обновления.");
       return;
     }
     const objectId = uObjectId.value.trim();
@@ -1668,24 +1695,27 @@
       log("Ошибка проверки формы: " + err);
       return;
     }
+    if (!cachedActualObjectIds || !cachedActualObjectIds.has(objectId)) {
+      log(
+        "Ошибка: objectId «" +
+          objectId +
+          "» отсутствует среди сохранённых по первому запросу ACTUAL (п. 7.1). Проверьте ввод или окружение.",
+      );
+      return;
+    }
+    const parameterCode = payloadBase.parameterCode.trim();
+    if (!cachedActualParameterCodes || !cachedActualParameterCodes.has(parameterCode)) {
+      log(
+        "[Редактирование] parameterCode «" +
+          parameterCode +
+          "» нет среди параметров ACTUAL — сущности для правки нет. Создайте параметр на вкладке «2. Создание» (param-create), а не редактирование.",
+      );
+      return;
+    }
     setBusy(true);
     uVersionInfo.textContent = "";
     try {
       const origin = getOrigin(standSel.value, contourSel.value);
-      const listRes = await postParameters(origin, { status: "ACTUAL" });
-      if (!listRes.ok) {
-        log("Ошибка запроса списка ACTUAL для проверки objectId: HTTP " + listRes.status);
-        return;
-      }
-      const ids = new Set(extractObjectIds(listRes.data));
-      if (!ids.has(objectId)) {
-        log(
-          "Ошибка: objectId «" +
-            objectId +
-            "» не найден среди параметров со статусом ACTUAL на выбранном стенде/контуре. Измените objectId или окружение.",
-        );
-        return;
-      }
       const det = await postParameters(origin, { objectIds: [objectId] });
       if (!det.ok) {
         log("Ошибка детализации по objectId: HTTP " + det.status);
@@ -1744,14 +1774,12 @@
     const f = updateFileInput.files && updateFileInput.files[0];
     updateFileInput.value = "";
     if (!f) return;
-    if (!editTabAllowedListsLoaded) {
-      log(
-        "[Редактирование] Сначала на вкладке «3» нажмите кнопку загрузки допустимых значений (⬇). Пакетное обновление из файла без справочников не выполняется.",
-      );
-      return;
-    }
-    setBusy(true);
     try {
+      if (!(await ensureEditTabListsForUpdate())) {
+        log("[Редактирование] Не удалось подготовить справочники для пакетного обновления.");
+        return;
+      }
+      setBusy(true);
       const text = await f.text();
       const parsed = parseJsonObjectsFromFileText(text);
       if (parsed.error) {
@@ -1811,19 +1839,24 @@
           await delay(PARAM_BATCH_REQUEST_GAP_MS);
         }
         const objectId = String(valid[i].objectId).trim();
-        const listRes = await postParameters(origin, { status: "ACTUAL" });
-        if (!listRes.ok) {
-          log("Ошибка списка ACTUAL для записи #" + (i + 1) + ": HTTP " + listRes.status);
-          continue;
-        }
-        const ids = new Set(extractObjectIds(listRes.data));
-        if (!ids.has(objectId)) {
+        if (!cachedActualObjectIds || !cachedActualObjectIds.has(objectId)) {
           log(
             "Ошибка записи #" +
               (i + 1) +
               ": objectId «" +
               objectId +
-              "» нет в списке ACTUAL. Измените ID или окружение.",
+              "» нет в сохранённом по п. 7.1 списке ACTUAL. Проверьте ID или окружение.",
+          );
+          continue;
+        }
+        const pc = String(valid[i].parameterCode).trim();
+        if (!cachedActualParameterCodes || !cachedActualParameterCodes.has(pc)) {
+          log(
+            "[Редактирование] Запись #" +
+              (i + 1) +
+              ": parameterCode «" +
+              pc +
+              "» нет в ACTUAL — создайте на вкладке «2. Создание», не редактирование.",
           );
           continue;
         }
