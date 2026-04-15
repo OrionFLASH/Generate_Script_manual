@@ -1,30 +1,20 @@
 // =============================================================================
 // AddressBook_export.js — выгрузки из адресной книги (DevTools, консоль)
 // =============================================================================
-// Выбор окружения: стенд PROM/PSI и контур ALPHA/SIGMA.
+// Для AddressBook используется отдельный стенд ALPHA.
 // Для фактических запросов приоритет у window.location.origin (чтобы credentials: 'include' использовал куки текущей вкладки).
-// Если origin вкладки недоступен (редко: file://), берётся fallback по выбранной паре стенд/контур.
+// Если origin вкладки недоступен (редко: file://), берётся fallback ADDRESSBOOK_ORIGINS.ALPHA.
 // Карточка empInfoFull: empId = UUID (employeeId из search), не 8-значный ТН. Если в hits несколько записей — GET по каждому уникальному employeeId.
 // =============================================================================
 // Вся логика в IIFE: повторная вставка скрипта в консоль не падает на «уже объявлено» (const/let на верхнем уровне).
 (function () {
   "use strict";
 
-const DEFAULT_ADDRESSBOOK_STAND = "PROM";
-const DEFAULT_ADDRESSBOOK_CONTOUR = "SIGMA";
-let ADDRESSBOOK_UI_STAND = DEFAULT_ADDRESSBOOK_STAND;
-let ADDRESSBOOK_UI_CONTOUR = DEFAULT_ADDRESSBOOK_CONTOUR;
+const ADDRESSBOOK_STAND_KEY = "ALPHA";
 
-// URL по паре стенд/контур. Для адресной книги приоритет всё равно у origin вкладки.
+// Отдельный URL стенда адресной книги.
 const ADDRESSBOOK_ORIGINS = {
-  PROM: {
-    ALPHA: "https://efs-our-business-prom.omega.sbrf.ru",
-    SIGMA: "https://salesheroes.sberbank.ru"
-  },
-  PSI: {
-    ALPHA: "https://iam-enigma-psi.omega.sbrf.ru",
-    SIGMA: "https://salesheroes-psi.sigma.sbrf.ru"
-  }
+  ALPHA: "https://addressbook.omega.sbrf.ru"
 };
 
 const ADDRESSBOOK_API_HOME = "/api/home";
@@ -143,15 +133,6 @@ function pickEmployeeIdsFromSearchData(data) {
  * @returns {{ standKey: string, origin: string }}
  */
 function getAddressBookStandAndOrigin() {
-  var stand =
-    ADDRESSBOOK_UI_STAND === "PROM" || ADDRESSBOOK_UI_STAND === "PSI"
-      ? ADDRESSBOOK_UI_STAND
-      : DEFAULT_ADDRESSBOOK_STAND;
-  var contour =
-    ADDRESSBOOK_UI_CONTOUR === "ALPHA" || ADDRESSBOOK_UI_CONTOUR === "SIGMA"
-      ? ADDRESSBOOK_UI_CONTOUR
-      : DEFAULT_ADDRESSBOOK_CONTOUR;
-  var standKey = stand + "_" + contour;
   var tabOrigin = "";
   try {
     tabOrigin = String(window.location.origin || "").replace(/\/$/, "");
@@ -159,11 +140,10 @@ function getAddressBookStandAndOrigin() {
     tabOrigin = "";
   }
   if (tabOrigin && tabOrigin !== "null") {
-    return { standKey: standKey, origin: tabOrigin };
+    return { standKey: ADDRESSBOOK_STAND_KEY, origin: tabOrigin };
   }
-  var byStand = ADDRESSBOOK_ORIGINS[stand] || ADDRESSBOOK_ORIGINS[DEFAULT_ADDRESSBOOK_STAND];
-  var fallback = ((byStand && byStand[contour]) || "").replace(/\/$/, "");
-  return { standKey: standKey, origin: fallback };
+  var fallback = (ADDRESSBOOK_ORIGINS.ALPHA || "").replace(/\/$/, "");
+  return { standKey: ADDRESSBOOK_STAND_KEY, origin: fallback };
 }
 
 function getAddressBookEnvKey() {
@@ -279,84 +259,33 @@ function startAddressBookPanel() {
   const sub = document.createElement("div");
   sub.style.cssText = "font-size:12px;color:#64748b;margin:0 0 14px 0;line-height:1.45;";
   sub.textContent =
-    "Стенд/контур выбираются на панели. Запросы идут на origin этой вкладки (если он есть), иначе на fallback по выбранной паре. Ход работы — в «Журнал работы»; в консоли — кратко о запуске и итоге.";
+    "Стенд ALPHA. Запросы идут на origin этой вкладки (если он есть), иначе на отдельный fallback адресной книги. Ход работы — в «Журнал работы»; в консоли — кратко о запуске и итоге.";
   box.appendChild(sub);
 
   const rowStand = document.createElement("div");
   rowStand.style.cssText =
     "display:flex;align-items:flex-start;gap:12px;margin-bottom:16px;flex-wrap:wrap;padding:12px 14px;" +
     "background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;";
-  const standControls = document.createElement("div");
-  standControls.style.cssText = "display:flex;flex-wrap:wrap;gap:8px 10px;align-items:center;flex:1 1 260px;";
-  const labSt = document.createElement("label");
+  const labSt = document.createElement("div");
   labSt.textContent = "Стенд";
-  labSt.setAttribute("for", "addrBookStandSel");
-  labSt.style.cssText = "font-weight:600;font-size:12px;color:#334155;";
-  const selStand = document.createElement("select");
-  selStand.id = "addrBookStandSel";
-  selStand.style.cssText =
-    "min-width:130px;padding:4px 8px;font-size:12px;color:#0f172a;background:#fff;border:1px solid #94a3b8;border-radius:6px;color-scheme:light;";
-  ["PROM", "PSI"].forEach(function (k) {
-    const opt = document.createElement("option");
-    opt.value = k;
-    opt.textContent = k;
-    if (k === ADDRESSBOOK_UI_STAND) opt.selected = true;
-    selStand.appendChild(opt);
-  });
-  const labContour = document.createElement("label");
-  labContour.textContent = "Контур";
-  labContour.setAttribute("for", "addrBookContourSel");
-  labContour.style.cssText = "font-weight:600;font-size:12px;color:#334155;";
-  const selContour = document.createElement("select");
-  selContour.id = "addrBookContourSel";
-  selContour.style.cssText =
-    "min-width:150px;padding:4px 8px;font-size:12px;color:#0f172a;background:#fff;border:1px solid #94a3b8;border-radius:6px;color-scheme:light;";
-  function refreshAddrContourOptions() {
-    var prev = ADDRESSBOOK_UI_CONTOUR;
-    selContour.innerHTML = "";
-    ["ALPHA", "SIGMA"].forEach(function (k) {
-      const opt = document.createElement("option");
-      const byStand = ADDRESSBOOK_ORIGINS[ADDRESSBOOK_UI_STAND] || ADDRESSBOOK_ORIGINS[DEFAULT_ADDRESSBOOK_STAND];
-      const host = (byStand && byStand[k]) || "";
-      opt.value = k;
-      opt.textContent = k + (host ? " — " + host : "");
-      if (k === prev) opt.selected = true;
-      selContour.appendChild(opt);
-    });
-  }
-  refreshAddrContourOptions();
-  standControls.appendChild(labSt);
-  standControls.appendChild(selStand);
-  standControls.appendChild(labContour);
-  standControls.appendChild(selContour);
+  labSt.style.cssText = "font-weight:600;font-size:13px;color:#334155;min-width:52px;flex-shrink:0;padding-top:2px;";
   const standInfo = document.createElement("div");
   standInfo.style.cssText =
     "flex:1;min-width:200px;font-size:12px;color:#0f172a;line-height:1.45;word-break:break-all;";
-  function refreshAddrInfo() {
-    var o = getAddressBookStandAndOrigin();
-    var tabOrigin = "";
-    try {
-      tabOrigin = String(window.location.origin || "").replace(/\/$/, "");
-    } catch (e) {
-      tabOrigin = "";
-    }
-    if (tabOrigin && tabOrigin !== "null") {
-      standInfo.textContent = o.standKey + ". База запросов (origin вкладки): " + tabOrigin + ADDRESSBOOK_API_HOME + "/…";
-    } else {
-      standInfo.textContent = o.standKey + ". Нет origin вкладки — fallback: " + o.origin + ADDRESSBOOK_API_HOME + "/…";
-    }
+  var oPanel = "";
+  try {
+    oPanel = String(window.location.origin || "").replace(/\/$/, "");
+  } catch (e) {
+    oPanel = "";
   }
-  selStand.addEventListener("change", function () {
-    ADDRESSBOOK_UI_STAND = selStand.value;
-    refreshAddrContourOptions();
-    refreshAddrInfo();
-  });
-  selContour.addEventListener("change", function () {
-    ADDRESSBOOK_UI_CONTOUR = selContour.value;
-    refreshAddrInfo();
-  });
-  refreshAddrInfo();
-  rowStand.appendChild(standControls);
+  if (oPanel && oPanel !== "null") {
+    standInfo.textContent =
+      "ALPHA. База запросов (origin вкладки): " + oPanel + ADDRESSBOOK_API_HOME + "/…";
+  } else {
+    standInfo.textContent =
+      "ALPHA. Нет origin вкладки — fallback: " + ADDRESSBOOK_ORIGINS.ALPHA + ADDRESSBOOK_API_HOME + "/…";
+  }
+  rowStand.appendChild(labSt);
   rowStand.appendChild(standInfo);
   box.appendChild(rowStand);
 
@@ -588,8 +517,6 @@ function startAddressBookPanel() {
     inpPauseAfterSearch.disabled = busy;
     modeTabNum.disabled = busy;
     modeSearchValues.disabled = busy;
-    selStand.disabled = busy;
-    selContour.disabled = busy;
   }
 
   /**
