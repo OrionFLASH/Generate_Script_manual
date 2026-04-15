@@ -8,21 +8,29 @@
 (function () {
   "use strict";
 
-  const DEFAULT_TOURNAMENT_STAND = "ALPHA";
+  const DEFAULT_TOURNAMENT_STAND = "PROM";
+  const DEFAULT_TOURNAMENT_CONTOUR = "SIGMA";
 
-  /** Стенд для GET leadersForAdmin; обновляется списком на панели. */
+  /** Стенд/контур для GET leadersForAdmin; обновляются списками на панели. */
   let TOURNAMENT_UI_STAND = DEFAULT_TOURNAMENT_STAND;
+  let TOURNAMENT_UI_CONTOUR = DEFAULT_TOURNAMENT_CONTOUR;
 
 const TOURNAMENT_BASE = {
-  ALPHA: "https://efs-our-business-prom.omega.sbrf.ru/bo/rmkib.gamification/api/v1/tournaments/",
-  SIGMA: "https://salesheroes.sberbank.ru/bo/rmkib.gamification/api/v1/tournaments/"
+  PROM: {
+    ALPHA: "https://efs-our-business-prom.omega.sbrf.ru/bo/rmkib.gamification/api/v1/tournaments/",
+    SIGMA: "https://salesheroes.sberbank.ru/bo/rmkib.gamification/api/v1/tournaments/"
+  },
+  PSI: {
+    ALPHA: "https://iam-enigma-psi.omega.sbrf.ru/bo/rmkib.gamification/api/v1/tournaments/",
+    SIGMA: "https://salesheroes-psi.sigma.sbrf.ru/bo/rmkib.gamification/api/v1/tournaments/"
+  }
 };
 
 const LEADERS_SERVICE = "leadersForAdmin";
 /** Значение по умолчанию для поля «Пауза между запросами» на панели (мс). */
 const DEFAULT_REQUEST_GAP_MS = 5;
 /** Плейсхолдер поля префикса имени файла: пустое значение = авто `leadersForAdmin_{стенд}_`. */
-const DEFAULT_EXPORT_FILENAME_PREFIX_PLACEHOLDER = "авто: leadersForAdmin + стенд + _";
+const DEFAULT_EXPORT_FILENAME_PREFIX_PLACEHOLDER = "авто: leadersForAdmin + стенд + контур + _";
 
 /** Статусы CSV вариант 1 (колонка TOURNAMENT_STATUS). */
 const CSV1_STATUS_LABELS = [
@@ -66,6 +74,17 @@ function delay(ms) {
   return new Promise(function (resolve) {
     setTimeout(resolve, ms);
   });
+}
+
+function getTournamentEnv() {
+  var stand = TOURNAMENT_UI_STAND === "PROM" || TOURNAMENT_UI_STAND === "PSI" ? TOURNAMENT_UI_STAND : DEFAULT_TOURNAMENT_STAND;
+  var contour =
+    TOURNAMENT_UI_CONTOUR === "ALPHA" || TOURNAMENT_UI_CONTOUR === "SIGMA"
+      ? TOURNAMENT_UI_CONTOUR
+      : DEFAULT_TOURNAMENT_CONTOUR;
+  var byStand = TOURNAMENT_BASE[stand] || TOURNAMENT_BASE[DEFAULT_TOURNAMENT_STAND];
+  var baseUrl = (byStand && byStand[contour]) || TOURNAMENT_BASE[DEFAULT_TOURNAMENT_STAND][DEFAULT_TOURNAMENT_CONTOUR];
+  return { stand: stand, contour: contour, baseUrl: baseUrl };
 }
 
 function getTimestamp() {
@@ -431,7 +450,7 @@ function startTournamentPanel() {
   const titleSub = document.createElement("div");
   titleSub.style.cssText = "font-size:11px;color:#64748b;margin-bottom:10px;line-height:1.4;";
   titleSub.textContent =
-    "Каждая кнопка сразу запускает выгрузку. Для .txt и CSV сначала откроется выбор файла. Стенд, префикс имени файла и паузу задайте до нажатия. В JSON попадают и ошибки, и «0 участников»; без тела ответа при HTTP OK строка не пишется; файл из одного «{}» не создаётся. Ход выгрузки — в «Журнал работы»; в консоли — кратко о старте и итоге.";
+    "Каждая кнопка сразу запускает выгрузку. Для .txt и CSV сначала откроется выбор файла. Стенд, контур, префикс имени файла и паузу задайте до нажатия. В JSON попадают и ошибки, и «0 участников»; без тела ответа при HTTP OK строка не пишется; файл из одного «{}» не создаётся. Ход выгрузки — в «Журнал работы»; в консоли — кратко о старте и итоге.";
   root.appendChild(titleSub);
 
   const stRow = document.createElement("div");
@@ -448,10 +467,10 @@ function startTournamentPanel() {
     "padding:4px 8px;font-size:12px;min-width:200px;cursor:pointer;" +
     "color:#111827;background-color:#ffffff;border:1px solid #64748b;border-radius:4px;" +
     "color-scheme:light;";
-  ["ALPHA", "SIGMA"].forEach(function (key) {
+  ["PROM", "PSI"].forEach(function (key) {
     const opt = document.createElement("option");
     opt.value = key;
-    opt.textContent = key + " — API турниров";
+    opt.textContent = key;
     opt.style.cssText = "color:#111827;background-color:#ffffff;";
     if (key === TOURNAMENT_UI_STAND) opt.selected = true;
     selStand.appendChild(opt);
@@ -461,6 +480,40 @@ function startTournamentPanel() {
   });
   stRow.appendChild(labSt);
   stRow.appendChild(selStand);
+
+  const labContour = document.createElement("label");
+  labContour.textContent = "Контур:";
+  labContour.setAttribute("for", "tournamentContourSel");
+  labContour.style.cssText = "font-weight:bold;color:#111827;";
+  const selContour = document.createElement("select");
+  selContour.id = "tournamentContourSel";
+  selContour.style.cssText =
+    "padding:4px 8px;font-size:12px;min-width:200px;cursor:pointer;" +
+    "color:#111827;background-color:#ffffff;border:1px solid #64748b;border-radius:4px;" +
+    "color-scheme:light;";
+  function refreshTournamentContourOptions() {
+    var prev = TOURNAMENT_UI_CONTOUR;
+    selContour.innerHTML = "";
+    ["ALPHA", "SIGMA"].forEach(function (key) {
+      const opt = document.createElement("option");
+      const byStand = TOURNAMENT_BASE[TOURNAMENT_UI_STAND] || TOURNAMENT_BASE[DEFAULT_TOURNAMENT_STAND];
+      const host = (byStand && byStand[key]) || "";
+      opt.value = key;
+      opt.textContent = key + (host ? " — " + host : "");
+      opt.style.cssText = "color:#111827;background-color:#ffffff;";
+      if (key === prev) opt.selected = true;
+      selContour.appendChild(opt);
+    });
+  }
+  refreshTournamentContourOptions();
+  selStand.addEventListener("change", function () {
+    refreshTournamentContourOptions();
+  });
+  selContour.addEventListener("change", function () {
+    TOURNAMENT_UI_CONTOUR = selContour.value;
+  });
+  stRow.appendChild(labContour);
+  stRow.appendChild(selContour);
 
   /** Справа: префикс имени файла и пауза между запросами. */
   const stRowRight = document.createElement("div");
@@ -478,7 +531,7 @@ function startTournamentPanel() {
   inpFnamePrefix.value = "";
   inpFnamePrefix.placeholder = DEFAULT_EXPORT_FILENAME_PREFIX_PLACEHOLDER;
   inpFnamePrefix.title =
-    "Часть имени до таймштампа, например leadersForAdmin_SIGMA_. Пусто — автоматически leadersForAdmin_{стенд}_";
+    "Часть имени до таймштампа, например leadersForAdmin_PROM_SIGMA_. Пусто — автоматически leadersForAdmin_{стенд}_{контур}_";
   inpFnamePrefix.style.cssText =
     "width:min(240px,36vw);min-width:120px;padding:4px 8px;font-size:12px;box-sizing:border-box;" +
     "color:#111827;background:#fff;border:1px solid #64748b;border-radius:4px;color-scheme:light;";
@@ -524,12 +577,13 @@ function startTournamentPanel() {
   /**
    * Префикс имени выгрузки до таймштампа (с завершающим «_», если нужно).
    * @param {string} standKey
+   * @param {string} contourKey
    * @returns {string}
    */
-  function buildExportFilenamePrefix(standKey) {
+  function buildExportFilenamePrefix(standKey, contourKey) {
     var custom = sanitizeExportFilenamePrefix(inpFnamePrefix.value);
     if (custom) return custom.endsWith("_") ? custom : custom + "_";
-    return LEADERS_SERVICE + "_" + standKey + "_";
+    return LEADERS_SERVICE + "_" + standKey + "_" + contourKey + "_";
   }
 
   /** Верхняя граница строк в ленте (старые удаляются сверху). */
@@ -627,19 +681,20 @@ function startTournamentPanel() {
     }
     exportBusy = true;
     try {
-      var standKey =
-        TOURNAMENT_UI_STAND === "ALPHA" || TOURNAMENT_UI_STAND === "SIGMA"
-          ? TOURNAMENT_UI_STAND
-          : "ALPHA";
-      const baseUrl = TOURNAMENT_BASE[standKey] || TOURNAMENT_BASE.ALPHA;
+      var env = getTournamentEnv();
+      var standKey = env.stand;
+      var contourKey = env.contour;
+      const baseUrl = env.baseUrl;
 
       const gapMs = readRequestGapMs();
-      const prefixForFile = buildExportFilenamePrefix(standKey);
+      const prefixForFile = buildExportFilenamePrefix(standKey, contourKey);
       console.log(
         "[Турниры leadersForAdmin] Выгрузка запущена. Кодов: " +
           ids.length +
-          " | стенд: " +
+          " | стенд/контур: " +
           standKey +
+          "/" +
+          contourKey +
           ". Подробности — в «Журнал работы»."
       );
       log(
@@ -647,8 +702,10 @@ function startTournamentPanel() {
           (sourceTag || "") +
           " | кодов в очереди: " +
           ids.length +
-          " | стенд: " +
+          " | стенд/контур: " +
           standKey +
+          "/" +
+          contourKey +
           " | пауза: " +
           gapMs +
           " мс | префикс файла: " +

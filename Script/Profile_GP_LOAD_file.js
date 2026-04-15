@@ -69,16 +69,35 @@ function normalizeRunOptions(raw) {
   return o;
 }
 
-const DEFAULT_PROFILE_STAND = "ALPHA";
+const DEFAULT_PROFILE_STAND = "PROM";
+const DEFAULT_PROFILE_CONTOUR = "SIGMA";
 
-/** Стенд для URL профиля; меняется выпадающим списком на панели. */
+/** Стенд/контур для URL профиля; меняются выпадающими списками на панели. */
 let PROFILE_UI_STAND = DEFAULT_PROFILE_STAND;
+let PROFILE_UI_CONTOUR = DEFAULT_PROFILE_CONTOUR;
 
-const PROFILE_URLS = {
-  ALPHA: "https://efs-our-business-prom.omega.sbrf.ru/bo/rmkib.gamification/proxy/v1/profile",
-  SIGMA: "https://salesheroes.sberbank.ru/bo/rmkib.gamification/proxy/v1/profile"
+const PROFILE_ORIGINS = {
+  PROM: {
+    ALPHA: "https://efs-our-business-prom.omega.sbrf.ru",
+    SIGMA: "https://salesheroes.sberbank.ru"
+  },
+  PSI: {
+    ALPHA: "https://iam-enigma-psi.omega.sbrf.ru",
+    SIGMA: "https://salesheroes-psi.sigma.sbrf.ru"
+  }
 };
-const SIGMA_ORIGIN = "https://salesheroes.sberbank.ru";
+const PROFILE_PATH = "/bo/rmkib.gamification/proxy/v1/profile";
+
+function getProfileEnv() {
+  var stand = PROFILE_UI_STAND === "PROM" || PROFILE_UI_STAND === "PSI" ? PROFILE_UI_STAND : DEFAULT_PROFILE_STAND;
+  var contour =
+    PROFILE_UI_CONTOUR === "ALPHA" || PROFILE_UI_CONTOUR === "SIGMA"
+      ? PROFILE_UI_CONTOUR
+      : DEFAULT_PROFILE_CONTOUR;
+  var byStand = PROFILE_ORIGINS[stand] || PROFILE_ORIGINS[DEFAULT_PROFILE_STAND];
+  var origin = (byStand && byStand[contour]) || PROFILE_ORIGINS[DEFAULT_PROFILE_STAND][DEFAULT_PROFILE_CONTOUR];
+  return { stand: stand, contour: contour, origin: origin };
+}
 
 /** Приёмник строк лога панели «Профили героев»; null после «Закрыть» или снятия панели. */
 var profileGpPanelLogAppend = null;
@@ -353,32 +372,31 @@ function processPhotos(tn, data, cfg) {
  */
 async function fetchProfileByTN(tn, cfg) {
   const bodyObj = makeRequestBody(tn);
-  const standKey =
-    PROFILE_UI_STAND === "ALPHA" || PROFILE_UI_STAND === "SIGMA" ? PROFILE_UI_STAND : "ALPHA";
-  const url = PROFILE_URLS[standKey] || PROFILE_URLS.ALPHA;
+  const env = getProfileEnv();
+  const standKey = env.stand;
+  const contourKey = env.contour;
+  const url = env.origin + PROFILE_PATH;
 
   const headers = {
     "Accept": "application/json",
     "Content-Type": "application/json"
   };
-  if (standKey === "SIGMA") {
-    headers["Origin"] = SIGMA_ORIGIN;
-    headers["Referer"] = SIGMA_ORIGIN + "/profile/" + tn;
+  if (contourKey === "SIGMA") {
+    headers["Origin"] = env.origin;
+    headers["Referer"] = env.origin + "/profile/" + tn;
   }
 
   const fetchOpts = {
     method: "POST",
     headers: headers,
-    body: JSON.stringify(bodyObj)
+    body: JSON.stringify(bodyObj),
+    credentials: "include"
   };
-  if (standKey === "SIGMA") {
-    fetchOpts.credentials = "include";
-  }
 
   const res = await fetch(url, fetchOpts);
 
   if (!res.ok) {
-    profileGpPanelEcho("warn", "TN", tn, "ERROR HTTP", res.status);
+    profileGpPanelEcho("warn", "TN", tn, "ERROR HTTP", res.status, "|", standKey + "/" + contourKey);
     return { tn: tn, error: true, status: res.status };
   }
 
@@ -444,7 +462,8 @@ function saveJsonToFile(data, baseName, partIndex) {
   const a = document.createElement("a");
   const ts = getTimestamp();
   const part = partIndex != null ? "_part" + partIndex : "";
-  const filename = (baseName || "data") + part + "_" + ts + ".json";
+  const env = getProfileEnv();
+  const filename = (baseName || "data") + "_" + env.stand + "_" + env.contour + part + "_" + ts + ".json";
 
   profileGpPanelEcho(
     "log",
@@ -514,9 +533,8 @@ async function runCollectProfiles(tabNums, runOpts) {
 
   profileGpPanelEcho("log", "——— Старт сбора ———");
   profileGpPanelEcho("log", "Старт. Всего ТН к обработке:", list.length);
-  var standKeyRun =
-    PROFILE_UI_STAND === "ALPHA" || PROFILE_UI_STAND === "SIGMA" ? PROFILE_UI_STAND : "ALPHA";
-  profileGpPanelEcho("log", "Стенд:", standKeyRun, "| URL:", PROFILE_URLS[standKeyRun] || PROFILE_URLS.ALPHA);
+  var envRun = getProfileEnv();
+  profileGpPanelEcho("log", "Стенд/контур:", envRun.stand + "/" + envRun.contour, "| URL:", envRun.origin + PROFILE_PATH);
   profileGpPanelEcho(
     "log",
     "Параметры | задержка мс:",
@@ -700,7 +718,7 @@ function startWithChoice() {
 
   const sub = document.createElement("div");
   sub.style.cssText = "font-size:11px;color:#64748b;margin:0 0 10px 0;line-height:1.35;";
-  sub.textContent = "Сбор по API профиля: выберите стенд, при необходимости параметры ниже, источник ТН.";
+  sub.textContent = "Сбор по API профиля: выберите стенд и контур, при необходимости параметры ниже, источник ТН.";
   container.appendChild(sub);
 
   const rowStand = document.createElement("div");
@@ -716,10 +734,10 @@ function startWithChoice() {
   selStand.style.cssText =
     "flex:1;min-width:220px;padding:6px 10px;font-size:12px;cursor:pointer;" +
     "color:#0f172a;background:#fff;border:1px solid #94a3b8;border-radius:6px;color-scheme:light;";
-  ["ALPHA", "SIGMA"].forEach(function (key) {
+  ["PROM", "PSI"].forEach(function (key) {
     const opt = document.createElement("option");
     opt.value = key;
-    opt.textContent = key + " — " + (PROFILE_URLS[key] || "");
+    opt.textContent = key;
     opt.style.cssText = "color:#0f172a;background:#fff;";
     if (key === PROFILE_UI_STAND) opt.selected = true;
     selStand.appendChild(opt);
@@ -729,6 +747,39 @@ function startWithChoice() {
   });
   rowStand.appendChild(labStand);
   rowStand.appendChild(selStand);
+
+  const labContour = document.createElement("label");
+  labContour.textContent = "Контур";
+  labContour.setAttribute("for", "profileContourSel");
+  labContour.style.cssText = "font-weight:600;font-size:12px;color:#334155;min-width:56px;flex-shrink:0;";
+  const selContour = document.createElement("select");
+  selContour.id = "profileContourSel";
+  selContour.style.cssText =
+    "flex:1;min-width:220px;padding:6px 10px;font-size:12px;cursor:pointer;" +
+    "color:#0f172a;background:#fff;border:1px solid #94a3b8;border-radius:6px;color-scheme:light;";
+  function refreshProfileContourOptions() {
+    const prev = PROFILE_UI_CONTOUR;
+    selContour.innerHTML = "";
+    ["ALPHA", "SIGMA"].forEach(function (key) {
+      const opt = document.createElement("option");
+      const byStand = PROFILE_ORIGINS[PROFILE_UI_STAND] || PROFILE_ORIGINS[DEFAULT_PROFILE_STAND];
+      const host = (byStand && byStand[key]) || "";
+      opt.value = key;
+      opt.textContent = key + (host ? " — " + host : "");
+      opt.style.cssText = "color:#0f172a;background:#fff;";
+      if (key === prev) opt.selected = true;
+      selContour.appendChild(opt);
+    });
+  }
+  refreshProfileContourOptions();
+  selStand.addEventListener("change", function () {
+    refreshProfileContourOptions();
+  });
+  selContour.addEventListener("change", function () {
+    PROFILE_UI_CONTOUR = selContour.value;
+  });
+  rowStand.appendChild(labContour);
+  rowStand.appendChild(selContour);
   container.appendChild(rowStand);
 
   const def = getDefaultRunOptions();

@@ -6,16 +6,16 @@
 // Этап 2: по каждому objectId отдельный POST /bo/rmkib.gamification/proxy/v1/parameters
 //         body { objectIds: [ "<id>" ] }.
 //
-// Контуры: PROM / PSI. Стенды: ALPHA / SIGMA.
+// Стенды: PROM / PSI. Контуры: ALPHA / SIGMA.
 // Куки сессии берутся автоматически из текущей вкладки (credentials: "include").
 // =============================================================================
 
 (function () {
   "use strict";
 
-  /** Контур и стенд по умолчанию: ПРОМ SIGMA. */
-  const DEFAULT_CONTOUR = "PROM";
-  const DEFAULT_STAND = "SIGMA";
+  /** По умолчанию: стенд PROM, контур SIGMA. */
+  const DEFAULT_STAND = "PROM";
+  const DEFAULT_CONTOUR = "SIGMA";
   const DEFAULT_STATUS = "ACTUAL";
 
   /** Значение по умолчанию для паузы между запросами детализации, мс. */
@@ -32,8 +32,8 @@
       SIGMA: "https://salesheroes.sberbank.ru"
     },
     PSI: {
-      ALPHA: "https://efs-our-business-prom.omega.sbrf.ru",
-      SIGMA: "https://salesheroes.sberbank.ru"
+      ALPHA: "https://iam-enigma-psi.omega.sbrf.ru",
+      SIGMA: "https://salesheroes-psi.sigma.sbrf.ru"
     }
   };
 
@@ -166,7 +166,7 @@
 
     const contourWrap = document.createElement("div");
     const contourId = "paramsActualContourSel";
-    const contourLabel = mkLabel("Контур", contourId);
+    const contourLabel = mkLabel("Стенд", contourId);
     const selContour = document.createElement("select");
     selContour.id = contourId;
     selContour.style.cssText =
@@ -175,7 +175,7 @@
       const o = document.createElement("option");
       o.value = k;
       o.textContent = k;
-      if (k === DEFAULT_CONTOUR) o.selected = true;
+      if (k === DEFAULT_STAND) o.selected = true;
       selContour.appendChild(o);
     });
     contourWrap.appendChild(contourLabel);
@@ -184,7 +184,7 @@
 
     const standWrap = document.createElement("div");
     const standId = "paramsActualStandSel";
-    const standLabel = mkLabel("Стенд", standId);
+    const standLabel = mkLabel("Контур", standId);
     const selStand = document.createElement("select");
     selStand.id = standId;
     selStand.style.cssText =
@@ -193,7 +193,7 @@
       const o = document.createElement("option");
       o.value = k;
       o.textContent = k;
-      if (k === DEFAULT_STAND) o.selected = true;
+      if (k === DEFAULT_CONTOUR) o.selected = true;
       selStand.appendChild(o);
     });
     standWrap.appendChild(standLabel);
@@ -310,18 +310,18 @@
       void (async function () {
         try {
           console.log(
-            "[Параметры] Запущена выгрузка. Контур: " +
+            "[Параметры] Запущена выгрузка. Стенд: " +
               contour +
-              ", стенд: " +
+              ", контур: " +
               stand +
               ", статус: " +
               statusForList +
               ". Подробности — в «Журнал работы»."
           );
           log(
-            "Старт: контур=" +
+            "Старт: стенд=" +
               contour +
-              ", стенд=" +
+              ", контур=" +
               stand +
               ", статус=" +
               statusForList +
@@ -371,8 +371,8 @@
           const out = {
             meta: {
               generatedAt: nowIso(),
-              contour: contour,
-              stand: stand,
+              stand: contour,
+              contour: stand,
               origin: origin,
               endpointPath: PARAMETERS_PATH,
               pauseBetweenDetailsMs: pauseMs,

@@ -16,17 +16,39 @@
 // КОНФИГУРАЦИЯ
 // =============================================================================
 
-// Стенд по умолчанию до открытия панели; дальше задаётся выпадающим списком на панели.
-const DEFAULT_FILE_DL_STAND = "SIGMA";
+// Пара "стенд/контур" по умолчанию до открытия панели.
+const DEFAULT_FILE_DL_STAND = "PROM";
+const DEFAULT_FILE_DL_CONTOUR = "SIGMA";
 
-/** Текущий выбранный стенд для POST (обновляется из UI панели). */
+/** Текущий выбранный стенд/контур для POST (обновляется из UI панели). */
 var FILE_DL_ACTIVE_STAND = DEFAULT_FILE_DL_STAND;
+var FILE_DL_ACTIVE_CONTOUR = DEFAULT_FILE_DL_CONTOUR;
 
-// Базовые URL для каждого стенда (без завершающего слэша).
+// Базовые URL по паре стенд/контур (без завершающего слэша).
 const STAND_ORIGINS = {
-  ALPHA: "https://efs-our-business-prom.omega.sbrf.ru",
-  SIGMA: "https://salesheroes.sberbank.ru"
+  PROM: {
+    ALPHA: "https://efs-our-business-prom.omega.sbrf.ru",
+    SIGMA: "https://salesheroes.sberbank.ru"
+  },
+  PSI: {
+    ALPHA: "https://iam-enigma-psi.omega.sbrf.ru",
+    SIGMA: "https://salesheroes-psi.sigma.sbrf.ru"
+  }
 };
+
+function getFileDlOriginByEnv() {
+  var stand = FILE_DL_ACTIVE_STAND === "PROM" || FILE_DL_ACTIVE_STAND === "PSI" ? FILE_DL_ACTIVE_STAND : DEFAULT_FILE_DL_STAND;
+  var contour =
+    FILE_DL_ACTIVE_CONTOUR === "ALPHA" || FILE_DL_ACTIVE_CONTOUR === "SIGMA"
+      ? FILE_DL_ACTIVE_CONTOUR
+      : DEFAULT_FILE_DL_CONTOUR;
+  var byStand = STAND_ORIGINS[stand] || STAND_ORIGINS[DEFAULT_FILE_DL_STAND];
+  return {
+    stand: stand,
+    contour: contour,
+    origin: (byStand && byStand[contour]) || STAND_ORIGINS[DEFAULT_FILE_DL_STAND][DEFAULT_FILE_DL_CONTOUR]
+  };
+}
 
 // Путь по умолчанию, если у задачи не указан apiPath.
 const DEFAULT_FILE_DOWNLOAD_PATH = "/bo/rmkib.gamification/proxy/v1/tournaments/file-download";
@@ -454,8 +476,10 @@ async function downloadOneJob(job, ctx) {
   ctx = ctx || {};
   var _dlExit = null;
   try {
-  const standKey = FILE_DL_ACTIVE_STAND === "ALPHA" || FILE_DL_ACTIVE_STAND === "SIGMA" ? FILE_DL_ACTIVE_STAND : "SIGMA";
-  const origin = STAND_ORIGINS[standKey] || STAND_ORIGINS.SIGMA;
+  const env = getFileDlOriginByEnv();
+  const standKey = env.stand;
+  const contourKey = env.contour;
+  const origin = env.origin;
   const path = job.apiPath || DEFAULT_FILE_DOWNLOAD_PATH;
   const url = origin + path;
   // Origin и Referer в fetch из JS задавать нельзя (запрещённые заголовки) — браузер подставит сам с текущей вкладки.
@@ -581,10 +605,11 @@ async function downloadOneJob(job, ctx) {
   const cd = res.headers.get("Content-Disposition");
   const fromHeader = parseFilenameFromContentDisposition(cd);
   const safeLabel = (job.label || job.id || "download").replace(/[/\\?%*:|"<>]/g, "_");
-  const fileName =
+  const fileNameRaw =
     (job.fileName && String(job.fileName).trim()) ||
     fromHeader ||
     safeLabel + ".bin";
+  const fileName = standKey + "_" + contourKey + "_" + fileNameRaw;
 
   const objectUrl = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -601,8 +626,10 @@ async function downloadOneJob(job, ctx) {
   fileDlPanelEcho(
     "log",
     "ЗАВЕРШЕНО: файл скачан\n" +
-      "Стенд: " +
+      "Стенд/контур: " +
       standKey +
+      "/" +
+      contourKey +
       "\nЗадача id: " +
       (job.id || "—") +
       "\nPOST body: " +
@@ -839,6 +866,7 @@ function fileDlDetachPanelAndResetRuntime() {
   fileDlPanelStaggerInput = null;
   fileDlPanelRewardsDateInput = null;
   FILE_DL_ACTIVE_STAND = DEFAULT_FILE_DL_STAND;
+  FILE_DL_ACTIVE_CONTOUR = DEFAULT_FILE_DL_CONTOUR;
   fileDlEmployeeRewardsDateFrom = DEFAULT_EMPLOYEE_REWARDS_DATE_FROM;
   fileDlDelayBetweenMs = DOWNLOAD_ALL_DELAY_MS;
   fileDlStaggerMinMs = DOWNLOAD_STAGGER_MS;
@@ -931,7 +959,7 @@ function startDownloadPanel() {
   title.style.cssText =
     "font-size:15px;font-weight:700;color:#0f172a;margin:0 0 4px 0;letter-spacing:-0.02em;line-height:1.2;";
   function syncFileDlTitle() {
-    title.textContent = "Скачивание (gamification) · " + FILE_DL_ACTIVE_STAND;
+    title.textContent = "Скачивание (gamification) · " + FILE_DL_ACTIVE_STAND + "/" + FILE_DL_ACTIVE_CONTOUR;
   }
   syncFileDlTitle();
   container.appendChild(title);
@@ -949,10 +977,10 @@ function startDownloadPanel() {
   selStand.style.cssText =
     "padding:5px 8px;font-size:11px;min-width:160px;max-width:min(360px,100%);cursor:pointer;flex:1 1 200px;" +
     "color:#111827;background-color:#ffffff;border:1px solid #94a3b8;border-radius:6px;color-scheme:light;";
-  ["ALPHA", "SIGMA"].forEach(function (key) {
+  ["PROM", "PSI"].forEach(function (key) {
     const opt = document.createElement("option");
     opt.value = key;
-    opt.textContent = key + " — " + STAND_ORIGINS[key];
+    opt.textContent = key;
     opt.style.cssText = "color:#111827;background-color:#ffffff;";
     if (key === FILE_DL_ACTIVE_STAND) opt.selected = true;
     selStand.appendChild(opt);
@@ -963,6 +991,49 @@ function startDownloadPanel() {
   });
   rowStand.appendChild(labStand);
   rowStand.appendChild(selStand);
+
+  const labContour = document.createElement("label");
+  labContour.style.cssText = "color:#334155;font-weight:600;flex-shrink:0;";
+  labContour.textContent = "Контур:";
+  labContour.setAttribute("for", "fileDlContourSelect");
+  const selContour = document.createElement("select");
+  selContour.id = "fileDlContourSelect";
+  selContour.style.cssText =
+    "padding:5px 8px;font-size:11px;min-width:140px;max-width:min(240px,100%);cursor:pointer;flex:0 1 160px;" +
+    "color:#111827;background-color:#ffffff;border:1px solid #94a3b8;border-radius:6px;color-scheme:light;";
+  ["ALPHA", "SIGMA"].forEach(function (key) {
+    const opt = document.createElement("option");
+    opt.value = key;
+    var byStand = STAND_ORIGINS[FILE_DL_ACTIVE_STAND] || STAND_ORIGINS[DEFAULT_FILE_DL_STAND];
+    var host = (byStand && byStand[key]) || "";
+    opt.textContent = key + (host ? " — " + host : "");
+    opt.style.cssText = "color:#111827;background-color:#ffffff;";
+    if (key === FILE_DL_ACTIVE_CONTOUR) opt.selected = true;
+    selContour.appendChild(opt);
+  });
+  function refreshFileDlContourOptions() {
+    var prev = FILE_DL_ACTIVE_CONTOUR;
+    selContour.innerHTML = "";
+    ["ALPHA", "SIGMA"].forEach(function (key) {
+      const opt = document.createElement("option");
+      opt.value = key;
+      var byStand = STAND_ORIGINS[FILE_DL_ACTIVE_STAND] || STAND_ORIGINS[DEFAULT_FILE_DL_STAND];
+      var host = (byStand && byStand[key]) || "";
+      opt.textContent = key + (host ? " — " + host : "");
+      opt.style.cssText = "color:#111827;background-color:#ffffff;";
+      if (key === prev) opt.selected = true;
+      selContour.appendChild(opt);
+    });
+  }
+  selStand.addEventListener("change", function () {
+    refreshFileDlContourOptions();
+  });
+  selContour.addEventListener("change", function () {
+    FILE_DL_ACTIVE_CONTOUR = selContour.value;
+    syncFileDlTitle();
+  });
+  rowStand.appendChild(labContour);
+  rowStand.appendChild(selContour);
 
   // «Отметить всё» / «Снять отметки» — справа в строке стенда (освобождает место по вертикали под лог).
   const rowMarkBtns = document.createElement("div");

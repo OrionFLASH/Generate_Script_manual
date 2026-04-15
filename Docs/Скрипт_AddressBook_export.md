@@ -2,13 +2,13 @@
 
 ## 1. Назначение
 
-В браузере выполняются запросы в окружении **ALPHA**; база URL для API — **`window.location.origin` + `/api/home/...`** (тот же хост, что у открытой вкладки справочника), чтобы с запросом ушли **куки текущей сессии** (`credentials: "include"`). Если у вкладки нет `location.origin`, используется запасной **`ADDRESSBOOK_ORIGINS.ALPHA`**. Вариантов TAB и SIGMA нет. Куки в код не вшиваются.
+В браузере выполняются запросы по выбранной паре **стенд/контур** (`PROM/PSI` × `ALPHA/SIGMA`). Для API используется приоритетно **`window.location.origin` + `/api/home/...`** (тот же хост, что у открытой вкладки справочника), чтобы с запросом ушли **куки текущей сессии** (`credentials: "include"`). Если у вкладки нет `location.origin`, используется fallback из **`ADDRESSBOOK_ORIGINS[STAND][CONTOUR]`**.
 
 ## 2. Запуск
 
 - Файл: `Script/AddressBook_export.js`. Текстовые копии для вставки из «.txt» собираются в каталог **`POST/`** скриптом `post_txt_sync.sh` (см. корневой `README.md`); каталог `POST/` в `.gitignore` и не входит в git.
 - DevTools → Console → вставить скрипт → Enter.
-- **Стенд** — только **ALPHA** (без переключения). На панели показано, на какой **origin** реально идут запросы (обычно совпадает с вкладкой; куки сессии привязаны к нему). Константа `ADDRESSBOOK_ORIGINS.ALPHA` — справочный хост Omega и запасной базовый URL.
+- На панели доступны выборы **стенда** (`PROM/PSI`) и **контура** (`ALPHA/SIGMA`). Показано, на какой **origin** реально идут запросы (обычно origin вкладки; при его отсутствии — fallback по выбранной паре).
 - Весь код после шапки файла обёрнут в **IIFE** `(function () { … })();`: повторная вставка скрипта в консоль **не** вызывает ошибку «Identifier has already been declared» из‑за верхнеуровневых `const`/`let`. Повторная вставка также снимает предыдущую панель (`id=addressBookExportPanelRoot`), если она ещё на странице.
 - **Закрыть панель** удаляет корень панели из DOM вместе с полями и обработчиками; состояние панели в интерфейсе сбрасывается. Незавершённые `fetch` могут ещё завершиться в фоне.
 
@@ -25,7 +25,7 @@
 
 Оформление: ширина панели **`min(700px, 100vw − отступы)`**; один общий блок ввода + режим разбора + наборы кнопок по полю и по файлу.
 
-1. **Стенд** — **ALPHA** и фактический `origin` + `/api/home/…`.
+1. **Стенд/контур** — выбор `PROM/PSI` и `ALPHA/SIGMA`, плюс фактический `origin` + `/api/home/…`.
 2. **Параметры** — компактный блок в две колонки: подпись и поле числа **в одной строке** (пауза **между сотрудниками в списке**, мс — для всех сценариев с циклом; пауза **после search перед empInfoFull**, мс — только для цепочки карточек). Диапазон 0…300000; на время выполнения поля блокируются.
 3. **Три кнопки для файла `.txt`** (в одну строку): `Файл: Search → empInfoFull`, `Файл: Только Search`, `Файл: Только empInfoFull`. После выбора файла запускается тот сценарий, который был нажат.
 4. **Один общий textarea** для всех сценариев со значением по умолчанию из **`EMP_IDS`**.
@@ -37,10 +37,10 @@
 8. На время сценария блокируются кнопки, поля пауз и переключатели режима (`setBusy`).
 9. **Закрыть панель** — `remove()` корня панели (см. п. «Запуск»).
 
-Имена файлов (суффикс стенда **ALPHA**):
-- `addressbook_empInfoFull_ALPHA_<timestamp>.json` — сценарий `Search → empInfoFull` (поле/файл),
-- `addressbook_search_only_ALPHA_<timestamp>.json` — сценарий `Только Search`,
-- `addressbook_empInfoFull_only_ALPHA_<timestamp>.json` — сценарий `Только empInfoFull`.
+Имена файлов (суффикс окружения **`<STAND>_<CONTOUR>`**):
+- `addressbook_empInfoFull_<STAND>_<CONTOUR>_<timestamp>.json` — сценарий `Search → empInfoFull` (поле/файл),
+- `addressbook_search_only_<STAND>_<CONTOUR>_<timestamp>.json` — сценарий `Только Search`,
+- `addressbook_empInfoFull_only_<STAND>_<CONTOUR>_<timestamp>.json` — сценарий `Только empInfoFull`.
 
 **Структура JSON для сценария `Search → empInfoFull`:** массив объектов по одному входному значению. Поля: `input`, `searchText`, `search` (ответ POST search). Если в `hits` есть валидные `employeeId` — массив **`cards`**: элементы `{ employeeId, empInfoFull }` (GET по каждому UUID, дубликаты UUID в выборке опускаются). Если подходящих id нет — **`cards`: []** и строка **`error`**. Пауза «после search» применяется перед первым `empInfoFull`; между несколькими карточками одного входа — пауза «между сотрудниками».
 
@@ -48,9 +48,10 @@
 
 | Имя | Назначение |
 |-----|------------|
-| `ADDRESSBOOK_STAND_KEY` | Строка `"ALPHA"` для логов и имён файлов |
-| `ADDRESSBOOK_ORIGINS` | **ALPHA** — справочный/запасной хост Omega, если нет `location.origin` |
-| `getAddressBookStandAndOrigin()` | `origin` = вкладка или запасной ALPHA; `standKey` = ALPHA |
+| `DEFAULT_ADDRESSBOOK_STAND`, `DEFAULT_ADDRESSBOOK_CONTOUR` | Значения по умолчанию (`PROM`, `SIGMA`) |
+| `ADDRESSBOOK_UI_STAND`, `ADDRESSBOOK_UI_CONTOUR` | Текущий выбор окружения на панели |
+| `ADDRESSBOOK_ORIGINS` | Таблица fallback-host по `STAND/CONTOUR`, если нет `location.origin` |
+| `getAddressBookStandAndOrigin()` | `origin` = вкладка или fallback; `standKey` = `<STAND>_<CONTOUR>` |
 | `tabNumToSearchNumber` | ТН из поля (8 цифр) → число для тела search (без ведущих нулей) |
 | `pickEmployeeIdsFromSearchData` | Из JSON ответа search — все уникальные `employeeId` из `hits` (порядок как в ответе) |
 | `ADDRESSBOOK_API_HOME` | Префикс пути `/api/home` |
@@ -89,5 +90,6 @@
 | 1.12 | IIFE: повторная вставка в консоль без ошибки повторного `const`; кнопка **.txt** на всю ширину под параметрами; панель **700px**; компактные параметры; выравнивание колонок (общая строка заголовков, фиксированная высота подсказок); лог выше; «Закрыть» снимает панель с DOM. |
 | 1.13 | Несколько записей в ответе **search** по одному ТН: **GET empInfoFull** для **каждого** уникального `employeeId` в `hits`; в JSON — массив **`cards`** вместо одной пары `employeeId`/`empInfoFull`. Блок на панели переименован в **«Журнал работы»**; подробный вывод только в журнале, в консоли — кратко (старт/итог). |
 | 1.14 | Один общий ввод + режим разбора (`табельный` / `значения для поиска`), три кнопки сценариев по полю и три кнопки по файлу: `Search → empInfoFull`, `Только Search`, `Только empInfoFull`. Для режима поиска разделители только `перенос строки`, `;`, `,`; пробелы внутри значения сохраняются. |
+| 1.15 | Добавлен выбор окружения на панели: **стенд `PROM/PSI`** и **контур `ALPHA/SIGMA`**. В логах и именах файлов используется суффикс `<STAND>_<CONTOUR>`. Запросы по-прежнему с приоритетом на `origin` текущей вкладки, fallback — по `ADDRESSBOOK_ORIGINS`. |
 
 *Актуальность проверяйте по `Script/AddressBook_export.js`.*
