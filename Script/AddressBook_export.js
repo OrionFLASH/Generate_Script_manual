@@ -185,12 +185,14 @@ async function fetchEmpInfoFull(empId) {
  * POST …/api/home/employees/search
  * @param {string|number} searchText — число ТН или строка ФИО
  * @param {boolean} asNumber — true: в теле число без кавычек в JSON
+ * @param {string|null} pageToken — токен страницы (null для первой страницы)
  */
-async function fetchEmployeesSearch(searchText, asNumber) {
+async function fetchEmployeesSearch(searchText, asNumber, pageToken) {
   var o = getAddressBookStandAndOrigin();
+  var safeToken = pageToken == null ? null : String(pageToken);
   const body = asNumber
-    ? { searchText: Number(searchText), pageToken: null }
-    : { searchText: String(searchText), pageToken: null };
+    ? { searchText: Number(searchText), pageToken: safeToken }
+    : { searchText: String(searchText), pageToken: safeToken };
   const res = await fetch(o.origin + ADDRESSBOOK_API_HOME + "/employees/search", {
     method: "POST",
     mode: "cors",
@@ -564,6 +566,104 @@ function startAddressBookPanel() {
   }
 
   /**
+   * Извлекает nextPageToken из ответа search (поддержка нескольких форматов ответа).
+   * @param {*} data
+   * @returns {string}
+   */
+  function getSearchNextPageToken(data) {
+    if (!data || typeof data !== "object") return "";
+    var raw = "";
+    if (data.nextPageToken != null) raw = data.nextPageToken;
+    else if (data.body && data.body.nextPageToken != null) raw = data.body.nextPageToken;
+    return String(raw == null ? "" : raw).trim();
+  }
+
+  /**
+   * Количество hits в одном ответе search.
+   * @param {*} data
+   * @returns {number}
+   */
+  function getSearchHitsCount(data) {
+    if (!data || typeof data !== "object") return 0;
+    if (Array.isArray(data.hits)) return data.hits.length;
+    if (data.body && Array.isArray(data.body.hits)) return data.body.hits.length;
+    return 0;
+  }
+
+  /**
+   * Считывает все страницы search до пустого nextPageToken.
+   * @param {{input: string, searchText: string|number, asNumber: boolean}} item
+   * @returns {Promise<{pages: Array, totalPages: number, totalHits: number, employeeIds: string[], stopReason: string}>}
+   */
+  async function fetchAllSearchPages(item) {
+    var pages = [];
+    var totalHits = 0;
+    var pageToken = null;
+    var pageNo = 1;
+    var seenTokens = {};
+    var stopReason = "completed";
+    while (true) {
+      var r = await fetchEmployeesSearch(item.searchText, item.asNumber, pageToken);
+      pages.push(r);
+      var hitsCount = getSearchHitsCount(r.data);
+      totalHits += hitsCount;
+      var nextToken = getSearchNextPageToken(r.data);
+      appendLog(
+        "    → Search стр. " +
+          pageNo +
+          ": HTTP " +
+          r.status +
+          (r.ok ? " OK" : " ошибка") +
+          ", hits: " +
+          hitsCount +
+          ", nextPageToken: " +
+          (nextToken ? "есть" : "пусто")
+      );
+      if (!r.ok) {
+        stopReason = "http_error";
+        break;
+      }
+      if (!nextToken) {
+        stopReason = "no_next_token";
+        break;
+      }
+      if (seenTokens[nextToken]) {
+        stopReason = "repeated_next_token";
+        appendLog("    → предупреждение: повтор nextPageToken, остановка пагинации.");
+        break;
+      }
+      seenTokens[nextToken] = true;
+      pageToken = nextToken;
+      pageNo++;
+      if (pageNo > 200) {
+        stopReason = "page_limit_reached";
+        appendLog("    → предупреждение: достигнут лимит 200 страниц, остановка пагинации.");
+        break;
+      }
+    }
+
+    var employeeIds = [];
+    var seenEmployeeIds = {};
+    for (var i = 0; i < pages.length; i++) {
+      var ids = pickEmployeeIdsFromSearchData(pages[i].data);
+      for (var j = 0; j < ids.length; j++) {
+        var id = ids[j];
+        if (seenEmployeeIds[id]) continue;
+        seenEmployeeIds[id] = true;
+        employeeIds.push(id);
+      }
+    }
+
+    return {
+      pages: pages,
+      totalPages: pages.length,
+      totalHits: totalHits,
+      employeeIds: employeeIds,
+      stopReason: stopReason
+    };
+  }
+
+  /**
    * search → empInfoFull по всем employeeId из каждого ответа search.
    * @param {{input: string, searchText: string|number, asNumber: boolean}[]} items
    * @param {number} pauseBetweenMs
@@ -602,37 +702,35 @@ function startAddressBookPanel() {
           ") …"
       );
       try {
-        const searchRes = await fetchEmployeesSearch(item.searchText, item.asNumber);
+        const searchBundle = await fetchAllSearchPages(item);
+        const searchRes = searchBundle.pages.length > 0 ? searchBundle.pages[0] : null;
+        const empUuids = searchBundle.employeeIds;
         appendLog(
-          "    → search HTTP " + searchRes.status + (searchRes.ok ? "" : " — ошибка")
+          "    → итог Search: страниц=" +
+            searchBundle.totalPages +
+            ", hits=" +
+            searchBundle.totalHits +
+            ", уникальных employeeId=" +
+            empUuids.length
         );
-        var totalHits =
-          searchRes.data && typeof searchRes.data.total === "number"
-            ? searchRes.data.total
-            : searchRes.data && Array.isArray(searchRes.data.hits)
-              ? searchRes.data.hits.length
-              : 0;
-        const empUuids = pickEmployeeIdsFromSearchData(searchRes.data);
         if (empUuids.length === 0) {
           results.push({
             input: item.input,
             searchText: item.searchText,
             search: searchRes,
+            searchPages: searchBundle.pages,
+            searchStats: {
+              totalPages: searchBundle.totalPages,
+              totalHits: searchBundle.totalHits,
+              uniqueEmployeeIds: empUuids.length,
+              stopReason: searchBundle.stopReason
+            },
             cards: [],
             error: "Нет employeeId в ответе search (пустые hits или неуспех)"
           });
           appendLog("    → пропуск: нет employeeId после search");
         } else {
-          if (totalHits > 1 || empUuids.length > 1) {
-            appendLog(
-              "    → в ответе search записей (hits с id): " +
-                empUuids.length +
-                (totalHits > empUuids.length
-                  ? " (всего элементов hits: " + totalHits + ")"
-                  : "") +
-                " — для каждого id выполняется GET empInfoFull"
-            );
-          }
+          appendLog("    → для каждого найденного employeeId выполняется GET empInfoFull");
           var cards = [];
           for (var j = 0; j < empUuids.length; j++) {
             var empUuid = empUuids[j];
@@ -659,6 +757,13 @@ function startAddressBookPanel() {
             input: item.input,
             searchText: item.searchText,
             search: searchRes,
+            searchPages: searchBundle.pages,
+            searchStats: {
+              totalPages: searchBundle.totalPages,
+              totalHits: searchBundle.totalHits,
+              uniqueEmployeeIds: empUuids.length,
+              stopReason: searchBundle.stopReason
+            },
             cards: cards
           });
         }
@@ -706,14 +811,29 @@ function startAddressBookPanel() {
       const item = items[i];
       appendLog("[" + (i + 1) + "/" + items.length + "] search(" + String(item.searchText) + ") …");
       try {
-        const r = await fetchEmployeesSearch(item.searchText, item.asNumber);
+        const bundle = await fetchAllSearchPages(item);
+        const r = bundle.pages.length > 0 ? bundle.pages[0] : null;
         results.push({
           input: item.input,
           searchText: item.searchText,
           asNumber: item.asNumber,
-          search: r
+          search: r,
+          searchPages: bundle.pages,
+          searchStats: {
+            totalPages: bundle.totalPages,
+            totalHits: bundle.totalHits,
+            uniqueEmployeeIds: bundle.employeeIds.length,
+            stopReason: bundle.stopReason
+          }
         });
-        appendLog("    → HTTP " + r.status + (r.ok ? " OK" : " — проверьте метод/URL"));
+        appendLog(
+          "    → итог Search: страниц=" +
+            bundle.totalPages +
+            ", hits=" +
+            bundle.totalHits +
+            ", уникальных employeeId=" +
+            bundle.employeeIds.length
+        );
       } catch (e) {
         results.push({
           input: item.input,
