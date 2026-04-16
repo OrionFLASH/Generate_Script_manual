@@ -121,6 +121,27 @@
     }
   }
 
+  function shortLinkRelativeToParent(href, parentHref) {
+    const childShort = shortLink(href);
+    if (!parentHref) return childShort;
+    try {
+      const childUrl = new URL(href);
+      const parentUrl = new URL(parentHref);
+      if (childUrl.origin !== parentUrl.origin) return childShort;
+
+      const childPath = childUrl.pathname || "/";
+      const parentPath = parentUrl.pathname || "/";
+      const normalizedParent = parentPath.endsWith("/") ? parentPath : parentPath + "/";
+      if (!childPath.startsWith(normalizedParent)) return childShort;
+
+      const relativePath = childPath.slice(normalizedParent.length);
+      const relative = (relativePath ? relativePath : "/") + (childUrl.search || "") + (childUrl.hash || "");
+      return relative || "/";
+    } catch {
+      return childShort;
+    }
+  }
+
   function nowIsoLike() {
     const d = new Date();
     const pad = function (n) {
@@ -684,7 +705,7 @@
           });
           const txt = document.createElement("div");
           txt.style.cssText = "word-break:break-all;font-size:15px;";
-          txt.textContent = shortLink(childNode.href);
+          txt.textContent = shortLinkRelativeToParent(childNode.href, parentNode ? parentNode.href : rootUrl);
           row.appendChild(dot);
           row.appendChild(cb);
           row.appendChild(txt);
@@ -735,7 +756,12 @@
           const childNode = nodeByKey.get(childNodeKey);
           const dot = childNode ? statusDot(childNode.status) : "⚪";
           const row = document.createElement("div");
-          row.textContent = "  " + dot + " " + shortLink(c.href) + (c.isNew ? "" : " (уже было раньше)");
+          row.textContent =
+            "  " +
+            dot +
+            " " +
+            shortLinkRelativeToParent(c.href, parentNode ? parentNode.href : rootUrl) +
+            (c.isNew ? "" : " (уже было раньше)");
           row.style.cssText = "word-break:break-all;color:#e5e7eb;";
           group.appendChild(row);
         }
