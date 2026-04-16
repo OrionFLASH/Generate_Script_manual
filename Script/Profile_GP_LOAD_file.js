@@ -29,6 +29,28 @@ const DEFAULT_BATCH_SIZE = 12000;
 const DEFAULT_ENABLE_PHOTO_DOWNLOAD = false;
 const DEFAULT_ENABLE_PHOTO_STRIP = true;
 
+const PROFILE_ORIGINS = {
+  PROM: {
+    ALPHA: "https://efs-our-business-prom.omega.sbrf.ru",
+    SIGMA: "https://salesheroes.sberbank.ru"
+  },
+  PSI: {
+    ALPHA: "https://iam-enigma-psi.omega.sbrf.ru",
+    SIGMA: "https://salesheroes-psi.sigma.sbrf.ru"
+  },
+  "IFT-SB": {
+    ALPHA: "https://iam-enigma-psi.omega.sbrf.ru",
+    SIGMA: "https://salesheroes-psi.sigma.sbrf.ru"
+  },
+  "IFT-GF": {
+    ALPHA: "https://iam-enigma-psi.omega.sbrf.ru",
+    SIGMA: "https://salesheroes-psi.sigma.sbrf.ru"
+  }
+};
+const PROFILE_STAND_KEYS = ["PROM", "PSI", "IFT-SB", "IFT-GF"];
+const PROFILE_CONTOUR_KEYS = ["ALPHA", "SIGMA"];
+const PROFILE_PATH = "/bo/rmkib.gamification/proxy/v1/profile";
+
 /**
  * Снимок параметров одного прогона (задаются на панели или в коде).
  * @returns {object}
@@ -69,29 +91,39 @@ function normalizeRunOptions(raw) {
   return o;
 }
 
-const DEFAULT_PROFILE_STAND = "PROM";
-const DEFAULT_PROFILE_CONTOUR = "SIGMA";
+
+function detectProfileEnvFromLocation() {
+  var origin = "";
+  try {
+    origin = String(window.location.origin || "").toLowerCase();
+  } catch (e) {}
+  for (var si = 0; si < PROFILE_STAND_KEYS.length; si++) {
+    var stand = PROFILE_STAND_KEYS[si];
+    var byStand = PROFILE_ORIGINS[stand];
+    if (!byStand) continue;
+    for (var ci = 0; ci < PROFILE_CONTOUR_KEYS.length; ci++) {
+      var contour = PROFILE_CONTOUR_KEYS[ci];
+      var host = String((byStand && byStand[contour]) || "").toLowerCase();
+      if (host && host === origin) {
+        return { stand: stand, contour: contour };
+      }
+    }
+  }
+  return null;
+}
+
+const PROFILE_AUTO_ENV = detectProfileEnvFromLocation();
+const DEFAULT_PROFILE_STAND = (PROFILE_AUTO_ENV && PROFILE_AUTO_ENV.stand) || "PROM";
+const DEFAULT_PROFILE_CONTOUR = (PROFILE_AUTO_ENV && PROFILE_AUTO_ENV.contour) || "SIGMA";
 
 /** Стенд/контур для URL профиля; меняются выпадающими списками на панели. */
 let PROFILE_UI_STAND = DEFAULT_PROFILE_STAND;
 let PROFILE_UI_CONTOUR = DEFAULT_PROFILE_CONTOUR;
 
-const PROFILE_ORIGINS = {
-  PROM: {
-    ALPHA: "https://efs-our-business-prom.omega.sbrf.ru",
-    SIGMA: "https://salesheroes.sberbank.ru"
-  },
-  PSI: {
-    ALPHA: "https://iam-enigma-psi.omega.sbrf.ru",
-    SIGMA: "https://salesheroes-psi.sigma.sbrf.ru"
-  }
-};
-const PROFILE_PATH = "/bo/rmkib.gamification/proxy/v1/profile";
-
 function getProfileEnv() {
-  var stand = PROFILE_UI_STAND === "PROM" || PROFILE_UI_STAND === "PSI" ? PROFILE_UI_STAND : DEFAULT_PROFILE_STAND;
+  var stand = PROFILE_STAND_KEYS.indexOf(PROFILE_UI_STAND) >= 0 ? PROFILE_UI_STAND : DEFAULT_PROFILE_STAND;
   var contour =
-    PROFILE_UI_CONTOUR === "ALPHA" || PROFILE_UI_CONTOUR === "SIGMA"
+    PROFILE_CONTOUR_KEYS.indexOf(PROFILE_UI_CONTOUR) >= 0
       ? PROFILE_UI_CONTOUR
       : DEFAULT_PROFILE_CONTOUR;
   var byStand = PROFILE_ORIGINS[stand] || PROFILE_ORIGINS[DEFAULT_PROFILE_STAND];
@@ -734,7 +766,7 @@ function startWithChoice() {
   selStand.style.cssText =
     "flex:1;min-width:220px;padding:6px 10px;font-size:12px;cursor:pointer;" +
     "color:#0f172a;background:#fff;border:1px solid #94a3b8;border-radius:6px;color-scheme:light;";
-  ["PROM", "PSI"].forEach(function (key) {
+  PROFILE_STAND_KEYS.forEach(function (key) {
     const opt = document.createElement("option");
     opt.value = key;
     opt.textContent = key;
@@ -760,12 +792,11 @@ function startWithChoice() {
   function refreshProfileContourOptions() {
     const prev = PROFILE_UI_CONTOUR;
     selContour.innerHTML = "";
-    ["ALPHA", "SIGMA"].forEach(function (key) {
+    PROFILE_CONTOUR_KEYS.forEach(function (key) {
       const opt = document.createElement("option");
       const byStand = PROFILE_ORIGINS[PROFILE_UI_STAND] || PROFILE_ORIGINS[DEFAULT_PROFILE_STAND];
-      const host = (byStand && byStand[key]) || "";
       opt.value = key;
-      opt.textContent = key + (host ? " — " + host : "");
+      opt.textContent = key;
       opt.style.cssText = "color:#0f172a;background:#fff;";
       if (key === prev) opt.selected = true;
       selContour.appendChild(opt);
@@ -780,6 +811,21 @@ function startWithChoice() {
   });
   rowStand.appendChild(labContour);
   rowStand.appendChild(selContour);
+
+  const envInfo = document.createElement("div");
+  envInfo.style.cssText =
+    "margin-left:auto;font-size:11px;color:#64748b;white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis;";
+  function refreshProfileEnvInfo() {
+    try {
+      envInfo.textContent = "POST " + getProfileEnv().origin;
+    } catch (e) {
+      envInfo.textContent = "";
+    }
+  }
+  selStand.addEventListener("change", refreshProfileEnvInfo);
+  selContour.addEventListener("change", refreshProfileEnvInfo);
+  refreshProfileEnvInfo();
+  rowStand.appendChild(envInfo);
   container.appendChild(rowStand);
 
   const def = getDefaultRunOptions();

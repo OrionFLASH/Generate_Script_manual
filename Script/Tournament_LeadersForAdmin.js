@@ -8,13 +8,6 @@
 (function () {
   "use strict";
 
-  const DEFAULT_TOURNAMENT_STAND = "PROM";
-  const DEFAULT_TOURNAMENT_CONTOUR = "SIGMA";
-
-  /** Стенд/контур для GET leadersForAdmin; обновляются списками на панели. */
-  let TOURNAMENT_UI_STAND = DEFAULT_TOURNAMENT_STAND;
-  let TOURNAMENT_UI_CONTOUR = DEFAULT_TOURNAMENT_CONTOUR;
-
 const TOURNAMENT_BASE = {
   PROM: {
     ALPHA: "https://efs-our-business-prom.omega.sbrf.ru/bo/rmkib.gamification/api/v1/tournaments/",
@@ -23,8 +16,50 @@ const TOURNAMENT_BASE = {
   PSI: {
     ALPHA: "https://iam-enigma-psi.omega.sbrf.ru/bo/rmkib.gamification/api/v1/tournaments/",
     SIGMA: "https://salesheroes-psi.sigma.sbrf.ru/bo/rmkib.gamification/api/v1/tournaments/"
+  },
+  "IFT-SB": {
+    ALPHA: "https://iam-enigma-psi.omega.sbrf.ru/bo/rmkib.gamification/api/v1/tournaments/",
+    SIGMA: "https://salesheroes-psi.sigma.sbrf.ru/bo/rmkib.gamification/api/v1/tournaments/"
+  },
+  "IFT-GF": {
+    ALPHA: "https://iam-enigma-psi.omega.sbrf.ru/bo/rmkib.gamification/api/v1/tournaments/",
+    SIGMA: "https://salesheroes-psi.sigma.sbrf.ru/bo/rmkib.gamification/api/v1/tournaments/"
   }
 };
+const TOURNAMENT_STAND_KEYS = ["PROM", "PSI", "IFT-SB", "IFT-GF"];
+const TOURNAMENT_CONTOUR_KEYS = ["ALPHA", "SIGMA"];
+
+function detectTournamentEnvFromLocation() {
+  var origin = "";
+  try {
+    origin = String(window.location.origin || "").toLowerCase();
+  } catch (e) {}
+  for (var si = 0; si < TOURNAMENT_STAND_KEYS.length; si++) {
+    var stand = TOURNAMENT_STAND_KEYS[si];
+    var byStand = TOURNAMENT_BASE[stand];
+    if (!byStand) continue;
+    for (var ci = 0; ci < TOURNAMENT_CONTOUR_KEYS.length; ci++) {
+      var contour = TOURNAMENT_CONTOUR_KEYS[ci];
+      var baseUrl = String((byStand && byStand[contour]) || "");
+      var host = "";
+      try {
+        host = new URL(baseUrl).origin.toLowerCase();
+      } catch (eHost) {}
+      if (host && host === origin) {
+        return { stand: stand, contour: contour };
+      }
+    }
+  }
+  return null;
+}
+
+const TOURNAMENT_AUTO_ENV = detectTournamentEnvFromLocation();
+const DEFAULT_TOURNAMENT_STAND = (TOURNAMENT_AUTO_ENV && TOURNAMENT_AUTO_ENV.stand) || "PROM";
+const DEFAULT_TOURNAMENT_CONTOUR = (TOURNAMENT_AUTO_ENV && TOURNAMENT_AUTO_ENV.contour) || "SIGMA";
+
+/** Стенд/контур для GET leadersForAdmin; обновляются списками на панели. */
+let TOURNAMENT_UI_STAND = DEFAULT_TOURNAMENT_STAND;
+let TOURNAMENT_UI_CONTOUR = DEFAULT_TOURNAMENT_CONTOUR;
 
 const LEADERS_SERVICE = "leadersForAdmin";
 /** Значение по умолчанию для поля «Пауза между запросами» на панели (мс). */
@@ -77,9 +112,9 @@ function delay(ms) {
 }
 
 function getTournamentEnv() {
-  var stand = TOURNAMENT_UI_STAND === "PROM" || TOURNAMENT_UI_STAND === "PSI" ? TOURNAMENT_UI_STAND : DEFAULT_TOURNAMENT_STAND;
+  var stand = TOURNAMENT_STAND_KEYS.indexOf(TOURNAMENT_UI_STAND) >= 0 ? TOURNAMENT_UI_STAND : DEFAULT_TOURNAMENT_STAND;
   var contour =
-    TOURNAMENT_UI_CONTOUR === "ALPHA" || TOURNAMENT_UI_CONTOUR === "SIGMA"
+    TOURNAMENT_CONTOUR_KEYS.indexOf(TOURNAMENT_UI_CONTOUR) >= 0
       ? TOURNAMENT_UI_CONTOUR
       : DEFAULT_TOURNAMENT_CONTOUR;
   var byStand = TOURNAMENT_BASE[stand] || TOURNAMENT_BASE[DEFAULT_TOURNAMENT_STAND];
@@ -467,7 +502,7 @@ function startTournamentPanel() {
     "padding:4px 8px;font-size:12px;min-width:200px;cursor:pointer;" +
     "color:#111827;background-color:#ffffff;border:1px solid #64748b;border-radius:4px;" +
     "color-scheme:light;";
-  ["PROM", "PSI"].forEach(function (key) {
+  TOURNAMENT_STAND_KEYS.forEach(function (key) {
     const opt = document.createElement("option");
     opt.value = key;
     opt.textContent = key;
@@ -494,12 +529,11 @@ function startTournamentPanel() {
   function refreshTournamentContourOptions() {
     var prev = TOURNAMENT_UI_CONTOUR;
     selContour.innerHTML = "";
-    ["ALPHA", "SIGMA"].forEach(function (key) {
+    TOURNAMENT_CONTOUR_KEYS.forEach(function (key) {
       const opt = document.createElement("option");
       const byStand = TOURNAMENT_BASE[TOURNAMENT_UI_STAND] || TOURNAMENT_BASE[DEFAULT_TOURNAMENT_STAND];
-      const host = (byStand && byStand[key]) || "";
       opt.value = key;
-      opt.textContent = key + (host ? " — " + host : "");
+      opt.textContent = key;
       opt.style.cssText = "color:#111827;background-color:#ffffff;";
       if (key === prev) opt.selected = true;
       selContour.appendChild(opt);
@@ -514,6 +548,22 @@ function startTournamentPanel() {
   });
   stRow.appendChild(labContour);
   stRow.appendChild(selContour);
+
+  const envInfo = document.createElement("div");
+  envInfo.style.cssText =
+    "margin-left:auto;font-size:11px;color:#334155;white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis;";
+  function refreshTournamentEnvInfo() {
+    try {
+      const env = getTournamentEnv();
+      envInfo.textContent = "POST " + new URL(env.baseUrl).origin;
+    } catch (e) {
+      envInfo.textContent = "";
+    }
+  }
+  selStand.addEventListener("change", refreshTournamentEnvInfo);
+  selContour.addEventListener("change", refreshTournamentEnvInfo);
+  refreshTournamentEnvInfo();
+  stRow.appendChild(envInfo);
 
   /** Справа: префикс имени файла и пауза между запросами. */
   const stRowRight = document.createElement("div");

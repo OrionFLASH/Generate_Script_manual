@@ -8,9 +8,9 @@
 2. **Создание** — POST `…/proxy/v1/parameters/param-create` с телом `parameterCode`, `parameterType`, `parameterName`, `parameterValue` и опциональным `businessBlock` (форма или файл).
 3. **Редактирование** — POST `…/proxy/v1/parameters/param-update` с теми же полями плюс `objectId`, `version`, `status`; для изменений статуса используется сокращённый payload `{ objectId, status, version }` (форма или файл).
 
-**Стенд** (`PROM` / `PSI`) и **контур** (`ALPHA` / `SIGMA`) выбираются **один раз над вкладками** и используются для всех операций.
+**Стенд** (`PROM` / `PSI` / `IFT-SB` / `IFT-GF`) и **контур** (`ALPHA` / `SIGMA`) выбираются **один раз над вкладками** и используются для всех операций.
 
-Под строкой выбора отображаются базовый путь `POST …/parameters` и суффиксы `param-create` / `param-update`.
+Справа в строке выбора отображается короткий индикатор окружения в формате `POST <origin>` (без длинных API-суффиксов).
 
 ---
 
@@ -18,8 +18,9 @@
 
 Таблица `origin` такая же, как для выгрузки:
 
-- **Стенд:** `PROM` / `PSI`
+- **Стенд:** `PROM` / `PSI` / `IFT-SB` / `IFT-GF`
 - **Контур:** `SIGMA` / `ALPHA`
+- **Автоопределение при старте:** скрипт пытается определить стенд/контур по `window.location.origin`; если совпадение не найдено, используются значения по умолчанию (`PROM` + `SIGMA`).
 
 ---
 
@@ -38,7 +39,7 @@
 
 - **Стенд** и **контур** — всегда сверху, до переключения вкладок.
 - Единая кнопка **`⬇ Загрузить параметры`** рядом со вкладками — общий запуск предварительной загрузки для всех вкладок.
-- Информационная строка с базовым URL и путями API.
+- Справа от селектов — индикатор `POST <origin>` для активной пары стенд/контур.
 - **Журнал работы** — сообщения по всем вкладкам; префиксы **`[Выгрузка]`**, **`[Создание]`**, **`[Редактирование]`** в зависимости от операции.
 - Кнопка **«Закрыть панель»**.
 - Во время длительной операции элементы панели блокируются.
@@ -49,7 +50,7 @@
 - флаг **`editTabAllowedListsLoaded`** (вкладка «Редактирование»);
 - селект **parameterType** на вкладке «Создание» — снова из **`PARAMETER_TYPE_OPTIONS`**;
 - селекты **parameterCode** и **parameterType** на вкладке «Редактирование» — снова в «пустое» состояние (до повторной загрузки справочников).
-- `businessBlock` — fallback-список (`KMKKSB`, `MNS`) до повторной загрузки.
+- `businessBlock` — fallback-список (`KMKKSB`, `MNS`, `SERVICEMEN`, `KMFACTORING`, `KMSB1`, `IMUB`, `RNUB`, `RSB1`) до повторной загрузки.
 
 ---
 
@@ -94,7 +95,7 @@
 | Шаг | Запрос | Тело | Результат в скрипте |
 |-----|--------|------|---------------------|
 | 1 | `POST …/parameters` | `{ "status": "ACTUAL" }` | Заполнение `cachedActualParameterCodes`, `cachedActualObjectIds`, карт соответствий и `cachedAllowedBusinessBlocks` |
-| 2 | `POST …/parameters` | `{ "objectIds": ["<metaId>"] }` | `<metaId>` выбирается по стенду: `PROM -> 745250143248942718`, `PSI -> 737634462490874360`; при успешном ответе дополняется `cachedAllowedParameterTypes` |
+| 2 | `POST …/parameters` | `{ "objectIds": ["<metaId>"] }` | `<metaId>` выбирается по стенду: `PROM -> 745250143248942718`, `PSI/IFT-SB/IFT-GF -> 737634462490874360`; при успешном ответе дополняется `cachedAllowedParameterTypes` |
 
 **Журнал:** префикс **`[Создание]`**, шаги «1/2» и «2/2».
 
@@ -118,7 +119,7 @@
 ### 6.4. Кнопка «Создать параметр (param-create)» — порядок действий
 
 1. **`ensureCachesForCreateOperation()`** — см. п. 6.3 (при ошибке ACTUAL создание не продолжается).
-2. Проверка полей и **`parameterType`** через **`validateCreatePayload`** (список допустимых: **`getParameterTypeAllowedValues()`** — после загрузки API из кэша, иначе из **`PARAMETER_TYPE_OPTIONS`**). Для `businessBlock` поле необязательное; если заполнено, проверка идёт через `getBusinessBlockAllowedValues()` (кэш API, иначе fallback `KMKKSB`, `MNS`).
+2. Проверка полей и **`parameterType`** через **`validateCreatePayload`** (список допустимых: **`getParameterTypeAllowedValues()`** — после загрузки API из кэша, иначе из **`PARAMETER_TYPE_OPTIONS`**). Для `businessBlock` поле необязательное; если заполнено, проверка идёт через `getBusinessBlockAllowedValues()` (кэш API, иначе fallback из `BUSINESS_BLOCK_OPTIONS`).
 3. Проверка дубликата: если **`parameterCode`** уже есть в **`cachedActualParameterCodes`** — сообщение в журнал, переход на вкладку «Редактирование», **`param-create` не отправляется**.
 4. Диалог подтверждения (код, тип, имя, фрагмент значения).
 5. **Отмена** — в журнал: создание отменено, **`param-create` не вызывался**.
@@ -180,7 +181,7 @@
 | Шаг | Запрос | Тело |
 |-----|--------|------|
 | 1 | `POST …/parameters` | `{ "status": "ACTUAL" }` → **`cachedActualParameterCodes`**, **`cachedActualObjectIds`** |
-| 2 | `POST …/parameters` | `{ "objectIds": ["<metaId>"] }` (`PROM -> 745250143248942718`, `PSI -> 737634462490874360`) → дополнение **`cachedAllowedParameterTypes`** |
+| 2 | `POST …/parameters` | `{ "objectIds": ["<metaId>"] }` (`PROM -> 745250143248942718`, `PSI/IFT-SB/IFT-GF -> 737634462490874360`) → дополнение **`cachedAllowedParameterTypes`** |
 
 **Журнал:** префикс **`[Редактирование]`** (в т.ч. число **objectId** в кэше на шаге 1).
 
@@ -276,10 +277,10 @@
 
 | Имя | Назначение |
 |-----|------------|
-| `PARAMETER_TYPE_OPTIONS` | Справочник `{ value, label }` для `parameterType` на вкладке «Создание», пока нет API |
+| `PARAMETER_TYPE_OPTIONS` | Справочник `{ value, label }` для `parameterType` на вкладке «Создание», пока нет API (включает 11 типов из `parameterValue.types`) |
 | `PARAMETER_TYPES_META_CODE` | Код мета-параметра (`parameterTypes`) |
-| `getParameterTypesDetailObjectId` | Выбор `metaObjectId` по стенду (`PROM`/`PSI`) для шага детализации `parameterTypes` |
-| `BUSINESS_BLOCK_OPTIONS`, `getBusinessBlockAllowedValues` | Fallback и итоговый список допустимых `businessBlock` (`API -> fallback KMKKSB/MNS`) |
+| `getParameterTypesDetailObjectId` | Выбор `metaObjectId` по стенду (`PROM` или `PSI/IFT-SB/IFT-GF`) для шага детализации `parameterTypes` |
+| `BUSINESS_BLOCK_OPTIONS`, `getBusinessBlockAllowedValues` | Fallback и итоговый список допустимых `businessBlock` (`API -> fallback из 8 значений`) |
 | `cachedAllowedParameterTypes`, `cachedAllowedBusinessBlocks`, `cachedActualParameterCodes`, `cachedActualObjectIds` | Кэши типов/бизнес-блоков/кодов/**objectId** из ответов ACTUAL и детализации |
 | `cachedActualByCode`, `cachedActualByObjectId` | Карты соответствий `parameterCode <-> objectId` c `parameterType`, `businessBlock`, `status`, `version` для автоподстановки и сверок |
 | `editTabAllowedListsLoaded` | Флаг: на вкладке 3 выполнена загрузка справочников для селектов |
@@ -298,6 +299,7 @@
 | `extractParameterCodesFromListData`, `extractTypesFromParameterTypesDetail`, `hasParameterTypesMetaInDetail` | Разбор ответов API |
 | `PARAM_BATCH_REQUEST_GAP_MS` | Пауза между последовательными create/update из файла (100 мс) |
 | `PARAMETER_ORIGINS` | `origin` по стенду и контуру |
+| `STAND_KEYS`, `CONTOUR_KEYS`, `detectParameterEnvFromLocation` | Набор доступных окружений и автоопределение стенда/контура по `window.location.origin` |
 | `PARAMETERS_PATH`, `PARAM_CREATE_PATH`, `PARAM_UPDATE_PATH` | Пути API |
 | `getOrigin`, `postJson`, `postParameters` | Запросы с `credentials: "include"` |
 | `extractObjectIds` | Сбор `objectId` из ответа списка |
@@ -343,3 +345,4 @@
 | **3.8** | Реализованы пункты ToDo: стенд-зависимый `metaObjectId` для шага `parameterTypes`; fallback на данные шага 1 при ошибке шага 2; поле `businessBlock` (форма/файл/кэш/валидации); фильтрация `parameterCode` по выбранному `parameterType`; проверка изменений включает `status`; подтверждение обновления в формате «было/стало»; для изменений статуса отправляется сокращённый payload `{ objectId, status, version }`. |
 | **3.9** | Добавлена кнопка `🧩` на вкладке редактирования: выгрузка шаблона для пакетного `param-update` по объединённым `objectId` из ACTUAL и ARCHIVE с последующей детализацией по каждому `objectId`. |
 | **3.10** | Вынесена единая кнопка `⬇ Загрузить параметры` рядом со вкладками; одна загрузка используется всеми вкладками. Для `businessBlock` добавлен fallback-список допустимых значений (`KMKKSB`, `MNS`) при пустом ответе API. |
+| **3.11** | Добавлены стенды `IFT-SB` и `IFT-GF` (с временными host как у `PSI`), реализовано автоопределение стенда/контура по `window.location.origin`, обновлён верхний индикатор окружения до формата `POST <origin>`, расширены fallback-значения `BUSINESS_BLOCK_OPTIONS` и обновлён дефолтный список `PARAMETER_TYPE_OPTIONS` по актуальному `types`. |

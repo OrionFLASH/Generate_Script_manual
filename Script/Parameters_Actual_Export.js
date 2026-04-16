@@ -11,13 +11,82 @@
   // Добавляйте строки { value, label } — value уходит в API, label виден в списке для ориентира.
   // ===========================================================================
   /** @type {{ value: string; label: string }[]} */
-  const PARAMETER_TYPE_OPTIONS = [
-    { value: "SERVICE", label: "SERVICE — сервисный параметр (пример из API)" },
-    // Пример добавления: { value: "OTHER", label: "OTHER — кратко для чего" },
+const PARAMETER_TYPE_OPTIONS = [
+    { value: "NEWS_ACHIEVEMENT", label: "NEWS_ACHIEVEMENT" },
+    { value: "SERVICE", label: "SERVICE" },
+    { value: "COMMON", label: "COMMON" },
+    { value: "GROUPING", label: "GROUPING" },
+    { value: "NEWS_ACHIEVEMENT_REWARD", label: "NEWS_ACHIEVEMENT_REWARD" },
+    { value: "NEWS_ACHIEVEMENT_GENERAL", label: "NEWS_ACHIEVEMENT_GENERAL" },
+    { value: "HELP_MATERIALS", label: "HELP_MATERIALS" },
+    { value: "NOTIFICATION_SCHEME", label: "NOTIFICATION_SCHEME" },
+    { value: "NOTIFICATION_TEMPLATE", label: "NOTIFICATION_TEMPLATE" },
+    { value: "NOTIFICATION_RECEIVER_RULE", label: "NOTIFICATION_RECEIVER_RULE" },
+    { value: "YEAR_RESULTS", label: "YEAR_RESULTS" },
   ];
 
-  /** Фолбэк-список businessBlock, если API на шаге загрузки не вернул значения. */
-  const BUSINESS_BLOCK_OPTIONS = ["KMKKSB", "MNS"];
+/** Фолбэк-список businessBlock, если API на шаге загрузки не вернул значения. */
+  const BUSINESS_BLOCK_OPTIONS = [
+    { value: "KMKKSB", label: "KMKKSB" },
+    { value: "MNS", label: "MNS" },
+    { value: "SERVICEMEN", label: "SERVICEMEN" },
+    { value: "KMFACTORING", label: "KMFACTORING" },
+    { value: "KMSB1", label: "KMSB1" },
+    { value: "IMUB", label: "IMUB" },
+    { value: "RNUB", label: "RNUB" },
+    { value: "RSB1", label: "RSB1" },
+  ];
+
+  /** Пауза между последовательными POST из файла (create/update), мс. */
+  const PARAM_BATCH_REQUEST_GAP_MS = 100;
+
+  const PARAMETER_ORIGINS = {
+    PROM: {
+      SIGMA: "https://salesheroes.sberbank.ru",
+      ALPHA: "https://efs-our-business-prom.omega.sbrf.ru",
+    },
+    PSI: {
+      SIGMA: "https://salesheroes-psi.sigma.sbrf.ru",
+      ALPHA: "https://iam-enigma-psi.omega.sbrf.ru",
+    },
+    "IFT-SB": {
+      SIGMA: "https://salesheroes-psi.sigma.sbrf.ru",
+      ALPHA: "https://iam-enigma-psi.omega.sbrf.ru",
+    },
+    "IFT-GF": {
+      SIGMA: "https://salesheroes-psi.sigma.sbrf.ru",
+      ALPHA: "https://iam-enigma-psi.omega.sbrf.ru",
+    },
+  };
+  const STAND_KEYS = ["PROM", "PSI", "IFT-SB", "IFT-GF"];
+  const CONTOUR_KEYS = ["SIGMA", "ALPHA"];
+  const DEFAULT_STATUS = "ACTUAL";
+
+  const PARAMETERS_PATH = "/bo/rmkib.gamification/proxy/v1/parameters";
+  const PARAM_CREATE_PATH = "/bo/rmkib.gamification/proxy/v1/parameters/param-create";
+  const PARAM_UPDATE_PATH = "/bo/rmkib.gamification/proxy/v1/parameters/param-update";
+  /** parameterCode мета-параметра со списком типов в parameterValue.types (JSON). */
+  const PARAMETER_TYPES_META_CODE = "parameterTypes";
+
+  const PANEL_ID = "parameters-actual-export-panel";
+  const LOG_MAX_LINES = 400;
+
+  /** Базовый размер шрифта панели (компактно, чтобы форма и журнал помещались). */
+  const PANEL_FONT_BASE = "11px";
+  /** Подписи и подсказки. */
+  const PANEL_FONT_SMALL = "10px";
+  /**
+   * Ширина панели — максимально возможная под текущее окно (с отступами от краёв).
+   */
+  const PANEL_WIDTH_CSS = "min(1400px, calc(100vw - 24px))";
+  /**
+   * Высота панели — почти на весь экран (фиксированные bottom/right 12px дают суммарно ~24px).
+   */
+  const PANEL_HEIGHT_CSS = "calc(100vh - 24px)";
+  /** Минимальная высота блока журнала. */
+  const PANEL_LOG_MIN_HEIGHT_PX = 56;
+  /** Высота журнала: доля экрана, без забирации места у области вкладок сверх необходимого. */
+  const PANEL_LOG_HEIGHT_CSS = "min(120px, 14vh)";
 
   /**
    * После кнопки «загрузить типы» сюда попадает объединённый список допустимых parameterType из API;
@@ -36,7 +105,7 @@
     if (cachedAllowedBusinessBlocks !== null && cachedAllowedBusinessBlocks.length > 0) {
       return cachedAllowedBusinessBlocks.slice();
     }
-    return BUSINESS_BLOCK_OPTIONS.slice();
+    return BUSINESS_BLOCK_OPTIONS.map((row) => String(row.value).trim()).filter(Boolean);
   }
 
   /**
@@ -203,58 +272,38 @@
     typeSel.value = "";
   }
 
-  /** Пауза между последовательными POST из файла (create/update), мс. */
-  const PARAM_BATCH_REQUEST_GAP_MS = 100;
 
-  const DEFAULT_STAND = "PROM";
-  const DEFAULT_CONTOUR = "SIGMA";
-  const DEFAULT_STATUS = "ACTUAL";
+  function detectParameterEnvFromLocation() {
+    const currentOrigin = String(window.location.origin || "").toLowerCase();
+    for (let si = 0; si < STAND_KEYS.length; si++) {
+      const stand = STAND_KEYS[si];
+      const byStand = PARAMETER_ORIGINS[stand];
+      if (!byStand) continue;
+      for (let ci = 0; ci < CONTOUR_KEYS.length; ci++) {
+        const contour = CONTOUR_KEYS[ci];
+        const host = String((byStand && byStand[contour]) || "").toLowerCase();
+        if (host && host === currentOrigin) {
+          return { stand, contour };
+        }
+      }
+    }
+    return null;
+  }
 
-  const PARAMETER_ORIGINS = {
-    PROM: {
-      SIGMA: "https://salesheroes.sberbank.ru",
-      ALPHA: "https://salesheroes-alpha.sberbank.ru",
-    },
-    PSI: {
-      SIGMA: "https://salesheroes-psi.sberbank.ru",
-      ALPHA: "https://iam-enigma-psi.sberbank.ru",
-    },
-  };
+  const PARAM_AUTO_ENV = detectParameterEnvFromLocation();
+  const DEFAULT_STAND = (PARAM_AUTO_ENV && PARAM_AUTO_ENV.stand) || "PROM";
+  const DEFAULT_CONTOUR = (PARAM_AUTO_ENV && PARAM_AUTO_ENV.contour) || "SIGMA";
 
-  const PARAMETERS_PATH = "/bo/rmkib.gamification/proxy/v1/parameters";
-  const PARAM_CREATE_PATH = "/bo/rmkib.gamification/proxy/v1/parameters/param-create";
-  const PARAM_UPDATE_PATH = "/bo/rmkib.gamification/proxy/v1/parameters/param-update";
-
-  /** parameterCode мета-параметра со списком типов в parameterValue.types (JSON). */
-  const PARAMETER_TYPES_META_CODE = "parameterTypes";
 
   /**
    * Единственный objectId для детализации при кнопке ⬇: только этот ответ разбирается на «parameterTypes».
    * Полный обход всех objectId не выполняется (этап только для списка допустимых parameterType).
    */
   function getParameterTypesDetailObjectId(stand) {
-    return String(stand).trim() === "PSI" ? "737634462490874360" : "745250143248942718";
+    const s = String(stand).trim();
+    return s === "PSI" || s === "IFT-SB" || s === "IFT-GF" ? "737634462490874360" : "745250143248942718";
   }
 
-  const PANEL_ID = "parameters-actual-export-panel";
-  const LOG_MAX_LINES = 400;
-
-  /** Базовый размер шрифта панели (компактно, чтобы форма и журнал помещались). */
-  const PANEL_FONT_BASE = "11px";
-  /** Подписи и подсказки. */
-  const PANEL_FONT_SMALL = "10px";
-  /**
-   * Ширина панели — максимально возможная под текущее окно (с отступами от краёв).
-   */
-  const PANEL_WIDTH_CSS = "min(1400px, calc(100vw - 24px))";
-  /**
-   * Высота панели — почти на весь экран (фиксированные bottom/right 12px дают суммарно ~24px).
-   */
-  const PANEL_HEIGHT_CSS = "calc(100vh - 24px)";
-  /** Минимальная высота блока журнала. */
-  const PANEL_LOG_MIN_HEIGHT_PX = 56;
-  /** Высота журнала: доля экрана, без забирации места у области вкладок сверх необходимого. */
-  const PANEL_LOG_HEIGHT_CSS = "min(120px, 14vh)";
 
   /**
    * @param {string} stand
@@ -865,10 +914,10 @@
     "font-size:" +
     PANEL_FONT_BASE +
     ";background:#0b1220;color:#e5e7eb;border:1px solid #374151;border-radius:5px;padding:3px 5px;";
-  [["PROM", "PROM"], ["PSI", "PSI"]].forEach(([v, t]) => {
+  STAND_KEYS.forEach((v) => {
     const o = document.createElement("option");
     o.value = v;
-    o.textContent = t;
+    o.textContent = v;
     standSel.appendChild(o);
   });
   standSel.value = DEFAULT_STAND;
@@ -877,10 +926,10 @@
   contourLabel.textContent = "Контур:";
   const contourSel = document.createElement("select");
   contourSel.style.cssText = standSel.style.cssText;
-  [["SIGMA", "SIGMA"], ["ALPHA", "ALPHA"]].forEach(([v, t]) => {
+  CONTOUR_KEYS.forEach((v) => {
     const o = document.createElement("option");
     o.value = v;
-    o.textContent = t;
+    o.textContent = v;
     contourSel.appendChild(o);
   });
   contourSel.value = DEFAULT_CONTOUR;
@@ -889,23 +938,23 @@
   standRow.appendChild(standSel);
   standRow.appendChild(contourLabel);
   standRow.appendChild(contourSel);
-  panel.appendChild(standRow);
 
   const envInfo = document.createElement("div");
   envInfo.style.cssText =
     "font-size:" +
-    PANEL_FONT_SMALL +
-    ";line-height:1.25;color:#9ca3af;margin-bottom:4px;word-break:break-all;flex-shrink:0;max-height:3.2em;overflow-y:auto;";
-  panel.appendChild(envInfo);
+    PANEL_FONT_BASE +
+    ";line-height:1.25;color:#9ca3af;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-left:auto;";
 
   function refreshEnvInfo() {
     try {
       const origin = getOrigin(standSel.value, contourSel.value);
-      envInfo.textContent = "POST " + origin + PARAMETERS_PATH + " | create: " + PARAM_CREATE_PATH + " | update: " + PARAM_UPDATE_PATH;
+      envInfo.textContent = "POST " + origin;
     } catch (e) {
       envInfo.textContent = String(e && e.message ? e.message : e);
     }
   }
+  standRow.appendChild(envInfo);
+  panel.appendChild(standRow);
   const tabsRow = document.createElement("div");
   tabsRow.style.cssText = "display:flex;gap:4px;margin-bottom:4px;flex-wrap:wrap;flex-shrink:0;";
   const tabButtons = [];

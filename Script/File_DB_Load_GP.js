@@ -16,14 +16,6 @@
 // КОНФИГУРАЦИЯ
 // =============================================================================
 
-// Пара "стенд/контур" по умолчанию до открытия панели.
-const DEFAULT_FILE_DL_STAND = "PROM";
-const DEFAULT_FILE_DL_CONTOUR = "SIGMA";
-
-/** Текущий выбранный стенд/контур для POST (обновляется из UI панели). */
-var FILE_DL_ACTIVE_STAND = DEFAULT_FILE_DL_STAND;
-var FILE_DL_ACTIVE_CONTOUR = DEFAULT_FILE_DL_CONTOUR;
-
 // Базовые URL по паре стенд/контур (без завершающего слэша).
 const STAND_ORIGINS = {
   PROM: {
@@ -33,13 +25,53 @@ const STAND_ORIGINS = {
   PSI: {
     ALPHA: "https://iam-enigma-psi.omega.sbrf.ru",
     SIGMA: "https://salesheroes-psi.sigma.sbrf.ru"
+  },
+  "IFT-SB": {
+    ALPHA: "https://iam-enigma-psi.omega.sbrf.ru",
+    SIGMA: "https://salesheroes-psi.sigma.sbrf.ru"
+  },
+  "IFT-GF": {
+    ALPHA: "https://iam-enigma-psi.omega.sbrf.ru",
+    SIGMA: "https://salesheroes-psi.sigma.sbrf.ru"
   }
 };
 
+const STAND_KEYS = ["PROM", "PSI", "IFT-SB", "IFT-GF"];
+const CONTOUR_KEYS = ["ALPHA", "SIGMA"];
+
+function detectFileDlEnvFromLocation() {
+  var origin = "";
+  try {
+    origin = String(window.location.origin || "").toLowerCase();
+  } catch (e) {}
+  for (var si = 0; si < STAND_KEYS.length; si++) {
+    var stand = STAND_KEYS[si];
+    var byStand = STAND_ORIGINS[stand];
+    if (!byStand) continue;
+    for (var ci = 0; ci < CONTOUR_KEYS.length; ci++) {
+      var contour = CONTOUR_KEYS[ci];
+      var host = String((byStand && byStand[contour]) || "").toLowerCase();
+      if (host && host === origin) {
+        return { stand: stand, contour: contour };
+      }
+    }
+  }
+  return null;
+}
+
+// Пара "стенд/контур" по умолчанию до открытия панели (с автоопределением по текущей странице).
+const FILE_DL_AUTO_ENV = detectFileDlEnvFromLocation();
+const DEFAULT_FILE_DL_STAND = (FILE_DL_AUTO_ENV && FILE_DL_AUTO_ENV.stand) || "PROM";
+const DEFAULT_FILE_DL_CONTOUR = (FILE_DL_AUTO_ENV && FILE_DL_AUTO_ENV.contour) || "SIGMA";
+
+/** Текущий выбранный стенд/контур для POST (обновляется из UI панели). */
+var FILE_DL_ACTIVE_STAND = DEFAULT_FILE_DL_STAND;
+var FILE_DL_ACTIVE_CONTOUR = DEFAULT_FILE_DL_CONTOUR;
+
 function getFileDlOriginByEnv() {
-  var stand = FILE_DL_ACTIVE_STAND === "PROM" || FILE_DL_ACTIVE_STAND === "PSI" ? FILE_DL_ACTIVE_STAND : DEFAULT_FILE_DL_STAND;
+  var stand = STAND_KEYS.indexOf(FILE_DL_ACTIVE_STAND) >= 0 ? FILE_DL_ACTIVE_STAND : DEFAULT_FILE_DL_STAND;
   var contour =
-    FILE_DL_ACTIVE_CONTOUR === "ALPHA" || FILE_DL_ACTIVE_CONTOUR === "SIGMA"
+    CONTOUR_KEYS.indexOf(FILE_DL_ACTIVE_CONTOUR) >= 0
       ? FILE_DL_ACTIVE_CONTOUR
       : DEFAULT_FILE_DL_CONTOUR;
   var byStand = STAND_ORIGINS[stand] || STAND_ORIGINS[DEFAULT_FILE_DL_STAND];
@@ -977,7 +1009,7 @@ function startDownloadPanel() {
   selStand.style.cssText =
     "padding:5px 8px;font-size:11px;min-width:160px;max-width:min(360px,100%);cursor:pointer;flex:1 1 200px;" +
     "color:#111827;background-color:#ffffff;border:1px solid #94a3b8;border-radius:6px;color-scheme:light;";
-  ["PROM", "PSI"].forEach(function (key) {
+  STAND_KEYS.forEach(function (key) {
     const opt = document.createElement("option");
     opt.value = key;
     opt.textContent = key;
@@ -1001,12 +1033,11 @@ function startDownloadPanel() {
   selContour.style.cssText =
     "padding:5px 8px;font-size:11px;min-width:140px;max-width:min(240px,100%);cursor:pointer;flex:0 1 160px;" +
     "color:#111827;background-color:#ffffff;border:1px solid #94a3b8;border-radius:6px;color-scheme:light;";
-  ["ALPHA", "SIGMA"].forEach(function (key) {
+  CONTOUR_KEYS.forEach(function (key) {
     const opt = document.createElement("option");
     opt.value = key;
     var byStand = STAND_ORIGINS[FILE_DL_ACTIVE_STAND] || STAND_ORIGINS[DEFAULT_FILE_DL_STAND];
-    var host = (byStand && byStand[key]) || "";
-    opt.textContent = key + (host ? " — " + host : "");
+    opt.textContent = key;
     opt.style.cssText = "color:#111827;background-color:#ffffff;";
     if (key === FILE_DL_ACTIVE_CONTOUR) opt.selected = true;
     selContour.appendChild(opt);
@@ -1014,12 +1045,11 @@ function startDownloadPanel() {
   function refreshFileDlContourOptions() {
     var prev = FILE_DL_ACTIVE_CONTOUR;
     selContour.innerHTML = "";
-    ["ALPHA", "SIGMA"].forEach(function (key) {
+    CONTOUR_KEYS.forEach(function (key) {
       const opt = document.createElement("option");
       opt.value = key;
       var byStand = STAND_ORIGINS[FILE_DL_ACTIVE_STAND] || STAND_ORIGINS[DEFAULT_FILE_DL_STAND];
-      var host = (byStand && byStand[key]) || "";
-      opt.textContent = key + (host ? " — " + host : "");
+      opt.textContent = key;
       opt.style.cssText = "color:#111827;background-color:#ffffff;";
       if (key === prev) opt.selected = true;
       selContour.appendChild(opt);
@@ -1035,10 +1065,26 @@ function startDownloadPanel() {
   rowStand.appendChild(labContour);
   rowStand.appendChild(selContour);
 
+  const envInfo = document.createElement("div");
+  envInfo.style.cssText =
+    "display:flex;align-items:center;margin-left:auto;font-size:11px;color:#334155;white-space:nowrap;max-width:100%;" +
+    "overflow:hidden;text-overflow:ellipsis;";
+  function refreshFileDlEnvInfo() {
+    try {
+      envInfo.textContent = "POST " + getFileDlOriginByEnv().origin;
+    } catch (e) {
+      envInfo.textContent = "";
+    }
+  }
+  selStand.addEventListener("change", refreshFileDlEnvInfo);
+  selContour.addEventListener("change", refreshFileDlEnvInfo);
+  refreshFileDlEnvInfo();
+  rowStand.appendChild(envInfo);
+
   // «Отметить всё» / «Снять отметки» — справа в строке стенда (освобождает место по вертикали под лог).
   const rowMarkBtns = document.createElement("div");
   rowMarkBtns.style.cssText =
-    "display:flex;flex-direction:row;flex-wrap:wrap;align-items:center;gap:6px;margin-left:auto;flex-shrink:0;";
+    "display:flex;flex-direction:row;flex-wrap:wrap;align-items:center;gap:6px;flex-shrink:0;";
   const btnMarkBase =
     "min-height:28px;padding:4px 10px;font-size:10px;font-weight:600;cursor:pointer;border-radius:8px;box-sizing:border-box;" +
     "border:1px solid #cbd5e1;background:#f1f5f9;color:#334155;";
