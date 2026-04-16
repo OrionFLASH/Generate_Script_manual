@@ -792,6 +792,19 @@
     URL.revokeObjectURL(url);
   }
 
+  /**
+   * @param {string} filename
+   * @param {string} text
+   */
+  function downloadTextFile(filename, text) {
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1500);
+  }
+
   const existing = document.getElementById(PANEL_ID);
   if (existing) existing.remove();
 
@@ -1206,8 +1219,18 @@
   updateFileBtn.type = "button";
   updateFileBtn.textContent = "Обновить из файла…";
   updateFileBtn.style.cssText = createFileBtn.style.cssText;
+  const templateExportBtn = document.createElement("button");
+  templateExportBtn.type = "button";
+  templateExportBtn.textContent = "🧩";
+  templateExportBtn.title =
+    "Сформировать шаблон: ACTUAL (как 7.2), затем ARCHIVE, затем детализация по каждому objectId и выгрузка блоков для редактирования.";
+  templateExportBtn.style.cssText =
+    "width:100%;flex-shrink:0;margin-top:6px;border:1px solid #374151;border-radius:6px;padding:6px 8px;cursor:pointer;background:#334155;color:#e5e7eb;font-size:" +
+    PANEL_FONT_BASE +
+    ";";
   updateFileRow.appendChild(updateFileBtn);
   updateFileRow.appendChild(updateFileInput);
+  updateFileRow.appendChild(templateExportBtn);
   tab3.appendChild(updateFileRow);
 
   /**
@@ -1566,6 +1589,7 @@
     createFileBtn.disabled = v;
     updateBtn.disabled = v;
     updateFileBtn.disabled = v;
+    templateExportBtn.disabled = v;
     standSel.disabled = v;
     contourSel.disabled = v;
     statusSel.disabled = v;
@@ -1593,6 +1617,7 @@
     createFileBtn.style.opacity = v ? "0.55" : "1";
     updateBtn.style.opacity = v ? "0.55" : "1";
     updateFileBtn.style.opacity = v ? "0.55" : "1";
+    templateExportBtn.style.opacity = v ? "0.55" : "1";
     refreshTypesBtn.style.opacity = v ? "0.55" : "1";
     editLoadBtn.style.opacity = v ? "0.55" : "1";
   }
@@ -2387,6 +2412,102 @@
   });
 
   updateFileBtn.addEventListener("click", () => updateFileInput.click());
+  templateExportBtn.addEventListener("click", async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const origin = getOrigin(standSel.value, contourSel.value);
+      log("[Редактирование][Шаблон] Старт: список ACTUAL, затем ARCHIVE, далее детализация по каждому objectId.");
+
+      const allIds = new Set();
+
+      const actualOk = await fetchActualListAndCache(origin, true, "[Редактирование][Шаблон]");
+      if (!actualOk) {
+        log("[Редактирование][Шаблон] Ошибка шага ACTUAL — выгрузка шаблона остановлена.");
+        return;
+      }
+      if (cachedActualObjectIds) {
+        cachedActualObjectIds.forEach(function (id) {
+          allIds.add(id);
+        });
+      }
+      await fetchParameterTypesDetailAndApply(origin, true, "[Редактирование][Шаблон]");
+
+      log('[Редактирование][Шаблон] Шаг ARCHIVE: POST { "status": "ARCHIVE" }.');
+      const archiveRes = await postParameters(origin, { status: "ARCHIVE" });
+      if (!archiveRes.ok) {
+        log("[Редактирование][Шаблон] ARCHIVE: HTTP " + archiveRes.status + " — " + archiveRes.text.slice(0, 400));
+      } else {
+        const archiveIds = extractObjectIds(archiveRes.data);
+        for (let i = 0; i < archiveIds.length; i++) allIds.add(archiveIds[i]);
+        log("[Редактирование][Шаблон] ARCHIVE objectId: " + archiveIds.length + ".");
+      }
+
+      const ids = Array.from(allIds);
+      if (ids.length === 0) {
+        log("[Редактирование][Шаблон] objectId не найдены — файл шаблона не сформирован.");
+        return;
+      }
+      log("[Редактирование][Шаблон] objectId для детализации: " + ids.length + ".");
+
+      /** @type {Array<Record<string, unknown>>} */
+      const payloadRows = [];
+      for (let i = 0; i < ids.length; i++) {
+        const id = ids[i];
+        const det = await postParameters(origin, { objectIds: [id] });
+        if (!det.ok) {
+          log("[Редактирование][Шаблон] Детализация " + (i + 1) + "/" + ids.length + ": HTTP " + det.status + " (objectId=" + id + ").");
+          continue;
+        }
+        const row = readFirstParameterRowFromDetail(det.data);
+        if (!row) {
+          log("[Редактирование][Шаблон] Детализация " + (i + 1) + "/" + ids.length + ": нет данных (objectId=" + id + ").");
+          continue;
+        }
+        payloadRows.push({
+          parameterCode: row.parameterCode,
+          parameterType: row.parameterType,
+          parameterName: row.parameterName,
+          parameterValue: row.parameterValue,
+          businessBlock: row.businessBlock || "",
+          objectId: row.objectId,
+          version: row.version === null ? 0 : row.version,
+          status: row.status,
+        });
+      }
+
+      if (payloadRows.length === 0) {
+        log("[Редактирование][Шаблон] Валидные строки payload не собраны — файл не создан.");
+        return;
+      }
+
+      const out = payloadRows
+        .map(function (x) {
+          return JSON.stringify(x, null, 2);
+        })
+        .join("\n\n");
+      const d = new Date();
+      const pad = (n) => String(n).padStart(2, "0");
+      const fileName =
+        "parameters_update_template_" +
+        standSel.value +
+        "_" +
+        contourSel.value +
+        "_" +
+        d.getFullYear() +
+        "-" +
+        pad(d.getMonth() + 1) +
+        "-" +
+        pad(d.getDate()) +
+        ".txt";
+      downloadTextFile(fileName, out);
+      log("[Редактирование][Шаблон] Готово: " + fileName + ", блоков: " + payloadRows.length + ".");
+    } catch (e) {
+      log("[Редактирование][Шаблон] Ошибка: " + (e && e.message ? e.message : String(e)));
+    } finally {
+      setBusy(false);
+    }
+  });
   updateFileInput.addEventListener("change", async () => {
     if (busy) return;
     const f = updateFileInput.files && updateFileInput.files[0];
