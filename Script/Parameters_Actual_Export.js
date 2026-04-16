@@ -1111,6 +1111,42 @@
     return { objectId, parameterCode, parameterType, parameterName, parameterValue, status, version };
   }
 
+  /**
+   * Нормализованный набор полей для сравнения «до/после» перед param-update.
+   * @param {{ objectId: string; parameterCode: string; parameterType: string; parameterName: string; parameterValue: string; status: string }} row
+   * @returns {{ objectId: string; parameterCode: string; parameterType: string; parameterName: string; parameterValue: string; status: string }}
+   */
+  function toComparableUpdateFields(row) {
+    return {
+      objectId: String(row.objectId || "").trim(),
+      parameterCode: String(row.parameterCode || "").trim(),
+      parameterType: String(row.parameterType || "").trim(),
+      parameterName: String(row.parameterName || "").trim(),
+      parameterValue: String(row.parameterValue == null ? "" : row.parameterValue),
+      status: String(row.status || "").trim(),
+    };
+  }
+
+  /**
+   * Какие поля реально изменились относительно текущей записи из API.
+   * @param {{ objectId: string; parameterCode: string; parameterType: string; parameterName: string; parameterValue: string; status: string }} nextRow
+   * @param {{ objectId: string; parameterCode: string; parameterType: string; parameterName: string; parameterValue: string; status: string }} currentRow
+   * @returns {string[]}
+   */
+  function diffUpdateFields(nextRow, currentRow) {
+    const a = toComparableUpdateFields(nextRow);
+    const b = toComparableUpdateFields(currentRow);
+    /** @type {string[]} */
+    const changed = [];
+    if (a.objectId !== b.objectId) changed.push("objectId");
+    if (a.parameterCode !== b.parameterCode) changed.push("parameterCode");
+    if (a.parameterType !== b.parameterType) changed.push("parameterType");
+    if (a.parameterName !== b.parameterName) changed.push("parameterName");
+    if (a.parameterValue !== b.parameterValue) changed.push("parameterValue");
+    if (a.status !== b.status) changed.push("status");
+    return changed;
+  }
+
   /** @type {number | null} */
   let editAutofillTimer = null;
   let editAutofillRequestSeq = 0;
@@ -1970,30 +2006,36 @@
     uVersionInfo.textContent = "";
     try {
       const origin = getOrigin(standSel.value, contourSel.value);
-      /** @type {number | null} */
-      let ver = null;
+      const det = await postParameters(origin, { objectIds: [objectId] });
+      if (!det.ok) {
+        log("Ошибка детализации по objectId: HTTP " + det.status);
+        return;
+      }
+      const currentRow = readFirstParameterRowFromDetail(det.data);
+      if (!currentRow) {
+        log("Ошибка: не удалось прочитать текущие данные параметра по objectId.");
+        return;
+      }
+      const changed = diffUpdateFields(payloadBase, currentRow);
+      if (changed.length === 0) {
+        uVersionInfo.textContent = "Изменений нет: все поля совпадают с текущими значениями.";
+        log("[Редактирование] Изменений по objectId «" + objectId + "» не найдено — param-update не отправляется.");
+        return;
+      }
+      const verFromApi = currentRow.version;
+      if (verFromApi === null || !Number.isFinite(verFromApi)) {
+        log("Ошибка: не удалось прочитать version из ответа API по objectId.");
+        return;
+      }
+      let ver = verFromApi;
       if (uVersion.value.trim() !== "") {
         const vn = Number(uVersion.value.trim());
         if (Number.isFinite(vn) && vn >= 0) ver = vn;
+      } else {
+        uVersion.value = String(verFromApi);
       }
-      if (ver === null && rowByObjectId && rowByObjectId.version !== null) {
-        ver = rowByObjectId.version;
-        uVersion.value = String(ver);
-      }
-      if (ver === null) {
-        const det = await postParameters(origin, { objectIds: [objectId] });
-        if (!det.ok) {
-          log("Ошибка детализации по objectId: HTTP " + det.status);
-          return;
-        }
-        ver = readVersionFromDetailResponse(det.data);
-        if (ver === null) {
-          log("Ошибка: не удалось прочитать version из ответа API по objectId.");
-          return;
-        }
-        uVersion.value = String(ver);
-      }
-      uVersionInfo.textContent = "Версия для отправки: " + String(ver) + " (можно изменить вручную перед следующим запуском).";
+      uVersionInfo.textContent =
+        "Версия для отправки: " + String(ver) + " (API=" + String(verFromApi) + "), изменены поля: " + changed.join(", ") + ".";
       const summary =
         "Обновить параметр (param-update)?\n\nobjectId: " +
         objectId +
@@ -2153,27 +2195,48 @@
           );
           continue;
         }
-        let ver = rowByObjectId && rowByObjectId.version !== null ? rowByObjectId.version : null;
-        if (ver === null) {
-          const det = await postParameters(origin, { objectIds: [objectId] });
-          if (!det.ok) {
-            log("Ошибка детализации для записи #" + (i + 1) + ": HTTP " + det.status);
-            continue;
-          }
-          ver = readVersionFromDetailResponse(det.data);
-          if (ver === null) {
-            log("Ошибка записи #" + (i + 1) + ": не удалось прочитать version из API.");
-            continue;
-          }
+        const det = await postParameters(origin, { objectIds: [objectId] });
+        if (!det.ok) {
+          log("Ошибка детализации для записи #" + (i + 1) + ": HTTP " + det.status);
+          continue;
         }
-        const body = {
+        const currentRow = readFirstParameterRowFromDetail(det.data);
+        if (!currentRow) {
+          log("Ошибка записи #" + (i + 1) + ": не удалось прочитать текущие поля параметра из API.");
+          continue;
+        }
+        const nextRow = {
+          objectId,
           parameterCode: String(valid[i].parameterCode).trim(),
           parameterType: String(valid[i].parameterType).trim(),
           parameterName: String(valid[i].parameterName).trim(),
-          parameterValue: valid[i].parameterValue,
+          parameterValue: String(valid[i].parameterValue == null ? "" : valid[i].parameterValue),
+          status: String(valid[i].status).trim(),
+        };
+        const changed = diffUpdateFields(nextRow, currentRow);
+        if (changed.length === 0) {
+          log(
+            "[Редактирование] Запись #" +
+              (i + 1) +
+              " (" +
+              nextRow.parameterCode +
+              "): изменений нет относительно текущего состояния — пропуск.",
+          );
+          continue;
+        }
+        const ver = currentRow.version;
+        if (ver === null || !Number.isFinite(ver)) {
+          log("Ошибка записи #" + (i + 1) + ": не удалось прочитать version из API.");
+          continue;
+        }
+        const body = {
+          parameterCode: nextRow.parameterCode,
+          parameterType: nextRow.parameterType,
+          parameterName: nextRow.parameterName,
+          parameterValue: nextRow.parameterValue,
           objectId,
           version: ver,
-          status: String(valid[i].status).trim(),
+          status: nextRow.status,
         };
         const res = await postJson(origin, PARAM_UPDATE_PATH, body);
         if (!res.ok) {
