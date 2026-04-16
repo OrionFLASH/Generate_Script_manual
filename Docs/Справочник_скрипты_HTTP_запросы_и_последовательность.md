@@ -129,7 +129,9 @@
 | B | **POST** | тот же | `{ "objectIds": [ "<objectId>" ] }` — получение актуального **`version`** для выбранного параметра |
 | C | **POST** | `/bo/rmkib.gamification/proxy/v1/parameters/param-update` | `{ "parameterCode", "parameterType", "parameterName", "parameterValue", "objectId", "version", "status" }` — **`version`** из шага B |
 
-**Последовательность:** при необходимости автоматически тот же поток, что и кнопка ⬇ вкладки 3 (**`ensureEditTabListsForUpdate`**) → проверки: **`objectId`** ∈ сохранённому множеству из шага ACTUAL, **`parameterCode`** ∈ кэшу кодов (иначе — указание создавать на вкладке 2) → **без повторного** `POST { status: ACTUAL }` на каждое нажатие — шаг B → подтверждение → шаг C. **Из файла:** тот же разбор, что для создания; для **каждой** записи — проверки по кэшу, затем B и C (без повторного запроса списка ACTUAL на каждую строку), пауза между **`param-update`**.
+**Последовательность:** при необходимости автоматически тот же поток, что и кнопка ⬇ вкладки 3 (**`ensureEditTabListsForUpdate`**) → проверки: **`objectId`** ∈ сохранённому множеству из шага ACTUAL, **`parameterCode`** ∈ кэшу кодов (иначе — указание создавать на вкладке 2) + сверка связки `objectId <-> parameterCode` по картам кэша → выбор `version` (поле формы рядом со `status` → кэш шага ACTUAL → детализация B) → подтверждение → шаг C.  
+Для `parameterCode` в UI доступен поиск по части текста (`input + datalist`). При выборе кода или вводе `objectId` автоподставляются `objectId/parameterCode`, `parameterType`, `status`, `version` из кэша 7.2.  
+**Из файла:** тот же разбор, что для создания; для **каждой** записи — проверки по кэшу и сверка связки, затем B и C (без повторного запроса списка ACTUAL на каждую строку), пауза между **`param-update`**.
 
 ---
 
@@ -182,3 +184,4 @@
 | 1.0 | Первый выпуск: сводка по всем скриптам `Script/`, методы, пути, payload, порядок шагов. |
 | 1.1 | `Parameters_Actual_Export`: кнопка ⬇ — один `objectId` для справочника типов, без обхода всех id. |
 | **1.2** | `Parameters_Actual_Export`: кэш **`objectId`** из ACTUAL; вкладка 3 — отдельная ⬇, **`ensureEditTabListsForUpdate`**; `param-update` без повторного POST списка на каждую операцию/строку файла; подробности в `Docs/Скрипт_выгрузка_актуальных_параметров_Parameters_Actual_Export.md` v3.1. |
+| **1.3** | `Parameters_Actual_Export`: поиск `parameterCode` по части текста (datalist), карты соответствий `parameterCode/objectId` с `parameterType/status/version`, автоподстановка полей редактирования, ручной `version` в форме и приоритет источников версии при `param-update`. |

@@ -139,14 +139,21 @@
 
 **Интерфейс до загрузки:**
 
-- **`parameterCode`** и **`parameterType`** — **`<select>`** с заглушкой «сначала нажмите загрузку».
+- **`parameterCode`** — поле ввода с поиском (`input` + `datalist`), до загрузки справочников показывает заглушку в `placeholder`.
+- **`parameterType`** — `select` с заглушкой до загрузки.
 - **`objectId`**, **`parameterName`**, **`parameterValue`**, **`status`** — ввод вручную (или из файла для пакета).
+- Рядом со `status` есть отдельное поле **`version`** (небольшое поле для информации и ручной корректировки перед отправкой).
 
 **Что даёт первый шаг загрузки (тот же ответ `POST { "status": "ACTUAL" }`, что и на вкладке «Создание» при шаге 6.2):**
 
 - множество **`parameterCode`** → кэш **`cachedActualParameterCodes`** (и заполнение селекта `parameterCode` после успешного завершения п. 7.2);
 - множество **`objectId`** из **`body.parameters`** → кэш **`cachedActualObjectIds`** — **сохраняется для проверок** перед `param-update`: не нужно повторно запрашивать весь список ACTUAL при каждом нажатии «Обновить», если кэш актуален;
 - допустимые **`parameterType`** приходят со **второго** запроса (детализация «parameterTypes») → **`cachedAllowedParameterTypes`** и селект `parameterType`.
+- дополнительно формируются карты соответствий:
+  - **`cachedActualByCode`**: `parameterCode -> { objectId, parameterType, status, version }`;
+  - **`cachedActualByObjectId`**: `objectId -> { parameterCode, parameterType, status, version }`.
+
+Эти карты используются для автоподстановки формы и для валидации связки полей (`objectId` и `parameterCode` должны указывать на одну и ту же запись).
 
 **Допустимые значения для полей формы** считаются полученными после успешного выполнения **п. 7.2** (ниже): флаг **`editTabAllowedListsLoaded === true`** и непустые кэши кодов, **objectId** и типов.
 
@@ -163,7 +170,12 @@
 
 **Журнал:** префикс **`[Редактирование]`** (в т.ч. число **objectId** в кэше на шаге 1).
 
-После успеха: селекты **`parameterCode`** / **`parameterType`**, флаг **`editTabAllowedListsLoaded`**.
+После успеха:
+
+- `datalist` для поиска **`parameterCode`**;
+- `select` для **`parameterType`**;
+- карты соответствий по коду и по `objectId`;
+- флаг **`editTabAllowedListsLoaded`**.
 
 **Побочный эффект:** обновляется селект **`parameterType` на вкладке «Создание»** (`cType`).
 
@@ -180,10 +192,16 @@
 1. **`validateUpdatePayload`** (в т.ч. **`parameterCode`** в **`cachedActualParameterCodes`** при загруженных справочниках).
 2. **`objectId` из формы** должен входить в **`cachedActualObjectIds`**. Иначе — ошибка в журнале (нет такого id в сохранённом списке ACTUAL).
 3. **`parameterCode` из формы** должен входить в **`cachedActualParameterCodes`**. Иначе — сообщение: **параметра в ACTUAL нет — нужно создавать на вкладке «2. Создание» (param-create), а не редактировать**.
-4. Дальше **без повторного** `POST { status: ACTUAL }` — только детализация и обновление:
-   - **`POST …/parameters`** с **`{ "objectIds": [ "<objectId>" ] }`** — чтение **`version`**;
-   - диалог подтверждения;
-   - **`POST …/param-update`** с **`version`** из API.
+4. Проверка связки из карт соответствий:
+   - если для выбранного `objectId` в кэше найден **другой** `parameterCode` — ошибка, отправка блокируется;
+   - если для выбранного `parameterCode` в кэше найден **другой** `objectId` — ошибка, отправка блокируется.
+5. Определение `version` перед отправкой:
+   - сначала берётся из поля `version` (если введено корректное число >= 0);
+   - иначе берётся из кэша 7.2 (`cachedActualByObjectId[objectId].version`);
+   - иначе fallback: **`POST …/parameters`** с **`{ "objectIds": [ "<objectId>" ] }`** и чтение `version` из ответа.
+6. Диалог подтверждения (в т.ч. `version`).
+7. **`POST …/param-update`** с телом:
+   `{ "parameterCode", "parameterType", "parameterName", "parameterValue", "objectId", "version", "status" }`.
 
 **Отмена** в диалоге — без отправки `param-update`.
 
@@ -196,7 +214,8 @@
 5. Для **каждой** записи **последовательно**:
    - проверка **`objectId`** ∈ **`cachedActualObjectIds`** (без повторного POST списка ACTUAL на каждую строку);
    - проверка **`parameterCode`** ∈ **`cachedActualParameterCodes`**; если нет — в журнал: **создавать на вкладке «2. Создание»**, не редактировать;
-   - **`POST …/parameters`** `{ "objectIds": [ "<objectId>" ] }` — **`version`**;
+   - проверка связки `objectId <-> parameterCode` по картам соответствий;
+   - `version` берётся из кэша карты по `objectId`, и только при отсутствии — **`POST …/parameters`** `{ "objectIds": [ "<objectId>" ] }`;
    - **`POST …/param-update`** (`version` из API, не из файла).
 
 Пауза **`PARAM_BATCH_REQUEST_GAP_MS`** между пакетными **`param-update`**.
@@ -211,11 +230,12 @@
 | `PARAMETER_TYPES_META_CODE` | Код мета-параметра (`parameterTypes`) |
 | `PARAMETER_TYPES_DETAIL_OBJECT_ID` | Один `objectId` для детализации списка типов |
 | `cachedAllowedParameterTypes`, `cachedActualParameterCodes`, `cachedActualObjectIds` | Кэш типов из `parameterTypes.types`, кодов и **objectId** из одного ответа `POST { status: ACTUAL }` |
+| `cachedActualByCode`, `cachedActualByObjectId` | Карты соответствий `parameterCode <-> objectId` c `parameterType`, `status`, `version` для автоподстановки и сверок |
 | `editTabAllowedListsLoaded` | Флаг: на вкладке 3 выполнена загрузка справочников для селектов |
 | `ensureEditTabListsForUpdate` | Перед `param-update`: если кэш п. 7.1 не готов — выполнить поток п. 7.2 |
 | `getParameterTypeAllowedValues` | Список для проверки `parameterType` |
 | `fillParameterTypeSelect`, `fillParameterTypeSelectWithApiValues` | Заполнение селектов типов (на «Создание»; для правки — с опцией «пусто») |
-| `fillParameterCodeSelectFromActualCodes`, `clearEditTabParameterSelects` | Селекты вкладки «Редактирование» |
+| `fillParameterCodeSelectFromActualCodes`, `clearEditTabParameterSelects` | Поле поиска `parameterCode` (`datalist`) и очистка полей вкладки «Редактирование» |
 | `fetchActualListAndCache`, `fetchParameterTypesDetailAndApply` | POST ACTUAL и детализация типов (журнал: тег `[Создание]` или `[Редактирование]`) |
 | `ensureCachesForCreateOperation` | Условная подготовка кэшей перед созданием формы/файла |
 | `refreshParameterTypesFromApi` | Кнопка ⬇ вкладки 2: всегда ACTUAL + детализация |
@@ -256,3 +276,4 @@
 | **2.4** | Уточнение 2.3: без обхода всех `objectId`; типы только из **`parameterTypes.types`**. |
 | **3.0** | Подробно задокументированы порядок запросов по каждой кнопке; **`ensureCachesForCreateOperation`** перед созданием; разделение селектов вкладок 2 и 3; вкладка «Редактирование»: отдельная кнопка ⬇, селекты `parameterCode`/`parameterType` из кэша, флаг **`editTabAllowedListsLoaded`** до **`param-update`**; разбор файла со скобками и строками; таблица функций обновлена. |
 | **3.1** | Кэш **`cachedActualObjectIds`** из первого запроса ACTUAL; проверки **`objectId`** и **`parameterCode`** по сохранённым множествам; при отсутствии кода — указание создавать на вкладке 2; автозагрузка п. 7.2 при «Обновить» / файл; пакетное обновление без повторного POST списка ACTUAL на каждую строку; раздел 7 переписан. |
+| **3.2** | Вкладка «Редактирование»: поиск по `parameterCode` через ввод части текста (`input + datalist`), карты соответствий `parameterCode/objectId` с `parameterType/status/version`, автоподстановка полей при выборе кода или вводе `objectId`, ручное поле `version` рядом со `status`, приоритет источников `version` (поле → кэш 7.2 → детализация API), сверка связки `objectId <-> parameterCode` для формы и файла. |

@@ -37,6 +37,19 @@
   let cachedActualObjectIds = null;
 
   /**
+   * Соответствие по parameterCode из последнего ACTUAL-списка.
+   * Нужны для автоподстановки полей на вкладке «Редактирование».
+   * @type {Map<string, { objectId: string; parameterCode: string; parameterType: string; status: string; version: number | null }>}
+   */
+  let cachedActualByCode = new Map();
+
+  /**
+   * Соответствие по objectId из последнего ACTUAL-списка.
+   * @type {Map<string, { objectId: string; parameterCode: string; parameterType: string; status: string; version: number | null }>}
+   */
+  let cachedActualByObjectId = new Map();
+
+  /**
    * Вкладка «3. Редактирование»: пользователь нажал «загрузить допустимые значения» — можно выбирать parameterCode и parameterType из списков.
    * @type {boolean}
    */
@@ -107,16 +120,13 @@
   }
 
   /**
-   * Селект parameterCode на вкладке «Редактирование»: пустое значение + коды из ACTUAL.
-   * @param {HTMLSelectElement} selectEl
+   * Поле поиска parameterCode на вкладке «Редактирование»: datalist с кодами из ACTUAL.
+   * @param {HTMLInputElement} inputEl
+   * @param {HTMLDataListElement} listEl
    * @param {Set<string>} codeSet
    */
-  function fillParameterCodeSelectFromActualCodes(selectEl, codeSet) {
-    selectEl.textContent = "";
-    const o0 = document.createElement("option");
-    o0.value = "";
-    o0.textContent = "— выберите parameterCode —";
-    selectEl.appendChild(o0);
+  function fillParameterCodeSelectFromActualCodes(inputEl, listEl, codeSet) {
+    listEl.textContent = "";
     const arr = Array.from(codeSet).sort(function (a, b) {
       return a.localeCompare(b, "ru");
     });
@@ -124,24 +134,22 @@
       const code = arr[i];
       const o = document.createElement("option");
       o.value = code;
-      o.textContent = code;
-      selectEl.appendChild(o);
+      listEl.appendChild(o);
     }
-    selectEl.value = "";
+    inputEl.value = "";
+    inputEl.placeholder = "Введите часть parameterCode для поиска…";
   }
 
   /**
-   * Обнуляет селекты вкладки «Редактирование» (до первой загрузки допустимых значений).
-   * @param {HTMLSelectElement} codeSel
+   * Обнуляет поля вкладки «Редактирование» (до первой загрузки допустимых значений).
+   * @param {HTMLInputElement} codeInput
+   * @param {HTMLDataListElement} codeList
    * @param {HTMLSelectElement} typeSel
    */
-  function clearEditTabParameterSelects(codeSel, typeSel) {
-    codeSel.textContent = "";
-    const oc = document.createElement("option");
-    oc.value = "";
-    oc.textContent = "— сначала нажмите «загрузить допустимые значения» —";
-    codeSel.appendChild(oc);
-    codeSel.value = "";
+  function clearEditTabParameterSelects(codeInput, codeList, typeSel) {
+    codeInput.value = "";
+    codeInput.placeholder = "— сначала нажмите «загрузить допустимые значения» —";
+    codeList.textContent = "";
     typeSel.textContent = "";
     const ot = document.createElement("option");
     ot.value = "";
@@ -498,6 +506,42 @@
       if (typeof c === "string" && c.trim()) set.add(c.trim());
     }
     return set;
+  }
+
+  /**
+   * Карты соответствий из ACTUAL-списка: по parameterCode и по objectId.
+   * @param {unknown} listData
+   * @returns {{
+   *  byCode: Map<string, { objectId: string; parameterCode: string; parameterType: string; status: string; version: number | null }>;
+   *  byObjectId: Map<string, { objectId: string; parameterCode: string; parameterType: string; status: string; version: number | null }>;
+   * }}
+   */
+  function extractActualMappingsFromListData(listData) {
+    const byCode = new Map();
+    const byObjectId = new Map();
+    const body = listData && typeof listData === "object" ? /** @type {Record<string, unknown>} */ (listData).body : null;
+    const params = body && Array.isArray(body.parameters) ? /** @type {unknown[]} */ (body.parameters) : [];
+    for (let i = 0; i < params.length; i++) {
+      const p = params[i];
+      if (!p || typeof p !== "object") continue;
+      const rec = /** @type {Record<string, unknown>} */ (p);
+      const objectId = typeof rec.objectId === "string" ? rec.objectId.trim() : "";
+      const parameterCode = typeof rec.parameterCode === "string" ? rec.parameterCode.trim() : "";
+      if (!objectId || !parameterCode) continue;
+      const parameterType = typeof rec.parameterType === "string" ? rec.parameterType.trim() : "";
+      const status = typeof rec.status === "string" ? rec.status.trim() : "";
+      let version = null;
+      if (typeof rec.version === "number" && Number.isFinite(rec.version)) {
+        version = rec.version;
+      } else if (typeof rec.version === "string" && rec.version.trim() !== "") {
+        const n = Number(rec.version);
+        if (Number.isFinite(n)) version = n;
+      }
+      const row = { objectId, parameterCode, parameterType, status, version };
+      if (!byCode.has(parameterCode)) byCode.set(parameterCode, row);
+      if (!byObjectId.has(objectId)) byObjectId.set(objectId, row);
+    }
+    return { byCode, byObjectId };
   }
 
   /**
@@ -884,14 +928,18 @@
     "Сначала нажмите «загрузить допустимые значения» (как шаг 6.1: только POST ACTUAL + детализация «parameterTypes», без param-update). В полях parameterCode и parameterType — списки из ответа. До загрузки поля пустые. objectId проверяется по ACTUAL; версия — из API по objectId.";
   tab3.appendChild(updHint);
 
-  const uCode = document.createElement("select");
+  const uCode = mkInput("text");
+  const uCodeList = document.createElement("datalist");
+  uCodeList.id = PANEL_ID + "-edit-parameter-code-list";
+  uCode.setAttribute("list", uCodeList.id);
+  uCode.autocomplete = "off";
   uCode.style.cssText =
     "width:100%;flex-shrink:0;box-sizing:border-box;font-size:" +
     PANEL_FONT_BASE +
     ";line-height:1.25;background:#0b1220;color:#e5e7eb;border:1px solid #374151;border-radius:5px;padding:4px 6px;";
   const uType = document.createElement("select");
   uType.style.cssText = uCode.style.cssText + "flex:1;min-width:0;";
-  clearEditTabParameterSelects(uCode, uType);
+  clearEditTabParameterSelects(uCode, uCodeList, uType);
   const uName = mkInput("text");
   const uValue = mkTextarea(2);
   uValue.style.flex = "1 1 auto";
@@ -906,6 +954,16 @@
     uStatus.appendChild(o);
   });
   uStatus.value = "ACTUAL";
+  const uVersion = document.createElement("input");
+  uVersion.type = "number";
+  uVersion.min = "0";
+  uVersion.step = "1";
+  uVersion.value = "";
+  uVersion.placeholder = "version";
+  uVersion.style.cssText =
+    "width:88px;flex-shrink:0;box-sizing:border-box;font-size:" +
+    PANEL_FONT_BASE +
+    ";line-height:1.25;background:#0b1220;color:#e5e7eb;border:1px solid #374151;border-radius:5px;padding:4px 6px;";
   const uVersionInfo = document.createElement("div");
   uVersionInfo.style.cssText =
     "flex-shrink:0;font-size:" + PANEL_FONT_BASE + ";color:#93c5fd;margin:2px 0;line-height:1.25;";
@@ -939,6 +997,7 @@
 
   tab3.appendChild(mkLabel("parameterCode *"));
   tab3.appendChild(uCode);
+  tab3.appendChild(uCodeList);
   tab3.appendChild(mkLabel("parameterType *"));
   const uTypeRow = document.createElement("div");
   uTypeRow.style.cssText = "flex-shrink:0;display:flex;gap:6px;align-items:stretch;width:100%;box-sizing:border-box;";
@@ -949,7 +1008,12 @@
   tab3.appendChild(mkLabel("parameterValue *"));
   tab3.appendChild(uValue);
   tab3.appendChild(mkLabel("status *"));
-  tab3.appendChild(uStatus);
+  const uStatusRow = document.createElement("div");
+  uStatusRow.style.cssText =
+    "flex-shrink:0;display:flex;gap:6px;align-items:center;width:100%;box-sizing:border-box;";
+  uStatusRow.appendChild(uStatus);
+  uStatusRow.appendChild(uVersion);
+  tab3.appendChild(uStatusRow);
 
   const updateBtn = document.createElement("button");
   updateBtn.type = "button";
@@ -979,15 +1043,61 @@
   tab3.appendChild(updateFileRow);
 
   /**
+   * Подставляет в форму редактирования связанные поля из кэша 7.2.
+   * @param {{ objectId: string; parameterCode: string; parameterType: string; status: string; version: number | null }} row
+   * @param {"code" | "objectId"} from
+   */
+  function applyUpdateFormByActualMapping(row, from) {
+    if (from === "code") {
+      if (uObjectId.value.trim() !== row.objectId) uObjectId.value = row.objectId;
+    } else {
+      if (uCode.value.trim() !== row.parameterCode) uCode.value = row.parameterCode;
+    }
+    if (row.parameterType) uType.value = row.parameterType;
+    if (row.status) uStatus.value = row.status;
+    if (row.version !== null && Number.isFinite(row.version)) {
+      uVersion.value = String(row.version);
+      uVersionInfo.textContent = "Версия из шага 7.2: " + String(row.version) + " (можно изменить вручную).";
+    } else {
+      uVersionInfo.textContent = "Версия не найдена в шаге 7.2 — будет получена по objectId перед отправкой.";
+    }
+  }
+
+  function tryFillByParameterCodeInput() {
+    const code = uCode.value.trim();
+    if (!code || cachedActualByCode.size === 0) return;
+    const row = cachedActualByCode.get(code);
+    if (!row) return;
+    applyUpdateFormByActualMapping(row, "code");
+  }
+
+  function tryFillByObjectIdInput() {
+    const objectId = uObjectId.value.trim();
+    if (!objectId || cachedActualByObjectId.size === 0) return;
+    const row = cachedActualByObjectId.get(objectId);
+    if (!row) return;
+    applyUpdateFormByActualMapping(row, "objectId");
+  }
+
+  uCode.addEventListener("input", tryFillByParameterCodeInput);
+  uCode.addEventListener("change", tryFillByParameterCodeInput);
+  uObjectId.addEventListener("input", tryFillByObjectIdInput);
+  uObjectId.addEventListener("change", tryFillByObjectIdInput);
+
+  /**
    * Смена стенда/контура — сброс кэшей, селект создания и пустые селекты вкладки «Редактирование».
    */
   function invalidateParameterCachesOnEnvChange() {
     cachedActualParameterCodes = null;
     cachedActualObjectIds = null;
+    cachedActualByCode = new Map();
+    cachedActualByObjectId = new Map();
     cachedAllowedParameterTypes = null;
     editTabAllowedListsLoaded = false;
     fillParameterTypeSelect(cType);
-    clearEditTabParameterSelects(uCode, uType);
+    clearEditTabParameterSelects(uCode, uCodeList, uType);
+    uVersion.value = "";
+    uVersionInfo.textContent = "";
     refreshEnvInfo();
   }
 
@@ -1085,6 +1195,7 @@
     uValue.disabled = v;
     uObjectId.disabled = v;
     uStatus.disabled = v;
+    uVersion.disabled = v;
     refreshTypesBtn.disabled = v;
     editLoadBtn.disabled = v;
     runBtn.style.opacity = v ? "0.55" : "1";
@@ -1118,6 +1229,9 @@
     const listData = listRes.data;
     cachedActualParameterCodes = extractParameterCodesFromListData(listData);
     cachedActualObjectIds = new Set(extractObjectIds(listData));
+    const mappings = extractActualMappingsFromListData(listData);
+    cachedActualByCode = mappings.byCode;
+    cachedActualByObjectId = mappings.byObjectId;
     const rows = countParametersRowsInResponse(listData);
     if (verbose) {
       log(
@@ -1261,7 +1375,7 @@
       const ok = await fetchActualListAndCache(origin, true, "[Редактирование]");
       if (!ok) {
         editTabAllowedListsLoaded = false;
-        clearEditTabParameterSelects(uCode, uType);
+        clearEditTabParameterSelects(uCode, uCodeList, uType);
         return false;
       }
       await fetchParameterTypesDetailAndApply(origin, true, "[Редактирование]");
@@ -1270,9 +1384,11 @@
         cachedAllowedParameterTypes.length > 0 &&
         cachedActualParameterCodes !== null
       ) {
-        fillParameterCodeSelectFromActualCodes(uCode, cachedActualParameterCodes);
+        fillParameterCodeSelectFromActualCodes(uCode, uCodeList, cachedActualParameterCodes);
         fillParameterTypeSelectWithApiValues(uType, cachedAllowedParameterTypes, true);
         editTabAllowedListsLoaded = true;
+        tryFillByParameterCodeInput();
+        tryFillByObjectIdInput();
         log(
           "[Редактирование] Списки для полей: parameterCode — " +
             cachedActualParameterCodes.size +
@@ -1285,14 +1401,14 @@
         return true;
       }
       editTabAllowedListsLoaded = false;
-      clearEditTabParameterSelects(uCode, uType);
+      clearEditTabParameterSelects(uCode, uCodeList, uType);
       log(
         "[Редактирование] Справочники из API неполные — выбор parameterCode/parameterType недоступен. Повторите загрузку или проверьте ответ API.",
       );
       return false;
     } catch (e) {
       editTabAllowedListsLoaded = false;
-      clearEditTabParameterSelects(uCode, uType);
+      clearEditTabParameterSelects(uCode, uCodeList, uType);
       log("[Редактирование] Ошибка загрузки: " + (e && e.message ? e.message : String(e)));
       return false;
     } finally {
@@ -1687,7 +1803,7 @@
       parameterName: uName.value.trim(),
       parameterValue: uValue.value,
       objectId,
-      version: 0,
+      version: uVersion.value.trim() !== "" ? Number(uVersion.value.trim()) : 0,
       status: uStatus.value.trim(),
     };
     const err = validateUpdatePayload(payloadBase);
@@ -1712,25 +1828,60 @@
       );
       return;
     }
+    const rowByObjectId = cachedActualByObjectId.get(objectId);
+    if (rowByObjectId && rowByObjectId.parameterCode !== parameterCode) {
+      log(
+        "[Редактирование] Для objectId «" +
+          objectId +
+          "» в списке ACTUAL найден другой parameterCode: «" +
+          rowByObjectId.parameterCode +
+          "». Проверьте связку полей.",
+      );
+      return;
+    }
+    const rowByCode = cachedActualByCode.get(parameterCode);
+    if (rowByCode && rowByCode.objectId !== objectId) {
+      log(
+        "[Редактирование] Для parameterCode «" +
+          parameterCode +
+          "» в списке ACTUAL найден другой objectId: «" +
+          rowByCode.objectId +
+          "». Проверьте связку полей.",
+      );
+      return;
+    }
     setBusy(true);
     uVersionInfo.textContent = "";
     try {
       const origin = getOrigin(standSel.value, contourSel.value);
-      const det = await postParameters(origin, { objectIds: [objectId] });
-      if (!det.ok) {
-        log("Ошибка детализации по objectId: HTTP " + det.status);
-        return;
+      /** @type {number | null} */
+      let ver = null;
+      if (uVersion.value.trim() !== "") {
+        const vn = Number(uVersion.value.trim());
+        if (Number.isFinite(vn) && vn >= 0) ver = vn;
       }
-      const ver = readVersionFromDetailResponse(det.data);
+      if (ver === null && rowByObjectId && rowByObjectId.version !== null) {
+        ver = rowByObjectId.version;
+        uVersion.value = String(ver);
+      }
       if (ver === null) {
-        log("Ошибка: не удалось прочитать version из ответа API по objectId.");
-        return;
+        const det = await postParameters(origin, { objectIds: [objectId] });
+        if (!det.ok) {
+          log("Ошибка детализации по objectId: HTTP " + det.status);
+          return;
+        }
+        ver = readVersionFromDetailResponse(det.data);
+        if (ver === null) {
+          log("Ошибка: не удалось прочитать version из ответа API по objectId.");
+          return;
+        }
+        uVersion.value = String(ver);
       }
-      uVersionInfo.textContent = "Версия из API для отправки: " + String(ver);
+      uVersionInfo.textContent = "Версия для отправки: " + String(ver) + " (можно изменить вручную перед следующим запуском).";
       const summary =
         "Обновить параметр (param-update)?\n\nobjectId: " +
         objectId +
-        "\nversion (из API): " +
+        "\nversion: " +
         ver +
         "\nparameterCode: " +
         payloadBase.parameterCode +
@@ -1860,15 +2011,44 @@
           );
           continue;
         }
-        const det = await postParameters(origin, { objectIds: [objectId] });
-        if (!det.ok) {
-          log("Ошибка детализации для записи #" + (i + 1) + ": HTTP " + det.status);
+        const rowByObjectId = cachedActualByObjectId.get(objectId);
+        if (rowByObjectId && rowByObjectId.parameterCode !== pc) {
+          log(
+            "Ошибка записи #" +
+              (i + 1) +
+              ": objectId «" +
+              objectId +
+              "» связан с другим parameterCode («" +
+              rowByObjectId.parameterCode +
+              "»).",
+          );
           continue;
         }
-        const ver = readVersionFromDetailResponse(det.data);
-        if (ver === null) {
-          log("Ошибка записи #" + (i + 1) + ": не удалось прочитать version из API.");
+        const rowByCode = cachedActualByCode.get(pc);
+        if (rowByCode && rowByCode.objectId !== objectId) {
+          log(
+            "Ошибка записи #" +
+              (i + 1) +
+              ": parameterCode «" +
+              pc +
+              "» связан с другим objectId («" +
+              rowByCode.objectId +
+              "»).",
+          );
           continue;
+        }
+        let ver = rowByObjectId && rowByObjectId.version !== null ? rowByObjectId.version : null;
+        if (ver === null) {
+          const det = await postParameters(origin, { objectIds: [objectId] });
+          if (!det.ok) {
+            log("Ошибка детализации для записи #" + (i + 1) + ": HTTP " + det.status);
+            continue;
+          }
+          ver = readVersionFromDetailResponse(det.data);
+          if (ver === null) {
+            log("Ошибка записи #" + (i + 1) + ": не удалось прочитать version из API.");
+            continue;
+          }
         }
         const body = {
           parameterCode: String(valid[i].parameterCode).trim(),
