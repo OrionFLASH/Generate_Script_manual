@@ -58,6 +58,12 @@
     stopped: false,
     running: false,
     stop: function () {
+      if (!this.running) {
+        appendLog("Остановка между этапами: вывод текущего итога и сброс к этапу 1.");
+        appendTreeSummaryToLog({ onlyProblematic: true });
+        resetCrawlerStateToStart();
+        return;
+      }
       this.stopped = true;
       appendLog("Остановка запрошена пользователем. Текущий этап будет прерван.");
     },
@@ -77,7 +83,8 @@
   const textEncoder = new TextEncoder();
   /** @type {FileSystemFileHandle | null} */
   let logFileHandle = null;
-  let fileLogEnabled = false;
+  /** @type {"off"|"file"|"session"} */
+  let logTransportMode = "off";
   let fileLogWriteChain = Promise.resolve();
   let inMemoryLogLines = [];
 
@@ -100,8 +107,8 @@
 
   function getPauseMsForDepth(depth) {
     const inp = pauseByDepthInput.get(depth);
-    const n = inp ? Number(inp.value) : 1000;
-    return Number.isFinite(n) && n >= 1000 ? Math.floor(n) : 1000;
+    const n = inp ? Number(inp.value) : 500;
+    return Number.isFinite(n) && n >= 500 ? Math.floor(n) : 500;
   }
 
   function shortLink(href) {
@@ -178,7 +185,7 @@
   }
 
   function appendLogToFile(line) {
-    if (!fileLogEnabled || !logFileHandle) return;
+    if (logTransportMode !== "file" || !logFileHandle) return;
     fileLogWriteChain = fileLogWriteChain
       .then(async function () {
         const file = await logFileHandle.getFile();
@@ -188,18 +195,15 @@
         await writable.close();
       })
       .catch(function (e) {
-        fileLogEnabled = false;
-        logToFileCheckbox.checked = false;
+        logTransportMode = "session";
+        logToFileCheckbox.checked = true;
         console.warn("[UI_LinksCrawler][LOG_FILE][ERROR]", e);
-        console.log("[UI_LinksCrawler]", "[" + new Date().toLocaleTimeString() + "] Ошибка записи в лог-файл. Логирование в файл отключено.");
+        console.info("[UI_LinksCrawler][LOG_MODE] sessionStorage");
       });
   }
 
   async function pickLogFile() {
-    if (!canWriteLogFile()) {
-      appendLog("Лог в файл недоступен: браузер не поддерживает File System Access API.");
-      return false;
-    }
+    if (!canWriteLogFile()) return false;
     try {
       logFileHandle = await window.showSaveFilePicker({
         suggestedName: "links_crawler_" + nowIsoLike().replace(/[: ]/g, "_") + ".log",
@@ -210,10 +214,8 @@
           },
         ],
       });
-      appendLog("Выбран файл для онлайн-лога.");
       return true;
-    } catch (e) {
-      appendLog("Выбор файла лога отменен или недоступен.");
+    } catch {
       return false;
     }
   }
@@ -367,9 +369,9 @@
       lbl.textContent = "Пауза этап " + d + " (мс):";
       const inp = document.createElement("input");
       inp.type = "number";
-      inp.min = "1000";
+      inp.min = "500";
       inp.step = "100";
-      inp.value = "1000";
+      inp.value = "500";
       inp.style.cssText = "width:76px;background:#0b1220;color:#e5e7eb;border:1px solid #374151;border-radius:6px;padding:4px;";
       pauseWrap.appendChild(lbl);
       pauseWrap.appendChild(inp);
@@ -459,7 +461,7 @@
   panel.appendChild(actions);
   const scanBtn = mkBtn("🔎 Скан этапа", "#1f2937");
   const runBtn = mkBtn("▶ Запуск этапа", "#2563eb");
-  const stopBtn = mkBtn("⏹ Остановить", "#991b1b");
+  const stopBtn = mkBtn("⏹ Остановить этап", "#991b1b");
   const checkAllBtn = mkBtn("☑ Выбрать все", "#1f2937");
   const uncheckAllBtn = mkBtn("☐ Снять все", "#1f2937");
   const closeBtn = mkBtn("✖ Закрыть", "#374151");
@@ -504,7 +506,7 @@
 
   const emergencyStopBtn = document.createElement("button");
   emergencyStopBtn.type = "button";
-  emergencyStopBtn.textContent = "⏹ Прервать выполнение";
+  emergencyStopBtn.textContent = "🆘 Аварийный стоп (дубль)";
   emergencyStopBtn.style.cssText = "position:fixed;right:16px;bottom:16px;z-index:2147483647;border:1px solid #7f1d1d;border-radius:8px;padding:10px 14px;cursor:pointer;background:#b91c1c;color:#fff;font-size:13px;font-weight:700;display:none;";
 
   /** @type {Map<string, HTMLInputElement>} */
@@ -766,7 +768,7 @@
     pauseByDepthInput.forEach(function (inp) {
       inp.disabled = v;
     });
-    stopBtn.disabled = !v;
+    stopBtn.disabled = false;
     for (const cb of stageCheckboxByKey.values()) cb.disabled = v;
     emergencyStopBtn.style.display = v ? "" : "none";
   }
@@ -826,6 +828,22 @@
     );
     renderStageLinks();
     renderRelations();
+  }
+
+  function resetCrawlerStateToStart() {
+    controller.running = false;
+    controller.stopped = false;
+    currentStage = 1;
+    nodeByKey.clear();
+    stageKeys.clear();
+    childrenByParentKey.clear();
+    discoveredByParentKey.clear();
+    discoveredHrefGlobal.clear();
+    setUiBusy(false);
+    renderStageLinks();
+    renderRelations();
+    updateInfo();
+    appendLog("Состояние краулера сброшено. Готово к новому запуску с этапа 1.");
   }
 
   async function runStage() {
@@ -1098,32 +1116,37 @@
   });
   chooseLogFileBtn.addEventListener("click", function () {
     pickLogFile().catch(function (e) {
-      appendLog("Ошибка выбора файла лога: " + (e && e.message ? e.message : String(e)));
+      console.warn("[UI_LinksCrawler][LOG_FILE_PICK][ERROR]", e);
     });
   });
   logToFileCheckbox.addEventListener("change", function () {
     if (!logToFileCheckbox.checked) {
-      fileLogEnabled = false;
-      appendLog("Логирование в файл отключено.");
+      logTransportMode = "off";
       return;
     }
-    fileLogEnabled = true;
+    if (!canWriteLogFile()) {
+      logTransportMode = "session";
+      console.info("[UI_LinksCrawler][LOG_MODE] sessionStorage");
+      return;
+    }
     if (logFileHandle) {
-      appendLog("Логирование в файл включено.");
+      logTransportMode = "file";
+      console.info("[UI_LinksCrawler][LOG_MODE] file");
       return;
     }
-    appendLog("Логирование в файл включено. Файл пока не выбран — укажите его кнопкой «📄 Файл лога…».");
     pickLogFile()
       .then(function (ok) {
-        if (!ok) {
-          appendLog("Файл лога не выбран. Логирование останется включённым до выбора файла.");
+        if (ok) {
+          logTransportMode = "file";
+          console.info("[UI_LinksCrawler][LOG_MODE] file");
           return;
         }
-        fileLogEnabled = true;
-        appendLog("Логирование в файл включено.");
+        logTransportMode = "session";
+        console.info("[UI_LinksCrawler][LOG_MODE] sessionStorage");
       })
       .catch(function () {
-        appendLog("Не удалось выбрать файл лога. Попробуйте снова через кнопку «📄 Файл лога…».");
+        logTransportMode = "session";
+        console.info("[UI_LinksCrawler][LOG_MODE] sessionStorage");
       });
   });
   depthInput.addEventListener("change", rebuildFromDepthInput);
@@ -1144,7 +1167,6 @@
     console.groupEnd();
   }
   setUiBusy(false);
-  stopBtn.disabled = true;
   appendLog("Панель готова. Этап 1: нажмите «Скан этапа», отметьте ссылки, затем «Запуск этапа».");
   updateInfo();
 })();
