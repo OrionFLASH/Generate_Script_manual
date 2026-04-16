@@ -95,11 +95,13 @@
 | Шаг | Запрос | Тело | Результат в скрипте |
 |-----|--------|------|---------------------|
 | 1 | `POST …/parameters` | `{ "status": "ACTUAL" }` | Заполнение `cachedActualParameterCodes`, `cachedActualObjectIds`, карт соответствий и `cachedAllowedBusinessBlocks` |
-| 2 | `POST …/parameters` | `{ "objectIds": ["<metaId>"] }` | `<metaId>` выбирается по стенду: `PROM -> 745250143248942718`, `PSI/IFT-SB/IFT-GF -> 737634462490874360`; при успешном ответе дополняется `cachedAllowedParameterTypes` |
+| 2 | `POST …/parameters` | `{ "objectIds": ["<metaId>"] }` | `<metaId>` выбирается по стенду: `PROM -> 745250143248942718`, `PSI/IFT-SB/IFT-GF -> 737634462490874360`; шаг применяется только для вкладки «Создание» |
 
 **Журнал:** префикс **`[Создание]`**, шаги «1/2» и «2/2».
 
-**Важно:** это единая загрузка; её результаты используются всеми вкладками.
+**Важно (актуальная логика применения):**
+- для вкладки **«Создание»** список `parameterType` формируется как **объединение**: все значения из `PARAMETER_TYPE_OPTIONS` + уникальные значения из API;
+- для вкладки **«Редактирование»** список `parameterType` берётся **только из шага 1** (`POST { status: "ACTUAL" }`) и **заменяет** прежний список; шаг 2 (`objectIds` для `parameterTypes`) для редактирования не используется.
 
 ### 6.3. Внутренняя функция `ensureCachesForCreateOperation()` (без отдельной кнопки)
 
@@ -181,14 +183,14 @@
 | Шаг | Запрос | Тело |
 |-----|--------|------|
 | 1 | `POST …/parameters` | `{ "status": "ACTUAL" }` → **`cachedActualParameterCodes`**, **`cachedActualObjectIds`** |
-| 2 | `POST …/parameters` | `{ "objectIds": ["<metaId>"] }` (`PROM -> 745250143248942718`, `PSI/IFT-SB/IFT-GF -> 737634462490874360`) → дополнение **`cachedAllowedParameterTypes`** |
+| 2 | `POST …/parameters` | `{ "objectIds": ["<metaId>"] }` | Для редактирования не используется (типы берутся только из шага 1) |
 
 **Журнал:** префикс **`[Редактирование]`** (в т.ч. число **objectId** в кэше на шаге 1).
 
 После успеха:
 
 - `datalist` для поиска **`parameterCode`**;
-- `select` для **`parameterType`**;
+- `select` для **`parameterType`** (замена значениями из шага 1 ACTUAL);
 - карты соответствий по коду и по `objectId`;
 - флаг **`editTabAllowedListsLoaded`**.
 
@@ -286,7 +288,7 @@
 | `editTabAllowedListsLoaded` | Флаг: на вкладке 3 выполнена загрузка справочников для селектов |
 | `ensureEditTabListsForUpdate` | Перед `param-update`: если кэш п. 7.1 не готов — выполнить поток п. 7.2 |
 | `getParameterTypeAllowedValues` | Список для проверки `parameterType` |
-| `fillParameterTypeSelect`, `fillParameterTypeSelectWithApiValues`, `fillBusinessBlockSelect` | Заполнение селектов типов и `businessBlock` |
+| `fillParameterTypeSelect`, `fillParameterTypeSelectWithApiValues`, `fillCreateTypeSelectWithDefaultsAndApi`, `fillBusinessBlockSelect` | Заполнение селектов типов и `businessBlock` (для создания — объединение дефолтов и API) |
 | `fillParameterCodeSelectFromActualCodes`, `clearEditTabParameterSelects` | Поле поиска `parameterCode` (`datalist`) и очистка полей вкладки «Редактирование» |
 | `extractActualMappingsFromListData` | Построение карт соответствий по `parameterCode` и `objectId` из ответа ACTUAL |
 | `readFirstParameterRowFromDetail`, `fetchAndApplyDetailByObjectId`, `scheduleDetailFillByObjectId` | Детализация по `objectId` и автозаполнение `parameterName/parameterValue` и связанных полей |
@@ -346,3 +348,4 @@
 | **3.9** | Добавлена кнопка `🧩` на вкладке редактирования: выгрузка шаблона для пакетного `param-update` по объединённым `objectId` из ACTUAL и ARCHIVE с последующей детализацией по каждому `objectId`. |
 | **3.10** | Вынесена единая кнопка `⬇ Загрузить параметры` рядом со вкладками; одна загрузка используется всеми вкладками. Для `businessBlock` добавлен fallback-список допустимых значений (`KMKKSB`, `MNS`) при пустом ответе API. |
 | **3.11** | Добавлены стенды `IFT-SB` и `IFT-GF` (с временными host как у `PSI`), реализовано автоопределение стенда/контура по `window.location.origin`, обновлён верхний индикатор окружения до формата `POST <origin>`, расширены fallback-значения `BUSINESS_BLOCK_OPTIONS` и обновлён дефолтный список `PARAMETER_TYPE_OPTIONS` по актуальному `types`. |
+| **3.12** | Уточнена загрузка `parameterType`: на вкладке «Создание» список дополняется уникальными значениями из API поверх `PARAMETER_TYPE_OPTIONS`; на вкладке «Редактирование» список полностью заменяется значениями из шага 1 (`POST { status: "ACTUAL" }`) без использования шага 2 по `objectIds`. |

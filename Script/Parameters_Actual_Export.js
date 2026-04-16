@@ -38,7 +38,7 @@ const PARAMETER_TYPE_OPTIONS = [
   ];
 
   /** Пауза между последовательными POST из файла (create/update), мс. */
-  const PARAM_BATCH_REQUEST_GAP_MS = 100;
+  const PARAM_BATCH_REQUEST_GAP_MS = 50;
 
   const PARAMETER_ORIGINS = {
     PROM: {
@@ -202,6 +202,41 @@ const PARAMETER_TYPE_OPTIONS = [
     if (prependEmpty) {
       selectEl.value = "";
     }
+  }
+
+  /**
+   * Для вкладки «Создание»: оставляет все значения по умолчанию и добавляет уникальные типы из API.
+   * @param {HTMLSelectElement} selectEl
+   * @param {string[]} values
+   */
+  function fillCreateTypeSelectWithDefaultsAndApi(selectEl, values) {
+    const byValue = new Map();
+    for (let i = 0; i < PARAMETER_TYPE_OPTIONS.length; i++) {
+      const row = PARAMETER_TYPE_OPTIONS[i];
+      const v = String(row && row.value != null ? row.value : "").trim();
+      if (!v) continue;
+      const lbl = String(row && row.label != null ? row.label : v).trim() || v;
+      byValue.set(v, lbl);
+    }
+    const extra = (Array.isArray(values) ? values : [])
+      .map(function (x) {
+        return String(x).trim();
+      })
+      .filter(Boolean)
+      .sort(function (a, b) {
+        return a.localeCompare(b, "ru");
+      });
+    for (let i = 0; i < extra.length; i++) {
+      const v = extra[i];
+      if (!byValue.has(v)) byValue.set(v, v);
+    }
+    selectEl.textContent = "";
+    byValue.forEach(function (label, value) {
+      const o = document.createElement("option");
+      o.value = value;
+      o.textContent = label;
+      selectEl.appendChild(o);
+    });
   }
 
   /**
@@ -1860,19 +1895,24 @@ const PARAMETER_TYPE_OPTIONS = [
       log(logTag + " Единая загрузка справочников: ACTUAL + детализация parameterTypes.");
       const ok = await fetchActualListAndCache(origin, true, logTag);
       if (!ok) return false;
-      await fetchParameterTypesDetailAndApply(origin, true, logTag);
+      // Шаг 2 (детализация meta-parameterTypes) нужен для вкладки «Создание».
+      // Для «Редактирования» список типов заполняется только по шагу 1 (ACTUAL).
+      if (logTag !== "[Редактирование]") {
+        await fetchParameterTypesDetailAndApply(origin, true, logTag);
+      } else {
+        log(logTag + " Шаг 2/2 (детализация objectId) пропущен: для редактирования типы берутся только из шага 1 ACTUAL.");
+      }
 
       if (cachedActualParameterCodes !== null) {
         fillParameterCodeSelectFromActualCodes(uCode, uCodeList, cachedActualParameterCodes);
       }
       if (cachedAllowedParameterTypes !== null && cachedAllowedParameterTypes.length > 0) {
-        fillParameterTypeSelectWithApiValues(cType, cachedAllowedParameterTypes);
-        fillParameterTypeSelectWithApiValues(uType, cachedAllowedParameterTypes, true);
+        fillCreateTypeSelectWithDefaultsAndApi(cType, cachedAllowedParameterTypes);
       } else {
-        fillParameterTypeSelect(cType);
-        const fallbackTypes = extractParameterTypesFromListData({ body: { parameters: Array.from(cachedActualByObjectId.values()) } });
-        fillParameterTypeSelectWithApiValues(uType, fallbackTypes, true);
+        fillCreateTypeSelectWithDefaultsAndApi(cType, []);
       }
+      const editTypesFromStep1 = extractParameterTypesFromListData({ body: { parameters: Array.from(cachedActualByObjectId.values()) } });
+      fillParameterTypeSelectWithApiValues(uType, editTypesFromStep1, true);
       const bbs = cachedAllowedBusinessBlocks || [];
       fillBusinessBlockSelect(cBusinessBlock, bbs);
       fillBusinessBlockSelect(uBusinessBlock, bbs);
