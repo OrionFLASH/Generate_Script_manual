@@ -946,7 +946,7 @@
   uValue.style.minHeight = "44px";
   const uObjectId = mkInput("text");
   const uStatus = document.createElement("select");
-  uStatus.style.cssText = cCode.style.cssText;
+  uStatus.style.cssText = cCode.style.cssText + "flex:1;min-width:0;";
   [["ACTUAL", "ACTUAL"], ["ARCHIVE", "ARCHIVE"]].forEach(([v, t]) => {
     const o = document.createElement("option");
     o.value = v;
