@@ -288,9 +288,64 @@
    * @returns {{ error: string | null, items: unknown[] }}
    */
   function parseJsonObjectsByBraceScan(t) {
+    /**
+     * Удаляет висячие запятые перед } или ] вне строк JSON.
+     * @param {string} src
+     * @returns {string}
+     */
+    function stripTrailingCommas(src) {
+      let out = "";
+      let inStr = false;
+      let esc = false;
+      for (let i = 0; i < src.length; i++) {
+        const ch = src[i];
+        if (inStr) {
+          out += ch;
+          if (esc) esc = false;
+          else if (ch === "\\") esc = true;
+          else if (ch === '"') inStr = false;
+          continue;
+        }
+        if (ch === '"') {
+          inStr = true;
+          out += ch;
+          continue;
+        }
+        if (ch === ",") {
+          let k = i + 1;
+          while (k < src.length && /\s/.test(src[k])) k++;
+          if (k < src.length && (src[k] === "}" || src[k] === "]")) continue;
+        }
+        out += ch;
+      }
+      return out;
+    }
+
+    /**
+     * 1-based строка/колонка по позиции в тексте.
+     * @param {string} src
+     * @param {number} pos
+     * @returns {{ line: number; col: number }}
+     */
+    function lineColByPos(src, pos) {
+      let line = 1;
+      let col = 1;
+      const max = Math.max(0, Math.min(pos, src.length));
+      for (let i = 0; i < max; i++) {
+        if (src[i] === "\n") {
+          line++;
+          col = 1;
+        } else {
+          col++;
+        }
+      }
+      return { line, col };
+    }
+
     const items = [];
     let pos = 0;
     const len = t.length;
+    let blockIndex = 0;
     while (pos < len) {
       while (pos < len && /\s/.test(t[pos])) pos++;
       if (pos >= len) break;
@@ -300,6 +355,7 @@
         pos = next;
       }
       const start = pos;
+      blockIndex++;
       let depth = 0;
       let inStr = false;
       let esc = false;
@@ -331,10 +387,26 @@
           if (depth === 0) {
             const slice = t.slice(start, j + 1);
             try {
-              items.push(JSON.parse(slice));
+              items.push(JSON.parse(stripTrailingCommas(slice)));
             } catch (e) {
               const msg = e && typeof e === "object" && "message" in /** @type {object} */ (e) ? String(/** @type {{ message: string }} */ (e).message) : String(e);
-              return { error: "Ошибка разбора блока JSON: " + msg, items: [] };
+              const lc = lineColByPos(t, start);
+              return {
+                error:
+                  "Ошибка разбора блока JSON #" +
+                  blockIndex +
+                  " (позиция " +
+                  start +
+                  ", строка " +
+                  lc.line +
+                  ", колонка " +
+                  lc.col +
+                  "): " +
+                  msg +
+                  ". Фрагмент: " +
+                  slice.slice(0, 240).replace(/\s+/g, " "),
+                items: [],
+              };
             }
             pos = j + 1;
             break;
