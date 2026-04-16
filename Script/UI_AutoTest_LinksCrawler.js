@@ -313,7 +313,7 @@
   const panel = document.createElement("div");
   panel.id = PANEL_ID;
   panel.style.cssText =
-    "position:fixed;inset:0;z-index:2147483647;display:flex;flex-direction:column;gap:8px;padding:12px;background:#111827;color:#e5e7eb;font:14px/1.45 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Arial,sans-serif;overflow:hidden;";
+    "position:fixed;inset:0;z-index:2147483647;display:flex;flex-direction:column;gap:8px;padding:12px;background:#111827;color:#e5e7eb;font:14px/1.45 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Arial,sans-serif;height:100vh;overflow:auto;";
   const expandedPanelCss = panel.style.cssText;
   const compactPanelCss =
     "position:fixed;right:16px;top:16px;z-index:2147483647;display:flex;align-items:center;justify-content:center;padding:10px;background:#111827;border:1px solid #374151;border-radius:10px;box-shadow:0 10px 25px rgba(0,0,0,.4);font:14px/1.45 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Arial,sans-serif;";
@@ -475,7 +475,7 @@
   panel.appendChild(info);
 
   const main = document.createElement("div");
-  main.style.cssText = "display:grid;grid-template-columns:1fr 1fr;gap:8px;min-height:0;flex:1 1 auto;";
+  main.style.cssText = "display:grid;grid-template-columns:1fr 1fr;gap:8px;min-height:0;flex:1 1 auto;overflow:auto;align-content:start;";
   panel.appendChild(main);
 
   const linksPane = document.createElement("div");
@@ -488,7 +488,7 @@
   linksPane.appendChild(linksTitle);
   const linksBox = document.createElement("div");
   linksBox.style.cssText =
-    "border:1px solid #374151;border-radius:8px;background:#0b1220;padding:8px;overflow:auto;min-height:0;flex:1 1 auto;display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:6px;";
+    "border:1px solid #374151;border-radius:8px;background:#0b1220;padding:8px;overflow:auto;min-height:0;flex:1 1 auto;max-height:100%;display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:6px;align-content:start;";
   linksPane.appendChild(linksBox);
 
   const relPane = document.createElement("div");
@@ -499,7 +499,7 @@
   relTitle.style.cssText = "font-weight:600;";
   relPane.appendChild(relTitle);
   const relBox = document.createElement("div");
-  relBox.style.cssText = "border:1px solid #374151;border-radius:8px;background:#0b1220;padding:6px;overflow:auto;min-height:0;flex:1 1 auto;";
+  relBox.style.cssText = "border:1px solid #374151;border-radius:8px;background:#0b1220;padding:6px;overflow:auto;min-height:0;flex:1 1 auto;max-height:100%;";
   relPane.appendChild(relBox);
 
   const emergencyStopBtn = document.createElement("button");
@@ -763,8 +763,6 @@
     maxRenderRowsStage1Input.disabled = v;
     maxRenderRowsPerParentGroupInput.disabled = v;
     resetLimitsBtn.disabled = v;
-    chooseLogFileBtn.disabled = v;
-    logToFileCheckbox.disabled = v;
     pauseByDepthInput.forEach(function (inp) {
       inp.disabled = v;
     });
@@ -969,10 +967,10 @@
     controller.running = false;
     setUiBusy(false);
     if (controller.stopped) {
-      appendLog("Этап " + currentStage + " прерван пользователем. Текущий итог:");
+      appendLog("Этап " + currentStage + " прерван пользователем. Текущий итог по проблемным ссылкам:");
       renderStageLinks();
       renderRelations();
-      appendTreeSummaryToLog();
+      appendTreeSummaryToLog({ onlyProblematic: true });
       return;
     }
 
@@ -998,13 +996,42 @@
     appendTreeSummaryToLog();
   }
 
-  function appendTreeSummaryToLog() {
-    appendLog("Итоговое дерево (состояние на текущий момент):");
+  function appendTreeSummaryToLog(options) {
+    const onlyProblematic = !!(options && options.onlyProblematic);
+    appendLog(
+      onlyProblematic
+        ? "Итоговое дерево проблемных ссылок (состояние на текущий момент):"
+        : "Итоговое дерево (состояние на текущий момент):",
+    );
+
+    function isProblematicNode(node) {
+      if (!node) return false;
+      return node.status === "FAIL" || node.status === "SKIPPED" || !!node.reason;
+    }
+
+    function branchHasProblem(parentKey) {
+      const kids = childrenByParentKey.get(parentKey) || [];
+      for (let i = 0; i < kids.length; i++) {
+        const n = nodeByKey.get(kids[i]);
+        if (!n) continue;
+        if (isProblematicNode(n)) return true;
+        if (branchHasProblem(n.key)) return true;
+      }
+      return false;
+    }
+
     function walk(parentKey, indent) {
       const kids = childrenByParentKey.get(parentKey) || [];
       for (let i = 0; i < kids.length; i++) {
         const n = nodeByKey.get(kids[i]);
         if (!n) continue;
+
+        if (onlyProblematic) {
+          const selfProblem = isProblematicNode(n);
+          const childProblem = branchHasProblem(n.key);
+          if (!selfProblem && !childProblem) continue;
+        }
+
         appendLog(indent + statusDot(n.status) + " " + n.href + (n.reason ? " | " + n.reason : ""));
         walk(n.key, indent + "  ");
       }
@@ -1016,6 +1043,12 @@
       if (!childrenByParentKey.has(pk)) childrenByParentKey.set(pk, []);
       childrenByParentKey.get(pk).push(n.key);
     });
+    if (onlyProblematic && !branchHasProblem("root")) {
+      appendLog("ROOT: " + rootUrl);
+      appendLog("  ⚪ Проблемные ссылки не обнаружены среди пройденных этапов.");
+      return;
+    }
+
     appendLog("ROOT: " + rootUrl);
     walk("root", "  ");
   }
@@ -1074,24 +1107,23 @@
       appendLog("Логирование в файл отключено.");
       return;
     }
+    fileLogEnabled = true;
     if (logFileHandle) {
-      fileLogEnabled = true;
       appendLog("Логирование в файл включено.");
       return;
     }
+    appendLog("Логирование в файл включено. Файл пока не выбран — укажите его кнопкой «📄 Файл лога…».");
     pickLogFile()
       .then(function (ok) {
         if (!ok) {
-          logToFileCheckbox.checked = false;
-          fileLogEnabled = false;
+          appendLog("Файл лога не выбран. Логирование останется включённым до выбора файла.");
           return;
         }
         fileLogEnabled = true;
         appendLog("Логирование в файл включено.");
       })
       .catch(function () {
-        logToFileCheckbox.checked = false;
-        fileLogEnabled = false;
+        appendLog("Не удалось выбрать файл лога. Попробуйте снова через кнопку «📄 Файл лога…».");
       });
   });
   depthInput.addEventListener("change", rebuildFromDepthInput);
