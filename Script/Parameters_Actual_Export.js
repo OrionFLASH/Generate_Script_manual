@@ -16,6 +16,9 @@
     // Пример добавления: { value: "OTHER", label: "OTHER — кратко для чего" },
   ];
 
+  /** Фолбэк-список businessBlock, если API на шаге загрузки не вернул значения. */
+  const BUSINESS_BLOCK_OPTIONS = ["KMKKSB", "MNS"];
+
   /**
    * После кнопки «загрузить типы» сюда попадает объединённый список допустимых parameterType из API;
    * пока null — для проверок используется только PARAMETER_TYPE_OPTIONS.
@@ -24,6 +27,17 @@
   let cachedAllowedParameterTypes = null;
   /** @type {string[] | null} */
   let cachedAllowedBusinessBlocks = null;
+
+  /**
+   * Допустимые значения businessBlock: сначала кэш API, иначе фолбэк-список.
+   * @returns {string[]}
+   */
+  function getBusinessBlockAllowedValues() {
+    if (cachedAllowedBusinessBlocks !== null && cachedAllowedBusinessBlocks.length > 0) {
+      return cachedAllowedBusinessBlocks.slice();
+    }
+    return BUSINESS_BLOCK_OPTIONS.slice();
+  }
 
   /**
    * Коды parameterCode из последнего ответа списка ACTUAL (для проверки: создание vs правка).
@@ -133,7 +147,7 @@
     o0.value = "";
     o0.textContent = "— businessBlock (необязательно) —";
     selectEl.appendChild(o0);
-    const arr = Array.isArray(values) ? values.slice() : [];
+    const arr = Array.isArray(values) && values.length > 0 ? values.slice() : getBusinessBlockAllowedValues();
     for (let i = 0; i < arr.length; i++) {
       const bb = String(arr[i]).trim();
       if (!bb) continue;
@@ -512,9 +526,10 @@
     }
     if ("businessBlock" in rec) {
       const bb = String(rec.businessBlock == null ? "" : rec.businessBlock).trim();
-      if (bb !== "" && cachedAllowedBusinessBlocks !== null && cachedAllowedBusinessBlocks.length > 0) {
-        if (cachedAllowedBusinessBlocks.indexOf(bb) < 0) {
-          return "businessBlock «" + bb + "» не из списка допустимых: " + cachedAllowedBusinessBlocks.join(", ");
+      if (bb !== "") {
+        const allowedBbs = getBusinessBlockAllowedValues();
+        if (allowedBbs.indexOf(bb) < 0) {
+          return "businessBlock «" + bb + "» не из списка допустимых: " + allowedBbs.join(", ");
         }
       }
     }
@@ -924,10 +939,20 @@
   const tab1Btn = mkTabButton("1. Выгрузка", 0);
   const tab2Btn = mkTabButton("2. Создание", 1);
   const tab3Btn = mkTabButton("3. Редактирование", 2);
+  const sharedLoadBtn = document.createElement("button");
+  sharedLoadBtn.type = "button";
+  sharedLoadBtn.textContent = "\u2B07 Загрузить параметры";
+  sharedLoadBtn.title =
+    "Единая загрузка для всех вкладок: POST ACTUAL + детализация parameterTypes. Результаты применяются ко всем вкладкам.";
+  sharedLoadBtn.style.cssText =
+    "border:1px solid #374151;border-radius:5px;padding:4px 8px;cursor:pointer;font-size:" +
+    PANEL_FONT_BASE +
+    ";line-height:1.2;background:#1f2937;color:#e5e7eb;";
   tabButtons.push(tab1Btn, tab2Btn, tab3Btn);
   tabsRow.appendChild(tab1Btn);
   tabsRow.appendChild(tab2Btn);
   tabsRow.appendChild(tab3Btn);
+  tabsRow.appendChild(sharedLoadBtn);
   panel.appendChild(tabsRow);
 
   const wrap = document.createElement("div");
@@ -1041,7 +1066,7 @@
 
   tab2.appendChild(mkLabel("parameterCode *"));
   tab2.appendChild(cCode);
-  tab2.appendChild(mkLabel("parameterType * (кнопка ⬇ — загрузить из API)"));
+  tab2.appendChild(mkLabel("parameterType *"));
   const cTypeRow = document.createElement("div");
   cTypeRow.style.cssText =
     "flex-shrink:0;display:flex;gap:6px;align-items:stretch;width:100%;box-sizing:border-box;";
@@ -1055,7 +1080,7 @@
   refreshTypesBtn.style.cssText =
     "flex-shrink:0;width:30px;min-width:30px;padding:0;border:1px solid #374151;border-radius:5px;background:#1f2937;color:#e5e7eb;cursor:pointer;font-size:14px;line-height:1;display:flex;align-items:center;justify-content:center;";
   cTypeRow.appendChild(cType);
-  cTypeRow.appendChild(refreshTypesBtn);
+  // Единая загрузка вынесена рядом со вкладками.
   tab2.appendChild(cTypeRow);
   tab2.appendChild(mkLabel("parameterName *"));
   tab2.appendChild(cName);
@@ -1154,7 +1179,7 @@
   const editLoadHint = document.createElement("div");
   editLoadHint.style.cssText =
     "flex-shrink:0;font-size:" + PANEL_FONT_SMALL + ";color:#9ca3af;margin:4px 0 2px;line-height:1.3;";
-  editLoadHint.textContent = "Допустимые parameterCode и parameterType (кнопка ⬇ — только загрузка справочников, без param-update):";
+  editLoadHint.textContent = "Допустимые parameterCode и parameterType загружаются общей кнопкой «Загрузить параметры» рядом с вкладками.";
   tab3.appendChild(editLoadHint);
   const editLoadRow = document.createElement("div");
   editLoadRow.style.cssText =
@@ -1170,7 +1195,6 @@
   editLoadLabel.style.cssText =
     "flex:1;min-width:0;font-size:" + PANEL_FONT_SMALL + ";color:#9ca3af;display:flex;align-items:center;line-height:1.25;";
   editLoadLabel.textContent = "Загрузить допустимые значения для полей ниже";
-  editLoadRow.appendChild(editLoadBtn);
   editLoadRow.appendChild(editLoadLabel);
   tab3.appendChild(editLoadRow);
 
@@ -1597,6 +1621,7 @@
     tab1Btn.disabled = v;
     tab2Btn.disabled = v;
     tab3Btn.disabled = v;
+    sharedLoadBtn.disabled = v;
     cCode.disabled = v;
     cType.disabled = v;
     cBusinessBlock.disabled = v;
@@ -1620,6 +1645,7 @@
     templateExportBtn.style.opacity = v ? "0.55" : "1";
     refreshTypesBtn.style.opacity = v ? "0.55" : "1";
     editLoadBtn.style.opacity = v ? "0.55" : "1";
+    sharedLoadBtn.style.opacity = v ? "0.55" : "1";
   }
 
   closeBtn.addEventListener("click", () => panel.remove());
@@ -1742,25 +1768,12 @@
    * @returns {Promise<boolean>} false — нельзя продолжать (ошибка ACTUAL).
    */
   async function ensureCachesForCreateOperation() {
-    const origin = getOrigin(standSel.value, contourSel.value);
-    if (cachedActualParameterCodes === null) {
-      log("[Создание] Кэш parameterCode пуст — выполняется POST ACTUAL (как п.2 при отсутствии шага 6.1 по кнопке ⬇).");
-      const ok = await fetchActualListAndCache(origin, true);
-      if (!ok) return false;
-    } else {
-      log(
-        "[Создание] Список parameterCode берётся из кэша (шаг 6.1 уже выполнялся — повторный POST ACTUAL не делаем). Записей в кэше: " +
-          cachedActualParameterCodes.size +
-          ".",
-      );
-    }
-    if (cachedAllowedParameterTypes !== null && cachedAllowedParameterTypes.length > 0) {
-      log("[Создание] Допустимые parameterType уже из кэша API — повторная детализация не выполняется.");
+    if (cachedActualParameterCodes !== null && cachedAllowedParameterTypes !== null && cachedAllowedParameterTypes.length > 0) {
+      log("[Создание] Общий кэш уже загружен — используется для вкладки создания.");
       return true;
     }
-    log("[Создание] Не загружены допустимые parameterType из API — детализация «parameterTypes» (один запрос).");
-    await fetchParameterTypesDetailAndApply(origin, true);
-    return true;
+    log("[Создание] Общий кэш не готов — выполняется единая загрузка параметров.");
+    return await refreshSharedParameterListsFromApi("[Создание]");
   }
 
   /**
@@ -1783,65 +1796,60 @@
   }
 
   /**
-   * Вкладка «3»: POST ACTUAL + детализация «parameterTypes» — только заполнение селектов parameterCode и parameterType (без param-update).
-   * @returns {Promise<boolean>} true — справочники готовы (п. 7.1 / 7.2).
+   * Единая загрузка справочников для всех вкладок:
+   * - ACTUAL (коды, objectId, businessBlock, кэш соответствий)
+   * - детализация parameterTypes
+   * После загрузки обновляет поля вкладок «Создание» и «Редактирование».
+   * @param {string} logTag
+   * @returns {Promise<boolean>}
    */
-  async function refreshEditTabAllowedListsFromApi() {
+  async function refreshSharedParameterListsFromApi(logTag) {
     if (busy) return false;
     setBusy(true);
     try {
       const origin = getOrigin(standSel.value, contourSel.value);
-      log(
-        "[Редактирование] Загрузка допустимых значений: POST ACTUAL + детализация «parameterTypes» (param-update не вызывается).",
-      );
-      const ok = await fetchActualListAndCache(origin, true, "[Редактирование]");
-      if (!ok) {
-        editTabAllowedListsLoaded = false;
-        clearEditTabParameterSelects(uCode, uCodeList, uType);
-        return false;
-      }
-      await fetchParameterTypesDetailAndApply(origin, true, "[Редактирование]");
+      log(logTag + " Единая загрузка справочников: ACTUAL + детализация parameterTypes.");
+      const ok = await fetchActualListAndCache(origin, true, logTag);
+      if (!ok) return false;
+      await fetchParameterTypesDetailAndApply(origin, true, logTag);
+
       if (cachedActualParameterCodes !== null) {
         fillParameterCodeSelectFromActualCodes(uCode, uCodeList, cachedActualParameterCodes);
-        if (cachedAllowedParameterTypes !== null && cachedAllowedParameterTypes.length > 0) {
-          fillParameterTypeSelectWithApiValues(uType, cachedAllowedParameterTypes, true);
-        } else {
-          const fallbackTypes = extractParameterTypesFromListData({ body: { parameters: Array.from(cachedActualByObjectId.values()) } });
-          fillParameterTypeSelectWithApiValues(uType, fallbackTypes, true);
-        }
-        const bbs = cachedAllowedBusinessBlocks || [];
-        fillBusinessBlockSelect(cBusinessBlock, bbs);
-        fillBusinessBlockSelect(uBusinessBlock, bbs);
-        editTabAllowedListsLoaded = true;
-        tryFillByParameterCodeInput();
-        tryFillByObjectIdInput();
-        log(
-          "[Редактирование] Списки для полей: parameterCode — " +
-            cachedActualParameterCodes.size +
-            " шт., objectId (сохранено для проверок) — " +
-            (cachedActualObjectIds ? cachedActualObjectIds.size : 0) +
-            " шт., parameterType — " +
-            (cachedAllowedParameterTypes ? cachedAllowedParameterTypes.length : 0) +
-            " шт., businessBlock — " +
-            bbs.length +
-            " шт.",
-        );
-        return true;
       }
-      editTabAllowedListsLoaded = false;
-      clearEditTabParameterSelects(uCode, uCodeList, uType);
-      log(
-        "[Редактирование] Справочники из API неполные — выбор parameterCode/parameterType недоступен. Повторите загрузку или проверьте ответ API.",
-      );
-      return false;
+      if (cachedAllowedParameterTypes !== null && cachedAllowedParameterTypes.length > 0) {
+        fillParameterTypeSelectWithApiValues(cType, cachedAllowedParameterTypes);
+        fillParameterTypeSelectWithApiValues(uType, cachedAllowedParameterTypes, true);
+      } else {
+        fillParameterTypeSelect(cType);
+        const fallbackTypes = extractParameterTypesFromListData({ body: { parameters: Array.from(cachedActualByObjectId.values()) } });
+        fillParameterTypeSelectWithApiValues(uType, fallbackTypes, true);
+      }
+      const bbs = cachedAllowedBusinessBlocks || [];
+      fillBusinessBlockSelect(cBusinessBlock, bbs);
+      fillBusinessBlockSelect(uBusinessBlock, bbs);
+      editTabAllowedListsLoaded = cachedActualParameterCodes !== null;
+      tryFillByParameterCodeInput();
+      tryFillByObjectIdInput();
+      return true;
     } catch (e) {
-      editTabAllowedListsLoaded = false;
-      clearEditTabParameterSelects(uCode, uCodeList, uType);
-      log("[Редактирование] Ошибка загрузки: " + (e && e.message ? e.message : String(e)));
+      log(logTag + " Ошибка общей загрузки: " + (e && e.message ? e.message : String(e)));
       return false;
     } finally {
       setBusy(false);
     }
+  }
+
+  /**
+   * Вкладка «3»: POST ACTUAL + детализация «parameterTypes» — только заполнение селектов parameterCode и parameterType (без param-update).
+   * @returns {Promise<boolean>} true — справочники готовы (п. 7.1 / 7.2).
+   */
+  async function refreshEditTabAllowedListsFromApi() {
+    const ok = await refreshSharedParameterListsFromApi("[Редактирование]");
+    if (!ok) {
+      editTabAllowedListsLoaded = false;
+      clearEditTabParameterSelects(uCode, uCodeList, uType);
+    }
+    return ok;
   }
 
   /**
@@ -1853,17 +1861,22 @@
       return true;
     }
     log(
-      "[Редактирование] Допустимые значения из п. 7.1 ещё не готовы — автоматически выполняется п. 7.2 (загрузка без param-update).",
+      "[Редактирование] Допустимые значения ещё не готовы — автоматически выполняется единая загрузка.",
     );
-    return await refreshEditTabAllowedListsFromApi();
+    const ok = await refreshSharedParameterListsFromApi("[Редактирование]");
+    editTabAllowedListsLoaded = ok;
+    return ok;
   }
 
   refreshTypesBtn.addEventListener("click", function () {
-    refreshParameterTypesFromApi();
+    refreshSharedParameterListsFromApi("[Создание]");
   });
 
   editLoadBtn.addEventListener("click", function () {
-    refreshEditTabAllowedListsFromApi();
+    refreshSharedParameterListsFromApi("[Редактирование]");
+  });
+  sharedLoadBtn.addEventListener("click", function () {
+    refreshSharedParameterListsFromApi("[Общая загрузка]");
   });
 
   runBtn.addEventListener("click", async () => {

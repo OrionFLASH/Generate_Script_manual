@@ -37,6 +37,7 @@
 ## 4. Общие элементы панели
 
 - **Стенд** и **контур** — всегда сверху, до переключения вкладок.
+- Единая кнопка **`⬇ Загрузить параметры`** рядом со вкладками — общий запуск предварительной загрузки для всех вкладок.
 - Информационная строка с базовым URL и путями API.
 - **Журнал работы** — сообщения по всем вкладкам; префиксы **`[Выгрузка]`**, **`[Создание]`**, **`[Редактирование]`** в зависимости от операции.
 - Кнопка **«Закрыть панель»**.
@@ -44,10 +45,11 @@
 
 **Смена стенда или контура** сбрасывает кэши:
 
-- `cachedActualParameterCodes`, `cachedAllowedParameterTypes`;
+- `cachedActualParameterCodes`, `cachedAllowedParameterTypes`, `cachedAllowedBusinessBlocks`;
 - флаг **`editTabAllowedListsLoaded`** (вкладка «Редактирование»);
 - селект **parameterType** на вкладке «Создание» — снова из **`PARAMETER_TYPE_OPTIONS`**;
 - селекты **parameterCode** и **parameterType** на вкладке «Редактирование» — снова в «пустое» состояние (до повторной загрузки справочников).
+- `businessBlock` — fallback-список (`KMKKSB`, `MNS`) до повторной загрузки.
 
 ---
 
@@ -80,20 +82,23 @@
 
 В начале скрипта задан массив **`PARAMETER_TYPE_OPTIONS`** (`{ value, label }`) — запасной вариант для селекта **parameterType**, пока не загружены типы из API.
 
-### 6.2. Кнопка ⬇ рядом с `parameterType` (принудительное обновление)
+### 6.2. Единая кнопка `⬇ Загрузить параметры` (рядом со вкладками)
 
-**Назначение:** только обновить кэши и селект **parameterType на вкладке «Создание»** (`cType`). **`param-create` не вызывается.** Полный обход всех `objectId` **не** выполняется.
+**Назначение:** одним действием загрузить общие кэши и применить их для всех вкладок:
+- на «Создание»: `parameterType`, `businessBlock`;
+- на «Редактирование`: `parameterCode`, `parameterType`, `businessBlock`, карты соответствий.
+`param-create`/`param-update` не вызываются.
 
 **Порядок запросов (всегда оба шага подряд):**
 
 | Шаг | Запрос | Тело | Результат в скрипте |
 |-----|--------|------|---------------------|
-| 1 | `POST …/parameters` | `{ "status": "ACTUAL" }` | Заполнение **`cachedActualParameterCodes`** (все `parameterCode` из `body.parameters`) |
-| 2 | `POST …/parameters` | `{ "objectIds": ["<metaId>"] }` | `<metaId>` выбирается по стенду: `PROM -> 745250143248942718`, `PSI -> 737634462490874360`. Из ответа ищется запись с **`parameterCode` = `parameterTypes`** (**`PARAMETER_TYPES_META_CODE`**); из **`parameterValue.types`** читаются допустимые типы → **`cachedAllowedParameterTypes`** и обновление **только селекта создания** `cType` |
+| 1 | `POST …/parameters` | `{ "status": "ACTUAL" }` | Заполнение `cachedActualParameterCodes`, `cachedActualObjectIds`, карт соответствий и `cachedAllowedBusinessBlocks` |
+| 2 | `POST …/parameters` | `{ "objectIds": ["<metaId>"] }` | `<metaId>` выбирается по стенду: `PROM -> 745250143248942718`, `PSI -> 737634462490874360`; при успешном ответе дополняется `cachedAllowedParameterTypes` |
 
 **Журнал:** префикс **`[Создание]`**, шаги «1/2» и «2/2».
 
-**Важно:** селекты **parameterCode** и **parameterType** на вкладке «3. Редактирование» этой кнопкой **не** заполняются — они обновляются только кнопкой ⬇ на вкладке 3 (см. раздел 7).
+**Важно:** это единая загрузка; её результаты используются всеми вкладками.
 
 ### 6.3. Внутренняя функция `ensureCachesForCreateOperation()` (без отдельной кнопки)
 
@@ -113,7 +118,7 @@
 ### 6.4. Кнопка «Создать параметр (param-create)» — порядок действий
 
 1. **`ensureCachesForCreateOperation()`** — см. п. 6.3 (при ошибке ACTUAL создание не продолжается).
-2. Проверка полей и **`parameterType`** через **`validateCreatePayload`** (список допустимых: **`getParameterTypeAllowedValues()`** — после загрузки API из кэша, иначе из **`PARAMETER_TYPE_OPTIONS`**). Для `businessBlock` поле необязательное; если заполнено и кэш допустимых значений есть, выполняется проверка на принадлежность.
+2. Проверка полей и **`parameterType`** через **`validateCreatePayload`** (список допустимых: **`getParameterTypeAllowedValues()`** — после загрузки API из кэша, иначе из **`PARAMETER_TYPE_OPTIONS`**). Для `businessBlock` поле необязательное; если заполнено, проверка идёт через `getBusinessBlockAllowedValues()` (кэш API, иначе fallback `KMKKSB`, `MNS`).
 3. Проверка дубликата: если **`parameterCode`** уже есть в **`cachedActualParameterCodes`** — сообщение в журнал, переход на вкладку «Редактирование», **`param-create` не отправляется**.
 4. Диалог подтверждения (код, тип, имя, фрагмент значения).
 5. **Отмена** — в журнал: создание отменено, **`param-create` не вызывался**.
@@ -166,9 +171,9 @@
 
 **Допустимые значения для полей формы** считаются полученными после успешного выполнения **п. 7.2** (ниже): флаг **`editTabAllowedListsLoaded === true`** и непустые кэши кодов, **objectId** и типов.
 
-### 7.2. Кнопка ⬇ на вкладке «Редактирование» (явная загрузка справочников)
+### 7.2. Загрузка справочников для редактирования (через общую кнопку)
 
-**Назначение:** только получить справочники и кэши п. 7.1 для селектов и проверок. **`param-update` не вызывается.**
+**Назначение:** получить справочники и кэши п. 7.1 через общую кнопку `⬇ Загрузить параметры`. `param-update` не вызывается.
 
 **Порядок запросов** (как в п. 6.2):
 
@@ -274,6 +279,7 @@
 | `PARAMETER_TYPE_OPTIONS` | Справочник `{ value, label }` для `parameterType` на вкладке «Создание», пока нет API |
 | `PARAMETER_TYPES_META_CODE` | Код мета-параметра (`parameterTypes`) |
 | `getParameterTypesDetailObjectId` | Выбор `metaObjectId` по стенду (`PROM`/`PSI`) для шага детализации `parameterTypes` |
+| `BUSINESS_BLOCK_OPTIONS`, `getBusinessBlockAllowedValues` | Fallback и итоговый список допустимых `businessBlock` (`API -> fallback KMKKSB/MNS`) |
 | `cachedAllowedParameterTypes`, `cachedAllowedBusinessBlocks`, `cachedActualParameterCodes`, `cachedActualObjectIds` | Кэши типов/бизнес-блоков/кодов/**objectId** из ответов ACTUAL и детализации |
 | `cachedActualByCode`, `cachedActualByObjectId` | Карты соответствий `parameterCode <-> objectId` c `parameterType`, `businessBlock`, `status`, `version` для автоподстановки и сверок |
 | `editTabAllowedListsLoaded` | Флаг: на вкладке 3 выполнена загрузка справочников для селектов |
@@ -285,6 +291,7 @@
 | `readFirstParameterRowFromDetail`, `fetchAndApplyDetailByObjectId`, `scheduleDetailFillByObjectId` | Детализация по `objectId` и автозаполнение `parameterName/parameterValue` и связанных полей |
 | `clearUpdateFormDerivedFields` | Очистка зависимых полей формы редактирования, если введённые `objectId`/`parameterCode` не найдены в кэше ACTUAL |
 | `fetchActualListAndCache`, `fetchParameterTypesDetailAndApply` | POST ACTUAL и детализация типов (журнал: тег `[Создание]` или `[Редактирование]`) |
+| `refreshSharedParameterListsFromApi` | Единая загрузка параметров для всех вкладок (кнопка рядом с вкладками) |
 | `ensureCachesForCreateOperation` | Условная подготовка кэшей перед созданием формы/файла |
 | `refreshParameterTypesFromApi` | Кнопка ⬇ вкладки 2: всегда ACTUAL + детализация |
 | `refreshEditTabAllowedListsFromApi` | Кнопка ⬇ вкладки 3: те же запросы + заполнение селектов `parameterCode`/`parameterType` |
@@ -335,3 +342,4 @@
 | **3.7** | Улучшен разбор JSON из файла: для блоков `{...}` добавлена нормализация висячих запятых перед закрывающими `}`/`]`, а сообщения об ошибке разбора стали подробными (номер блока, позиция, строка/колонка и фрагмент JSON). |
 | **3.8** | Реализованы пункты ToDo: стенд-зависимый `metaObjectId` для шага `parameterTypes`; fallback на данные шага 1 при ошибке шага 2; поле `businessBlock` (форма/файл/кэш/валидации); фильтрация `parameterCode` по выбранному `parameterType`; проверка изменений включает `status`; подтверждение обновления в формате «было/стало»; для изменений статуса отправляется сокращённый payload `{ objectId, status, version }`. |
 | **3.9** | Добавлена кнопка `🧩` на вкладке редактирования: выгрузка шаблона для пакетного `param-update` по объединённым `objectId` из ACTUAL и ARCHIVE с последующей детализацией по каждому `objectId`. |
+| **3.10** | Вынесена единая кнопка `⬇ Загрузить параметры` рядом со вкладками; одна загрузка используется всеми вкладками. Для `businessBlock` добавлен fallback-список допустимых значений (`KMKKSB`, `MNS`) при пустом ответе API. |
