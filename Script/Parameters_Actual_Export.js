@@ -22,6 +22,8 @@
    * @type {string[] | null}
    */
   let cachedAllowedParameterTypes = null;
+  /** @type {string[] | null} */
+  let cachedAllowedBusinessBlocks = null;
 
   /**
    * Коды parameterCode из последнего ответа списка ACTUAL (для проверки: создание vs правка).
@@ -39,13 +41,13 @@
   /**
    * Соответствие по parameterCode из последнего ACTUAL-списка.
    * Нужны для автоподстановки полей на вкладке «Редактирование».
-   * @type {Map<string, { objectId: string; parameterCode: string; parameterType: string; status: string; version: number | null }>}
+   * @type {Map<string, { objectId: string; parameterCode: string; parameterType: string; businessBlock: string; status: string; version: number | null }>}
    */
   let cachedActualByCode = new Map();
 
   /**
    * Соответствие по objectId из последнего ACTUAL-списка.
-   * @type {Map<string, { objectId: string; parameterCode: string; parameterType: string; status: string; version: number | null }>}
+   * @type {Map<string, { objectId: string; parameterCode: string; parameterType: string; businessBlock: string; status: string; version: number | null }>}
    */
   let cachedActualByObjectId = new Map();
 
@@ -120,23 +122,52 @@
   }
 
   /**
+   * Заполняет select допустимыми businessBlock.
+   * @param {HTMLSelectElement} selectEl
+   * @param {string[] | null} values
+   */
+  function fillBusinessBlockSelect(selectEl, values) {
+    const prev = selectEl.value;
+    selectEl.textContent = "";
+    const o0 = document.createElement("option");
+    o0.value = "";
+    o0.textContent = "— businessBlock (необязательно) —";
+    selectEl.appendChild(o0);
+    const arr = Array.isArray(values) ? values.slice() : [];
+    for (let i = 0; i < arr.length; i++) {
+      const bb = String(arr[i]).trim();
+      if (!bb) continue;
+      const o = document.createElement("option");
+      o.value = bb;
+      o.textContent = bb;
+      selectEl.appendChild(o);
+    }
+    if (prev && arr.indexOf(prev) >= 0) selectEl.value = prev;
+  }
+
+  /**
    * Поле поиска parameterCode на вкладке «Редактирование»: datalist с кодами из ACTUAL.
    * @param {HTMLInputElement} inputEl
    * @param {HTMLDataListElement} listEl
    * @param {Set<string>} codeSet
    */
-  function fillParameterCodeSelectFromActualCodes(inputEl, listEl, codeSet) {
+  function fillParameterCodeSelectFromActualCodes(inputEl, listEl, codeSet, selectedType) {
+    const prev = inputEl.value;
     listEl.textContent = "";
     const arr = Array.from(codeSet).sort(function (a, b) {
       return a.localeCompare(b, "ru");
     });
     for (let i = 0; i < arr.length; i++) {
       const code = arr[i];
+      if (selectedType && cachedActualByCode.has(code)) {
+        const row = cachedActualByCode.get(code);
+        if (row && String(row.parameterType || "").trim() !== String(selectedType).trim()) continue;
+      }
       const o = document.createElement("option");
       o.value = code;
       listEl.appendChild(o);
     }
-    inputEl.value = "";
+    inputEl.value = prev;
     inputEl.placeholder = "Введите часть parameterCode для поиска…";
   }
 
@@ -187,7 +218,9 @@
    * Единственный objectId для детализации при кнопке ⬇: только этот ответ разбирается на «parameterTypes».
    * Полный обход всех objectId не выполняется (этап только для списка допустимых parameterType).
    */
-  const PARAMETER_TYPES_DETAIL_OBJECT_ID = "745250143248942718";
+  function getParameterTypesDetailObjectId(stand) {
+    return String(stand).trim() === "PSI" ? "737634462490874360" : "745250143248942718";
+  }
 
   const PANEL_ID = "parameters-actual-export-panel";
   const LOG_MAX_LINES = 400;
@@ -477,6 +510,14 @@
     if (allowed.indexOf(pt) < 0) {
       return "parameterType «" + pt + "» не из списка допустимых: " + allowed.join(", ");
     }
+    if ("businessBlock" in rec) {
+      const bb = String(rec.businessBlock == null ? "" : rec.businessBlock).trim();
+      if (bb !== "" && cachedAllowedBusinessBlocks !== null && cachedAllowedBusinessBlocks.length > 0) {
+        if (cachedAllowedBusinessBlocks.indexOf(bb) < 0) {
+          return "businessBlock «" + bb + "» не из списка допустимых: " + cachedAllowedBusinessBlocks.join(", ");
+        }
+      }
+    }
     return null;
   }
 
@@ -504,6 +545,10 @@
     if (!Number.isFinite(v) || v < 0) return "Некорректное поле version";
     if (!("status" in rec) || String(rec.status).trim() === "") {
       return "Пустое или отсутствует поле: status";
+    }
+    const st = String(rec.status).trim();
+    if (st !== "ACTUAL" && st !== "ARCHIVE") {
+      return "Некорректное поле status (допустимо ACTUAL или ARCHIVE)";
     }
     return null;
   }
@@ -581,11 +626,51 @@
   }
 
   /**
+   * Уникальные businessBlock из ответа списка ACTUAL (без пустых).
+   * @param {unknown} listData
+   * @returns {string[]}
+   */
+  function extractBusinessBlocksFromListData(listData) {
+    const set = new Set();
+    const body = listData && typeof listData === "object" ? /** @type {Record<string, unknown>} */ (listData).body : null;
+    const params = body && Array.isArray(body.parameters) ? /** @type {unknown[]} */ (body.parameters) : [];
+    for (let i = 0; i < params.length; i++) {
+      const p = params[i];
+      if (!p || typeof p !== "object") continue;
+      const bb = /** @type {Record<string, unknown>} */ (p).businessBlock;
+      if (typeof bb === "string" && bb.trim()) set.add(bb.trim());
+    }
+    return Array.from(set).sort(function (a, b) {
+      return a.localeCompare(b, "ru");
+    });
+  }
+
+  /**
+   * Уникальные parameterType из ответа списка ACTUAL.
+   * @param {unknown} listData
+   * @returns {string[]}
+   */
+  function extractParameterTypesFromListData(listData) {
+    const set = new Set();
+    const body = listData && typeof listData === "object" ? /** @type {Record<string, unknown>} */ (listData).body : null;
+    const params = body && Array.isArray(body.parameters) ? /** @type {unknown[]} */ (body.parameters) : [];
+    for (let i = 0; i < params.length; i++) {
+      const p = params[i];
+      if (!p || typeof p !== "object") continue;
+      const t = /** @type {Record<string, unknown>} */ (p).parameterType;
+      if (typeof t === "string" && t.trim()) set.add(t.trim());
+    }
+    return Array.from(set).sort(function (a, b) {
+      return a.localeCompare(b, "ru");
+    });
+  }
+
+  /**
    * Карты соответствий из ACTUAL-списка: по parameterCode и по objectId.
    * @param {unknown} listData
    * @returns {{
-   *  byCode: Map<string, { objectId: string; parameterCode: string; parameterType: string; status: string; version: number | null }>;
-   *  byObjectId: Map<string, { objectId: string; parameterCode: string; parameterType: string; status: string; version: number | null }>;
+   *  byCode: Map<string, { objectId: string; parameterCode: string; parameterType: string; businessBlock: string; status: string; version: number | null }>;
+   *  byObjectId: Map<string, { objectId: string; parameterCode: string; parameterType: string; businessBlock: string; status: string; version: number | null }>;
    * }}
    */
   function extractActualMappingsFromListData(listData) {
@@ -601,6 +686,7 @@
       const parameterCode = typeof rec.parameterCode === "string" ? rec.parameterCode.trim() : "";
       if (!objectId || !parameterCode) continue;
       const parameterType = typeof rec.parameterType === "string" ? rec.parameterType.trim() : "";
+      const businessBlock = typeof rec.businessBlock === "string" ? rec.businessBlock.trim() : "";
       const status = typeof rec.status === "string" ? rec.status.trim() : "";
       let version = null;
       if (typeof rec.version === "number" && Number.isFinite(rec.version)) {
@@ -609,7 +695,7 @@
         const n = Number(rec.version);
         if (Number.isFinite(n)) version = n;
       }
-      const row = { objectId, parameterCode, parameterType, status, version };
+      const row = { objectId, parameterCode, parameterType, businessBlock, status, version };
       if (!byCode.has(parameterCode)) byCode.set(parameterCode, row);
       if (!byObjectId.has(objectId)) byObjectId.set(objectId, row);
     }
@@ -932,6 +1018,9 @@
   const cType = document.createElement("select");
   cType.style.cssText = cCode.style.cssText + "flex:1;min-width:0;";
   fillParameterTypeSelect(cType);
+  const cBusinessBlock = document.createElement("select");
+  cBusinessBlock.style.cssText = cCode.style.cssText;
+  fillBusinessBlockSelect(cBusinessBlock, null);
   const cName = mkInput("text");
   const cValue = mkTextarea(2);
   cValue.style.flex = "1 1 auto";
@@ -948,7 +1037,7 @@
   refreshTypesBtn.textContent = "\u2B07";
   refreshTypesBtn.title =
     "Загрузить допустимые parameterType: POST ACTUAL + одна детализация objectId " +
-    PARAMETER_TYPES_DETAIL_OBJECT_ID +
+    "<PROM:745250143248942718 | PSI:737634462490874360>" +
     " (parameterCode=parameterTypes → types). Без param-create и без обхода всех id.";
   refreshTypesBtn.style.cssText =
     "flex-shrink:0;width:30px;min-width:30px;padding:0;border:1px solid #374151;border-radius:5px;background:#1f2937;color:#e5e7eb;cursor:pointer;font-size:14px;line-height:1;display:flex;align-items:center;justify-content:center;";
@@ -957,6 +1046,8 @@
   tab2.appendChild(cTypeRow);
   tab2.appendChild(mkLabel("parameterName *"));
   tab2.appendChild(cName);
+  tab2.appendChild(mkLabel("businessBlock (необязательно)"));
+  tab2.appendChild(cBusinessBlock);
   tab2.appendChild(mkLabel("parameterValue *"));
   tab2.appendChild(cValue);
 
@@ -973,7 +1064,7 @@
   createFileRow.style.cssText = "flex-shrink:0;margin-top:8px;padding-top:6px;border-top:1px solid #374151;";
   const createFileHint = document.createElement("div");
   createFileHint.style.cssText = "font-size:" + PANEL_FONT_SMALL + ";color:#9ca3af;margin-bottom:4px;line-height:1.3;";
-  createFileHint.textContent = "Из файла: JSON-объект(ы) с полями parameterCode, parameterType, parameterName, parameterValue. Несколько — по одному объекту на строку, массив, или блоки {...}{...}.";
+  createFileHint.textContent = "Из файла: JSON-объект(ы) с полями parameterCode, parameterType, parameterName, parameterValue и необязательным businessBlock. Несколько — по одному объекту на строку, массив, или блоки {...}{...}.";
   createFileRow.appendChild(createFileHint);
   const createFileInput = document.createElement("input");
   createFileInput.type = "file";
@@ -1012,6 +1103,9 @@
   const uType = document.createElement("select");
   uType.style.cssText = uCode.style.cssText + "flex:1;min-width:0;";
   clearEditTabParameterSelects(uCode, uCodeList, uType);
+  const uBusinessBlock = document.createElement("select");
+  uBusinessBlock.style.cssText = uCode.style.cssText;
+  fillBusinessBlockSelect(uBusinessBlock, null);
   const uName = mkInput("text");
   const uValue = mkTextarea(2);
   uValue.style.flex = "1 1 auto";
@@ -1077,6 +1171,8 @@
   tab3.appendChild(uTypeRow);
   tab3.appendChild(mkLabel("parameterName *"));
   tab3.appendChild(uName);
+  tab3.appendChild(mkLabel("businessBlock (необязательно)"));
+  tab3.appendChild(uBusinessBlock);
   tab3.appendChild(mkLabel("parameterValue *"));
   tab3.appendChild(uValue);
   tab3.appendChild(mkLabel("status *"));
@@ -1100,7 +1196,7 @@
   updateFileRow.style.cssText = "flex-shrink:0;margin-top:8px;padding-top:6px;border-top:1px solid #374151;";
   const updateFileHint = document.createElement("div");
   updateFileHint.style.cssText = "font-size:" + PANEL_FONT_SMALL + ";color:#9ca3af;margin-bottom:4px;line-height:1.3;";
-  updateFileHint.textContent = "Из файла: те же поля + objectId, status; version из файла игнорируется — берётся из API по objectId.";
+  updateFileHint.textContent = "Из файла: те же поля + objectId, status, необязательный businessBlock; version проверяется по API.";
   updateFileRow.appendChild(updateFileHint);
   const updateFileInput = document.createElement("input");
   updateFileInput.type = "file";
@@ -1116,7 +1212,7 @@
 
   /**
    * Подставляет в форму редактирования связанные поля из кэша 7.2.
-   * @param {{ objectId: string; parameterCode: string; parameterType: string; status: string; version: number | null }} row
+   * @param {{ objectId: string; parameterCode: string; parameterType: string; businessBlock: string; status: string; version: number | null }} row
    * @param {"code" | "objectId"} from
    */
   function applyUpdateFormByActualMapping(row, from) {
@@ -1126,6 +1222,7 @@
       if (uCode.value.trim() !== row.parameterCode) uCode.value = row.parameterCode;
     }
     if (row.parameterType) uType.value = row.parameterType;
+    uBusinessBlock.value = row.businessBlock || "";
     if (row.status) uStatus.value = row.status;
     if (row.version !== null && Number.isFinite(row.version)) {
       uVersion.value = String(row.version);
@@ -1146,6 +1243,7 @@
       uCode.value = "";
     }
     uType.value = "";
+    uBusinessBlock.value = "";
     uStatus.value = "ACTUAL";
     uVersion.value = "";
     uName.value = "";
@@ -1156,7 +1254,7 @@
   /**
    * Читает первую запись details-ответа по objectId для автоподстановки полей формы.
    * @param {unknown} detailData
-   * @returns {{ objectId: string; parameterCode: string; parameterType: string; parameterName: string; parameterValue: string; status: string; version: number | null } | null}
+   * @returns {{ objectId: string; parameterCode: string; parameterType: string; businessBlock: string; parameterName: string; parameterValue: string; status: string; version: number | null } | null}
    */
   function readFirstParameterRowFromDetail(detailData) {
     const body = detailData && typeof detailData === "object" ? /** @type {Record<string, unknown>} */ (detailData).body : null;
@@ -1167,6 +1265,7 @@
     const objectId = typeof rec.objectId === "string" ? rec.objectId.trim() : "";
     const parameterCode = typeof rec.parameterCode === "string" ? rec.parameterCode.trim() : "";
     const parameterType = typeof rec.parameterType === "string" ? rec.parameterType.trim() : "";
+    const businessBlock = typeof rec.businessBlock === "string" ? rec.businessBlock.trim() : "";
     const parameterName = typeof rec.parameterName === "string" ? rec.parameterName : "";
     const status = typeof rec.status === "string" ? rec.status.trim() : "";
     let parameterValue = "";
@@ -1180,19 +1279,20 @@
       }
     }
     const version = readVersionFromDetailResponse(detailData);
-    return { objectId, parameterCode, parameterType, parameterName, parameterValue, status, version };
+    return { objectId, parameterCode, parameterType, businessBlock, parameterName, parameterValue, status, version };
   }
 
   /**
    * Нормализованный набор полей для сравнения «до/после» перед param-update.
-   * @param {{ objectId: string; parameterCode: string; parameterType: string; parameterName: string; parameterValue: string; status: string }} row
-   * @returns {{ objectId: string; parameterCode: string; parameterType: string; parameterName: string; parameterValue: string; status: string }}
+   * @param {{ objectId: string; parameterCode: string; parameterType: string; businessBlock: string; parameterName: string; parameterValue: string; status: string }} row
+   * @returns {{ objectId: string; parameterCode: string; parameterType: string; businessBlock: string; parameterName: string; parameterValue: string; status: string }}
    */
   function toComparableUpdateFields(row) {
     return {
       objectId: String(row.objectId || "").trim(),
       parameterCode: String(row.parameterCode || "").trim(),
       parameterType: String(row.parameterType || "").trim(),
+      businessBlock: String(row.businessBlock || "").trim(),
       parameterName: String(row.parameterName || "").trim(),
       parameterValue: String(row.parameterValue == null ? "" : row.parameterValue),
       status: String(row.status || "").trim(),
@@ -1201,8 +1301,8 @@
 
   /**
    * Какие поля реально изменились относительно текущей записи из API.
-   * @param {{ objectId: string; parameterCode: string; parameterType: string; parameterName: string; parameterValue: string; status: string }} nextRow
-   * @param {{ objectId: string; parameterCode: string; parameterType: string; parameterName: string; parameterValue: string; status: string }} currentRow
+   * @param {{ objectId: string; parameterCode: string; parameterType: string; businessBlock: string; parameterName: string; parameterValue: string; status: string }} nextRow
+   * @param {{ objectId: string; parameterCode: string; parameterType: string; businessBlock: string; parameterName: string; parameterValue: string; status: string }} currentRow
    * @returns {string[]}
    */
   function diffUpdateFields(nextRow, currentRow) {
@@ -1213,6 +1313,7 @@
     if (a.objectId !== b.objectId) changed.push("objectId");
     if (a.parameterCode !== b.parameterCode) changed.push("parameterCode");
     if (a.parameterType !== b.parameterType) changed.push("parameterType");
+    if (a.businessBlock !== b.businessBlock) changed.push("businessBlock");
     if (a.parameterName !== b.parameterName) changed.push("parameterName");
     if (a.parameterValue !== b.parameterValue) changed.push("parameterValue");
     if (a.status !== b.status) changed.push("status");
@@ -1221,8 +1322,8 @@
 
   /**
    * Изменения только по редактируемым полям param-update.
-   * @param {{ parameterType: string; parameterName: string; parameterValue: string }} nextRow
-   * @param {{ parameterType: string; parameterName: string; parameterValue: string }} currentRow
+   * @param {{ parameterType: string; businessBlock: string; parameterName: string; parameterValue: string; status: string }} nextRow
+   * @param {{ parameterType: string; businessBlock: string; parameterName: string; parameterValue: string; status: string }} currentRow
    * @returns {string[]}
    */
   function diffEditableUpdateFields(nextRow, currentRow) {
@@ -1231,13 +1332,44 @@
     if (String(nextRow.parameterType || "").trim() !== String(currentRow.parameterType || "").trim()) {
       changed.push("parameterType");
     }
+    if (String(nextRow.businessBlock || "").trim() !== String(currentRow.businessBlock || "").trim()) {
+      changed.push("businessBlock");
+    }
     if (String(nextRow.parameterName || "").trim() !== String(currentRow.parameterName || "").trim()) {
       changed.push("parameterName");
     }
     if (String(nextRow.parameterValue == null ? "" : nextRow.parameterValue) !== String(currentRow.parameterValue == null ? "" : currentRow.parameterValue)) {
       changed.push("parameterValue");
     }
+    if (String(nextRow.status || "").trim() !== String(currentRow.status || "").trim()) {
+      changed.push("status");
+    }
     return changed;
+  }
+
+  /**
+   * Текст подтверждения с парами «было/стало» только по изменённым полям.
+   * @param {{ objectId: string; parameterCode: string; version: number; status: string }} meta
+   * @param {{ [k: string]: string }} oldValues
+   * @param {{ [k: string]: string }} newValues
+   * @param {string[]} changedFields
+   * @returns {string}
+   */
+  function buildUpdateConfirmText(meta, oldValues, newValues, changedFields) {
+    let out = "Подтвердите действие (param-update)\n\n";
+    out += "objectId: " + meta.objectId + "\n";
+    out += "parameterCode: " + meta.parameterCode + "\n";
+    out += "version: " + String(meta.version) + "\n";
+    out += "status: " + meta.status + "\n\n";
+    out += "Поле                 | Было                         | Стало\n";
+    out += "---------------------+------------------------------+------------------------------\n";
+    for (let i = 0; i < changedFields.length; i++) {
+      const k = changedFields[i];
+      const oldV = String(oldValues[k] == null ? "" : oldValues[k]).replace(/\s+/g, " ").slice(0, 28);
+      const newV = String(newValues[k] == null ? "" : newValues[k]).replace(/\s+/g, " ").slice(0, 28);
+      out += (k + "                    ").slice(0, 20) + " | " + (oldV + "                              ").slice(0, 28) + " | " + (newV + "                              ").slice(0, 28) + "\n";
+    }
+    return out;
   }
 
   /** @type {number | null} */
@@ -1267,6 +1399,7 @@
       if (row.objectId) uObjectId.value = row.objectId;
       if (row.parameterCode) uCode.value = row.parameterCode;
       if (row.parameterType) uType.value = row.parameterType;
+      uBusinessBlock.value = row.businessBlock || "";
       if (row.status) uStatus.value = row.status;
       uName.value = row.parameterName;
       uValue.value = row.parameterValue;
@@ -1320,10 +1453,17 @@
     scheduleDetailFillByObjectId(objectId, "ввод objectId");
   }
 
+  function refreshEditCodeOptionsByType() {
+    if (!cachedActualParameterCodes) return;
+    const selectedType = uType.value.trim();
+    fillParameterCodeSelectFromActualCodes(uCode, uCodeList, cachedActualParameterCodes, selectedType || undefined);
+  }
+
   uCode.addEventListener("input", tryFillByParameterCodeInput);
   uCode.addEventListener("change", tryFillByParameterCodeInput);
   uObjectId.addEventListener("input", tryFillByObjectIdInput);
   uObjectId.addEventListener("change", tryFillByObjectIdInput);
+  uType.addEventListener("change", refreshEditCodeOptionsByType);
 
   /**
    * Смена стенда/контура — сброс кэшей, селект создания и пустые селекты вкладки «Редактирование».
@@ -1334,9 +1474,12 @@
     cachedActualByCode = new Map();
     cachedActualByObjectId = new Map();
     cachedAllowedParameterTypes = null;
+    cachedAllowedBusinessBlocks = null;
     editTabAllowedListsLoaded = false;
     fillParameterTypeSelect(cType);
+    fillBusinessBlockSelect(cBusinessBlock, null);
     clearEditTabParameterSelects(uCode, uCodeList, uType);
+    fillBusinessBlockSelect(uBusinessBlock, null);
     uVersion.value = "";
     uVersionInfo.textContent = "";
     if (editAutofillTimer !== null) {
@@ -1432,10 +1575,12 @@
     tab3Btn.disabled = v;
     cCode.disabled = v;
     cType.disabled = v;
+    cBusinessBlock.disabled = v;
     cName.disabled = v;
     cValue.disabled = v;
     uCode.disabled = v;
     uType.disabled = v;
+    uBusinessBlock.disabled = v;
     uName.disabled = v;
     uValue.disabled = v;
     uObjectId.disabled = v;
@@ -1474,6 +1619,12 @@
     const listData = listRes.data;
     cachedActualParameterCodes = extractParameterCodesFromListData(listData);
     cachedActualObjectIds = new Set(extractObjectIds(listData));
+    cachedAllowedBusinessBlocks = extractBusinessBlocksFromListData(listData);
+    fillBusinessBlockSelect(cBusinessBlock, cachedAllowedBusinessBlocks);
+    fillBusinessBlockSelect(uBusinessBlock, cachedAllowedBusinessBlocks);
+    if (cachedAllowedParameterTypes === null || cachedAllowedParameterTypes.length === 0) {
+      cachedAllowedParameterTypes = extractParameterTypesFromListData(listData);
+    }
     const mappings = extractActualMappingsFromListData(listData);
     cachedActualByCode = mappings.byCode;
     cachedActualByObjectId = mappings.byObjectId;
@@ -1505,7 +1656,7 @@
    */
   async function fetchParameterTypesDetailAndApply(origin, verbose, logTag) {
     const tag = logTag != null && String(logTag).trim() !== "" ? String(logTag).trim() : "[Создание]";
-    const metaObjectId = String(PARAMETER_TYPES_DETAIL_OBJECT_ID).trim();
+    const metaObjectId = getParameterTypesDetailObjectId(standSel.value);
     if (verbose) {
       log(
         tag +
@@ -1519,8 +1670,7 @@
     const dr = await postParameters(origin, { objectIds: [metaObjectId] });
     if (!dr.ok) {
       log(tag + " Ошибка детализации: HTTP " + dr.status + " — " + dr.text.slice(0, 400));
-      cachedAllowedParameterTypes = null;
-      fillParameterTypeSelect(cType);
+      log(tag + " Шаг 2/2 пропущен: используются данные шага 1 (без дополнения типами из детализации).");
       return;
     }
     const typesFromMeta = extractTypesFromParameterTypesDetail(dr.data);
@@ -1534,28 +1684,30 @@
           (codeIn != null && codeIn !== "" ? codeIn : "—") +
           "»). Список типов из API не применён — PARAMETER_TYPE_OPTIONS на вкладке «Создание».",
       );
-      cachedAllowedParameterTypes = null;
-      fillParameterTypeSelect(cType);
+      log(tag + " Шаг 2/2 без дополнения: продолжаем со списком из шага 1.");
       return;
     }
     const merged = Array.from(new Set(typesFromMeta)).sort(function (a, b) {
       return a.localeCompare(b, "ru");
     });
     if (merged.length === 0) {
-      cachedAllowedParameterTypes = null;
       log(
         tag +
           " Запись «" +
           PARAMETER_TYPES_META_CODE +
           "» найдена, но массив types пуст — оставлены PARAMETER_TYPE_OPTIONS на вкладке «Создание».",
       );
-      fillParameterTypeSelect(cType);
+      log(tag + " Шаг 2/2 без дополнения: используются значения шага 1.");
     } else {
       cachedAllowedParameterTypes = merged;
-      fillParameterTypeSelectWithApiValues(cType, merged);
       if (verbose) {
         log(tag + " Готово: уникальных parameterType из «" + PARAMETER_TYPES_META_CODE + ".types»: " + merged.length + ".");
       }
+    }
+    if (cachedAllowedParameterTypes !== null && cachedAllowedParameterTypes.length > 0) {
+      fillParameterTypeSelectWithApiValues(cType, cachedAllowedParameterTypes);
+    } else {
+      fillParameterTypeSelect(cType);
     }
   }
 
@@ -1624,13 +1776,17 @@
         return false;
       }
       await fetchParameterTypesDetailAndApply(origin, true, "[Редактирование]");
-      if (
-        cachedAllowedParameterTypes !== null &&
-        cachedAllowedParameterTypes.length > 0 &&
-        cachedActualParameterCodes !== null
-      ) {
+      if (cachedActualParameterCodes !== null) {
         fillParameterCodeSelectFromActualCodes(uCode, uCodeList, cachedActualParameterCodes);
-        fillParameterTypeSelectWithApiValues(uType, cachedAllowedParameterTypes, true);
+        if (cachedAllowedParameterTypes !== null && cachedAllowedParameterTypes.length > 0) {
+          fillParameterTypeSelectWithApiValues(uType, cachedAllowedParameterTypes, true);
+        } else {
+          const fallbackTypes = extractParameterTypesFromListData({ body: { parameters: Array.from(cachedActualByObjectId.values()) } });
+          fillParameterTypeSelectWithApiValues(uType, fallbackTypes, true);
+        }
+        const bbs = cachedAllowedBusinessBlocks || [];
+        fillBusinessBlockSelect(cBusinessBlock, bbs);
+        fillBusinessBlockSelect(uBusinessBlock, bbs);
         editTabAllowedListsLoaded = true;
         tryFillByParameterCodeInput();
         tryFillByObjectIdInput();
@@ -1640,7 +1796,9 @@
             " шт., objectId (сохранено для проверок) — " +
             (cachedActualObjectIds ? cachedActualObjectIds.size : 0) +
             " шт., parameterType — " +
-            cachedAllowedParameterTypes.length +
+            (cachedAllowedParameterTypes ? cachedAllowedParameterTypes.length : 0) +
+            " шт., businessBlock — " +
+            bbs.length +
             " шт.",
         );
         return true;
@@ -1853,6 +2011,7 @@
       parameterType: cType.value.trim(),
       parameterName: cName.value.trim(),
       parameterValue: cValue.value,
+      businessBlock: cBusinessBlock.value.trim(),
     };
     setBusy(true);
     try {
@@ -1888,6 +2047,8 @@
       payload.parameterType +
       "\nparameterName: " +
       payload.parameterName +
+      "\nbusinessBlock: " +
+      (payload.businessBlock || "—") +
       "\nparameterValue (фрагмент): " +
       String(payload.parameterValue).slice(0, 120) +
       (String(payload.parameterValue).length > 120 ? "…" : "");
@@ -2010,6 +2171,7 @@
           parameterType: filtered[i].parameterType,
           parameterName: filtered[i].parameterName,
           parameterValue: filtered[i].parameterValue,
+          businessBlock: String(filtered[i].businessBlock == null ? "" : filtered[i].businessBlock).trim(),
         };
         const res = await postJson(origin, PARAM_CREATE_PATH, payload);
         if (!res.ok) {
@@ -2047,6 +2209,7 @@
       parameterType: uType.value.trim(),
       parameterName: uName.value.trim(),
       parameterValue: uValue.value,
+      businessBlock: uBusinessBlock.value.trim(),
       objectId,
       version: uVersion.value.trim() !== "" ? Number(uVersion.value.trim()) : 0,
       status: uStatus.value.trim(),
@@ -2148,9 +2311,9 @@
       }
       const changedEditable = diffEditableUpdateFields(payloadBase, currentRow);
       if (changedEditable.length === 0) {
-        uVersionInfo.textContent = "Изменений нет: parameterType/parameterName/parameterValue совпадают с текущими.";
+        uVersionInfo.textContent = "Изменений нет: parameterType/businessBlock/parameterName/parameterValue/status совпадают с текущими.";
         log(
-          "[Редактирование] Изменений по полям parameterType/parameterName/parameterValue для objectId «" +
+          "[Редактирование] Изменений по полям parameterType/businessBlock/parameterName/parameterValue/status для objectId «" +
             objectId +
             "» не найдено — param-update не отправляется.",
         );
@@ -2171,30 +2334,41 @@
         "), изменены поля: " +
         changedEditable.join(", ") +
         ".";
-      const summary =
-        "Обновить параметр (param-update)?\n\nobjectId: " +
-        objectId +
-        "\nversion: " +
-        ver +
-        "\nparameterCode: " +
-        payloadBase.parameterCode +
-        "\nparameterType: " +
-        payloadBase.parameterType +
-        "\nstatus: " +
-        payloadBase.status;
+      const summary = buildUpdateConfirmText(
+        { objectId, parameterCode: payloadBase.parameterCode, version: ver, status: payloadBase.status },
+        {
+          parameterType: currentRow.parameterType,
+          businessBlock: currentRow.businessBlock,
+          parameterName: currentRow.parameterName,
+          parameterValue: currentRow.parameterValue,
+          status: currentRow.status,
+        },
+        {
+          parameterType: payloadBase.parameterType,
+          businessBlock: payloadBase.businessBlock,
+          parameterName: payloadBase.parameterName,
+          parameterValue: payloadBase.parameterValue,
+          status: payloadBase.status,
+        },
+        changedEditable,
+      );
       if (!window.confirm(summary)) {
         log("Обновление отменено пользователем.");
         return;
       }
-      const body = {
+      let body = {
         parameterCode: payloadBase.parameterCode,
         parameterType: payloadBase.parameterType,
         parameterName: payloadBase.parameterName,
         parameterValue: payloadBase.parameterValue,
+        businessBlock: payloadBase.businessBlock,
         objectId: payloadBase.objectId,
         version: ver,
         status: payloadBase.status,
       };
+      if (changedEditable.indexOf("status") >= 0) {
+        body = { objectId: payloadBase.objectId, status: payloadBase.status, version: ver };
+      }
       const res = await postJson(origin, PARAM_UPDATE_PATH, body);
       if (!res.ok) {
         log("Ошибка param-update: HTTP " + res.status + " — " + res.text.slice(0, 800));
@@ -2250,7 +2424,7 @@
         String(first.objectId) +
         "\nparameterCode: " +
         String(first.parameterCode) +
-        "\n\nОК — выполнить для первого, Отмена — отменить весь пакет.\n(version из файла не используется — подставится из API.)";
+        "\n\nОК — выполнить для первого, Отмена — отменить весь пакет.\n(version из файла должен совпасть с API.)";
       if (!window.confirm(firstMsg)) {
         log("Пакетное обновление отменено на первом шаге.");
         return;
@@ -2344,6 +2518,7 @@
           objectId,
           parameterCode: String(valid[i].parameterCode).trim(),
           parameterType: String(valid[i].parameterType).trim(),
+          businessBlock: String(valid[i].businessBlock == null ? "" : valid[i].businessBlock).trim(),
           parameterName: String(valid[i].parameterName).trim(),
           parameterValue: String(valid[i].parameterValue == null ? "" : valid[i].parameterValue),
           status: String(valid[i].status).trim(),
@@ -2367,7 +2542,7 @@
               (i + 1) +
               " (" +
               nextRow.parameterCode +
-              "): изменений по полям parameterType/parameterName/parameterValue нет — пропуск.",
+              "): изменений по полям parameterType/businessBlock/parameterName/parameterValue/status нет — пропуск.",
           );
           continue;
         }
@@ -2393,15 +2568,19 @@
           );
           continue;
         }
-        const body = {
+        let body = {
           parameterCode: nextRow.parameterCode,
           parameterType: nextRow.parameterType,
           parameterName: nextRow.parameterName,
           parameterValue: nextRow.parameterValue,
+          businessBlock: nextRow.businessBlock,
           objectId,
           version: ver,
           status: nextRow.status,
         };
+        if (changedEditable.indexOf("status") >= 0) {
+          body = { objectId, status: nextRow.status, version: ver };
+        }
         const res = await postJson(origin, PARAM_UPDATE_PATH, body);
         if (!res.ok) {
           log("Ошибка param-update #" + (i + 1) + ": HTTP " + res.status + " — " + res.text.slice(0, 500));

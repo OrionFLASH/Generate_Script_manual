@@ -5,8 +5,8 @@
 Скрипт запускается в консоли DevTools на странице приложения (с активной сессией) и открывает **одну панель** с **тремя вкладками**:
 
 1. **Выгрузка** — двухшаговая выгрузка по выбранному статусу (`ACTUAL` / `ARCHIVE`), сохранение JSON на диск.
-2. **Создание** — POST `…/proxy/v1/parameters/param-create` с телом `parameterCode`, `parameterType`, `parameterName`, `parameterValue` (форма или файл).
-3. **Редактирование** — POST `…/proxy/v1/parameters/param-update` с теми же полями плюс `objectId`, `version` (берётся из API по `objectId`), `status` (форма или файл).
+2. **Создание** — POST `…/proxy/v1/parameters/param-create` с телом `parameterCode`, `parameterType`, `parameterName`, `parameterValue` и опциональным `businessBlock` (форма или файл).
+3. **Редактирование** — POST `…/proxy/v1/parameters/param-update` с теми же полями плюс `objectId`, `version`, `status`; для изменений статуса используется сокращённый payload `{ objectId, status, version }` (форма или файл).
 
 **Стенд** (`PROM` / `PSI`) и **контур** (`ALPHA` / `SIGMA`) выбираются **один раз над вкладками** и используются для всех операций.
 
@@ -89,7 +89,7 @@
 | Шаг | Запрос | Тело | Результат в скрипте |
 |-----|--------|------|---------------------|
 | 1 | `POST …/parameters` | `{ "status": "ACTUAL" }` | Заполнение **`cachedActualParameterCodes`** (все `parameterCode` из `body.parameters`) |
-| 2 | `POST …/parameters` | `{ "objectIds": ["745250143248942718"] }` | Константа **`PARAMETER_TYPES_DETAIL_OBJECT_ID`**; из ответа ищется запись с **`parameterCode` = `parameterTypes`** (**`PARAMETER_TYPES_META_CODE`**); из **`parameterValue.types`** читаются допустимые типы → **`cachedAllowedParameterTypes`** и обновление **только селекта создания** `cType` |
+| 2 | `POST …/parameters` | `{ "objectIds": ["<metaId>"] }` | `<metaId>` выбирается по стенду: `PROM -> 745250143248942718`, `PSI -> 737634462490874360`. Из ответа ищется запись с **`parameterCode` = `parameterTypes`** (**`PARAMETER_TYPES_META_CODE`**); из **`parameterValue.types`** читаются допустимые типы → **`cachedAllowedParameterTypes`** и обновление **только селекта создания** `cType` |
 
 **Журнал:** префикс **`[Создание]`**, шаги «1/2» и «2/2».
 
@@ -108,11 +108,12 @@
 2. Если кэша кодов нет — выполняется **`POST { "status": "ACTUAL" }`** и заполняется **`cachedActualParameterCodes`**.
 3. Если **`cachedAllowedParameterTypes`** уже непустой — **детализация по `PARAMETER_TYPES_DETAIL_OBJECT_ID` не повторяется**.
 4. Если типов из API ещё нет — выполняется **один** `POST { "objectIds": ["…"] }` как в шаге 2 п. 6.2, обновляется **`cachedAllowedParameterTypes`** и селект **`cType`**.
+5. Если шаг 2 неуспешен или в нём нет ожидаемого `parameterTypes`, операция не останавливается: используются данные шага 1 (ACTUAL), а дополнение типами из шага 2 пропускается.
 
 ### 6.4. Кнопка «Создать параметр (param-create)» — порядок действий
 
 1. **`ensureCachesForCreateOperation()`** — см. п. 6.3 (при ошибке ACTUAL создание не продолжается).
-2. Проверка полей и **`parameterType`** через **`validateCreatePayload`** (список допустимых: **`getParameterTypeAllowedValues()`** — после загрузки API из кэша, иначе из **`PARAMETER_TYPE_OPTIONS`**).
+2. Проверка полей и **`parameterType`** через **`validateCreatePayload`** (список допустимых: **`getParameterTypeAllowedValues()`** — после загрузки API из кэша, иначе из **`PARAMETER_TYPE_OPTIONS`**). Для `businessBlock` поле необязательное; если заполнено и кэш допустимых значений есть, выполняется проверка на принадлежность.
 3. Проверка дубликата: если **`parameterCode`** уже есть в **`cachedActualParameterCodes`** — сообщение в журнал, переход на вкладку «Редактирование», **`param-create` не отправляется**.
 4. Диалог подтверждения (код, тип, имя, фрагмент значения).
 5. **Отмена** — в журнал: создание отменено, **`param-create` не вызывался**.
@@ -142,9 +143,11 @@
 
 - **`parameterCode`** — поле ввода с поиском (`input` + `datalist`), до загрузки справочников показывает заглушку в `placeholder`.
 - **`parameterType`** — `select` с заглушкой до загрузки.
+- **`businessBlock`** — отдельный необязательный `select` (заполняется из ACTUAL после предварительной загрузки).
 - **`objectId`**, **`parameterName`**, **`parameterValue`**, **`status`** — ввод вручную (или из файла для пакета).
 - Рядом со `status` есть отдельное поле **`version`** (небольшое поле для информации и ручной корректировки перед отправкой).
 - При выборе `parameterCode` (поиск) или при вводе/выборе `objectId` выполняется автоподстановка связанных полей (`objectId`, `parameterCode`, `parameterType`, `status`, `version`) из кэша.
+- При выборе `parameterType` список подсказок для `parameterCode` фильтруется: остаются только коды с выбранным типом (из кэша ACTUAL).
 - Если введённый `parameterCode` или `objectId` отсутствует в кэше ACTUAL, связанные поля очищаются (чтобы не оставались значения от предыдущей найденной записи).
 
 **Что даёт первый шаг загрузки (тот же ответ `POST { "status": "ACTUAL" }`, что и на вкладке «Создание» при шаге 6.2):**
@@ -153,8 +156,8 @@
 - множество **`objectId`** из **`body.parameters`** → кэш **`cachedActualObjectIds`** — **сохраняется для проверок** перед `param-update`: не нужно повторно запрашивать весь список ACTUAL при каждом нажатии «Обновить», если кэш актуален;
 - допустимые **`parameterType`** приходят со **второго** запроса (детализация «parameterTypes») → **`cachedAllowedParameterTypes`** и селект `parameterType`.
 - дополнительно формируются карты соответствий:
-  - **`cachedActualByCode`**: `parameterCode -> { objectId, parameterType, status, version }`;
-  - **`cachedActualByObjectId`**: `objectId -> { parameterCode, parameterType, status, version }`.
+  - **`cachedActualByCode`**: `parameterCode -> { objectId, parameterType, businessBlock, status, version }`;
+  - **`cachedActualByObjectId`**: `objectId -> { parameterCode, parameterType, businessBlock, status, version }`.
 
 Эти карты используются для автоподстановки формы и для валидации связки полей (`objectId` и `parameterCode` должны указывать на одну и ту же запись).
 После автоподстановки из кэша скрипт выполняет дополнительный запрос детализации по `objectId`, чтобы предзаполнить **`parameterName`** и **`parameterValue`** (а также уточнить остальные поля, если они отличаются).
@@ -171,7 +174,7 @@
 | Шаг | Запрос | Тело |
 |-----|--------|------|
 | 1 | `POST …/parameters` | `{ "status": "ACTUAL" }` → **`cachedActualParameterCodes`**, **`cachedActualObjectIds`** |
-| 2 | `POST …/parameters` | `{ "objectIds": ["745250143248942718"] }` → **`cachedAllowedParameterTypes`** |
+| 2 | `POST …/parameters` | `{ "objectIds": ["<metaId>"] }` (`PROM -> 745250143248942718`, `PSI -> 737634462490874360`) → дополнение **`cachedAllowedParameterTypes`** |
 
 **Журнал:** префикс **`[Редактирование]`** (в т.ч. число **objectId** в кэше на шаге 1).
 
@@ -216,11 +219,12 @@
    - если в форме `version` заполнен вручную, он обязан быть числом `>= 0` и **совпадать** с `version` из API;
    - при несовпадении отправка блокируется (комбинация `objectId + parameterCode + version` считается несуществующей).
 8. Проверка «есть что обновлять» выполняется только по редактируемым полям:
-   `parameterType`, `parameterName`, `parameterValue`.
+   `parameterType`, `businessBlock`, `parameterName`, `parameterValue`, `status`.
    Если ни одно из этих полей не отличается от текущих данных по `objectId`, **`param-update` не отправляется**.
-9. Диалог подтверждения (в т.ч. `version`).
-10. **`POST …/param-update`** с телом:
-   `{ "parameterCode", "parameterType", "parameterName", "parameterValue", "objectId", "version", "status" }`.
+9. Диалог подтверждения показывает таблицу **«поле / было / стало»** только для изменённых полей.
+10. Формирование payload:
+   - если меняется `status` (в т.ч. вместе с другими полями), отправляется сокращённое тело `{ "objectId", "status", "version" }`;
+   - иначе — полное `{ "parameterCode", "parameterType", "parameterName", "parameterValue", "businessBlock", "objectId", "version", "status" }`.
 
 **Отмена** в диалоге — без отправки `param-update`.
 
@@ -237,10 +241,11 @@
    - проверка связки `objectId <-> parameterCode` по картам соответствий;
    - детализация по `objectId`: **`POST …/parameters`** `{ "objectIds": [ "<objectId>" ] }`;
    - подтверждение существующей связки `objectId + parameterCode` по детализации API;
-   - сравнение только редактируемых полей (`parameterType`, `parameterName`, `parameterValue`); если отличий нет — запись пропускается;
+   - сравнение только редактируемых полей (`parameterType`, `businessBlock`, `parameterName`, `parameterValue`, `status`); если отличий нет — запись пропускается;
    - проверка `version` из файла: число `>= 0` и строгое совпадение с `version` из API (иначе запись пропускается);
    - `version` в тело `param-update` берётся из детализации API (проверенное совпадение с версией файла обязательно);
-   - **`POST …/param-update`** (`version` из API, не из файла).
+   - если в изменениях участвует `status` — тело `{ objectId, status, version }`, иначе полное тело с `parameter*` и `businessBlock`;
+   - **`POST …/param-update`**.
 
 Пауза **`PARAM_BATCH_REQUEST_GAP_MS`** между пакетными **`param-update`**.
 
@@ -252,13 +257,13 @@
 |-----|------------|
 | `PARAMETER_TYPE_OPTIONS` | Справочник `{ value, label }` для `parameterType` на вкладке «Создание», пока нет API |
 | `PARAMETER_TYPES_META_CODE` | Код мета-параметра (`parameterTypes`) |
-| `PARAMETER_TYPES_DETAIL_OBJECT_ID` | Один `objectId` для детализации списка типов |
-| `cachedAllowedParameterTypes`, `cachedActualParameterCodes`, `cachedActualObjectIds` | Кэш типов из `parameterTypes.types`, кодов и **objectId** из одного ответа `POST { status: ACTUAL }` |
-| `cachedActualByCode`, `cachedActualByObjectId` | Карты соответствий `parameterCode <-> objectId` c `parameterType`, `status`, `version` для автоподстановки и сверок |
+| `getParameterTypesDetailObjectId` | Выбор `metaObjectId` по стенду (`PROM`/`PSI`) для шага детализации `parameterTypes` |
+| `cachedAllowedParameterTypes`, `cachedAllowedBusinessBlocks`, `cachedActualParameterCodes`, `cachedActualObjectIds` | Кэши типов/бизнес-блоков/кодов/**objectId** из ответов ACTUAL и детализации |
+| `cachedActualByCode`, `cachedActualByObjectId` | Карты соответствий `parameterCode <-> objectId` c `parameterType`, `businessBlock`, `status`, `version` для автоподстановки и сверок |
 | `editTabAllowedListsLoaded` | Флаг: на вкладке 3 выполнена загрузка справочников для селектов |
 | `ensureEditTabListsForUpdate` | Перед `param-update`: если кэш п. 7.1 не готов — выполнить поток п. 7.2 |
 | `getParameterTypeAllowedValues` | Список для проверки `parameterType` |
-| `fillParameterTypeSelect`, `fillParameterTypeSelectWithApiValues` | Заполнение селектов типов (на «Создание»; для правки — с опцией «пусто») |
+| `fillParameterTypeSelect`, `fillParameterTypeSelectWithApiValues`, `fillBusinessBlockSelect` | Заполнение селектов типов и `businessBlock` |
 | `fillParameterCodeSelectFromActualCodes`, `clearEditTabParameterSelects` | Поле поиска `parameterCode` (`datalist`) и очистка полей вкладки «Редактирование» |
 | `extractActualMappingsFromListData` | Построение карт соответствий по `parameterCode` и `objectId` из ответа ACTUAL |
 | `readFirstParameterRowFromDetail`, `fetchAndApplyDetailByObjectId`, `scheduleDetailFillByObjectId` | Детализация по `objectId` и автозаполнение `parameterName/parameterValue` и связанных полей |
@@ -276,7 +281,8 @@
 | `parseJsonObjectsFromFileText`, `parseJsonObjectsByBraceScan` | Разбор файла (объект / массив / строки / скобки с учётом строк), удаление висячих запятых перед `}`/`]`, расширенная диагностика места ошибки |
 | `validateCreatePayload` / `validateUpdatePayload` | Проверка записей |
 | `readVersionFromDetailResponse` | Чтение `version` из ответа по `objectIds` |
-| `diffEditableUpdateFields` | Сравнение только редактируемых полей `parameterType`/`parameterName`/`parameterValue` перед `param-update` |
+| `diffEditableUpdateFields` | Сравнение только редактируемых полей `parameterType`/`businessBlock`/`parameterName`/`parameterValue`/`status` перед `param-update` |
+| `buildUpdateConfirmText` | Формирование подтверждения «было/стало» по изменённым полям |
 | `isSuccessTrue` | Проверка `success === true` |
 | `downloadJson` | Сохранение результата выгрузки |
 
@@ -310,3 +316,4 @@
 | **3.5** | Перед `param-update` (форма и файл) добавлена проверка «есть ли реальные изменения» по `objectId`: сравнение всех полей обновления с текущим состоянием из детализации API. Если изменений нет, запрос `param-update` не отправляется. |
 | **3.6** | Уточнена валидация перед `param-update`: подтверждение существования комбинации `objectId + parameterCode + version` (версия из формы/файла должна совпадать с API), а также отдельная проверка, что изменяется хотя бы одно из полей `parameterType`/`parameterName`/`parameterValue`. |
 | **3.7** | Улучшен разбор JSON из файла: для блоков `{...}` добавлена нормализация висячих запятых перед закрывающими `}`/`]`, а сообщения об ошибке разбора стали подробными (номер блока, позиция, строка/колонка и фрагмент JSON). |
+| **3.8** | Реализованы пункты ToDo: стенд-зависимый `metaObjectId` для шага `parameterTypes`; fallback на данные шага 1 при ошибке шага 2; поле `businessBlock` (форма/файл/кэш/валидации); фильтрация `parameterCode` по выбранному `parameterType`; проверка изменений включает `status`; подтверждение обновления в формате «было/стало»; для изменений статуса отправляется сокращённый payload `{ objectId, status, version }`. |

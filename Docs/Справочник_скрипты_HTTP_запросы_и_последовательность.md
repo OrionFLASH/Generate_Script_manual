@@ -114,11 +114,11 @@
 
 | Метод | Путь | Payload |
 |--------|------|---------|
-| **POST** | `/bo/rmkib.gamification/proxy/v1/parameters/param-create` | `{ "parameterCode", "parameterType", "parameterName", "parameterValue" }` — все строки из формы или из файла |
+| **POST** | `/bo/rmkib.gamification/proxy/v1/parameters/param-create` | `{ "parameterCode", "parameterType", "parameterName", "parameterValue", "businessBlock?" }` — `businessBlock` опционален |
 
 **Последовательность:** перед формой/файлом — **`ensureCachesForCreateOperation()`**: при необходимости один раз `POST` списка `ACTUAL` (кэш **`parameterCode`**) и при отсутствии типов из API — детализация **`parameterTypes`** (кэш допустимых типов, обновление селекта на вкладке «Создание»). Валидация → при необходимости проверка, что **`parameterCode`** ещё не в ACTUAL (иначе сообщение и **без** `param-create`) → подтверждение → **`POST …/param-create`**. Из файла: тот же разбор, что в документе по скрипту (в т.ч. блоки `{...}`); при таком разборе поддерживается автоматическое удаление висячих запятых перед `}`/`]`, а при ошибке в журнал выводится расширенная диагностика (блок, позиция, строка/колонка, фрагмент). Пауза **`PARAM_BATCH_REQUEST_GAP_MS`** между запросами, дубли по коду отфильтровываются. Успех: **`success === true`**.
 
-Дополнительно по кнопке **⬇** на вкладке «Создание»: **всегда** `POST` списка `ACTUAL` и **один** `POST` детализации с фиксированным **`objectId`** мета-параметра — **`parameterTypes.types`** → селект **`parameterType`** только на вкладке 2 (без `param-create`).
+Дополнительно по кнопке **⬇** на вкладке «Создание»: **всегда** `POST` списка `ACTUAL` и **один** `POST` детализации мета-параметра `parameterTypes` (стенд-зависимый `objectId`: `PROM -> 745250143248942718`, `PSI -> 737634462490874360`) → селект **`parameterType`** только на вкладке 2 (без `param-create`). Если шаг детализации не дал данные, поток не останавливается: остаются значения шага ACTUAL.
 
 ### 4.3. Вкладка «Редактирование» (`param-update`)
 
@@ -127,9 +127,9 @@
 | (подготовка) | **POST** | `/bo/rmkib.gamification/proxy/v1/parameters` | `{ "status": "ACTUAL" }` — при отсутствии кэша или по кнопке ⬇ на вкладке 3: кэши **`parameterCode`**, **`objectId`**, типы из **`parameterTypes`** |
 | (подготовка) | **POST** | тот же | `{ "objectIds": [ "<metaObjectId>" ] }` — только детализация справочника типов (как на вкладке 2) |
 | B | **POST** | тот же | `{ "objectIds": [ "<objectId>" ] }` — получение актуального **`version`** для выбранного параметра |
-| C | **POST** | `/bo/rmkib.gamification/proxy/v1/parameters/param-update` | `{ "parameterCode", "parameterType", "parameterName", "parameterValue", "objectId", "version", "status" }` — **`version`** из шага B |
+| C | **POST** | `/bo/rmkib.gamification/proxy/v1/parameters/param-update` | Базово `{ "parameterCode", "parameterType", "parameterName", "parameterValue", "businessBlock", "objectId", "version", "status" }`; при изменении `status` — сокращённо `{ "objectId", "status", "version" }` |
 
-**Последовательность:** при необходимости автоматически тот же поток, что и кнопка ⬇ вкладки 3 (**`ensureEditTabListsForUpdate`**) → проверки: **`objectId`** ∈ сохранённому множеству из шага ACTUAL, **`parameterCode`** ∈ кэшу кодов (иначе — указание создавать на вкладке 2) + сверка связки `objectId <-> parameterCode` по картам кэша → детализация B → подтверждение существующей комбинации `objectId + parameterCode` по ответу API → проверка `version` (если введена в форме, обязана совпасть с API) → сравнение только редактируемых полей `parameterType/parameterName/parameterValue` (если отличий нет, `param-update` не отправляется) → подтверждение → шаг C.  
+**Последовательность:** при необходимости автоматически тот же поток, что и кнопка ⬇ вкладки 3 (**`ensureEditTabListsForUpdate`**) → проверки: **`objectId`** ∈ сохранённому множеству из шага ACTUAL, **`parameterCode`** ∈ кэшу кодов (иначе — указание создавать на вкладке 2) + сверка связки `objectId <-> parameterCode` по картам кэша → детализация B → подтверждение существующей комбинации `objectId + parameterCode` по ответу API → проверка `version` (если введена в форме/файле, обязана совпасть с API) → сравнение редактируемых полей `parameterType/businessBlock/parameterName/parameterValue/status` (если отличий нет, `param-update` не отправляется) → подтверждение с таблицей «было/стало» → шаг C.  
 Для `parameterCode` в UI доступен поиск по части текста (`input + datalist`). При выборе кода или вводе `objectId` сначала автоподставляются `objectId/parameterCode`, `parameterType`, `status`, `version` из кэша 7.2, затем выполняется детализация **`POST { "objectIds": [ "<id>" ] }`** для предзаполнения `parameterName` и `parameterValue` (и уточнения сопутствующих полей).  
 Если введённый `parameterCode` или `objectId` не найден в кэше ACTUAL, связанные поля редактирования очищаются перед дальнейшим вводом.
 **Из файла:** тот же разбор, что для создания; для **каждой** записи — проверки по кэшу и сверка связки, затем B и C (без повторного запроса списка ACTUAL на каждую строку), пауза между **`param-update`**.
@@ -191,3 +191,4 @@
 | **1.6** | `Parameters_Actual_Export`: перед `param-update` добавлено сравнение «новые поля vs текущее состояние по objectId»; при отсутствии изменений запрос не отправляется (форма и файл). |
 | **1.7** | `Parameters_Actual_Export`: перед `param-update` подтверждается существующая комбинация `objectId + parameterCode + version`; изменения обязательны хотя бы в одном из `parameterType/parameterName/parameterValue` (форма и файл). |
 | **1.8** | `Parameters_Actual_Export`: в разборе JSON-файлов добавлена нормализация висячих запятых перед `}`/`]` для блоков `{...}` и расширенная диагностика ошибок разбора (номер блока, позиция, строка/колонка, фрагмент). |
+| **1.9** | `Parameters_Actual_Export`: добавлены `businessBlock` (форма/файл/валидация/кэши), фильтрация `parameterCode` по выбранному `parameterType`, fallback шага 2 на данные шага 1, стенд-зависимый `metaObjectId` (`PROM/PSI`), учёт `status` в проверке изменений и сокращённый payload `{ objectId, status, version }` при изменении статуса. |
