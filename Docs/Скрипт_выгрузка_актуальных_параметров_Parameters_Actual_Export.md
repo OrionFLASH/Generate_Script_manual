@@ -143,6 +143,7 @@
 - **`parameterType`** — `select` с заглушкой до загрузки.
 - **`objectId`**, **`parameterName`**, **`parameterValue`**, **`status`** — ввод вручную (или из файла для пакета).
 - Рядом со `status` есть отдельное поле **`version`** (небольшое поле для информации и ручной корректировки перед отправкой).
+- При выборе `parameterCode` (поиск) или при вводе/выборе `objectId` выполняется автоподстановка связанных полей (`objectId`, `parameterCode`, `parameterType`, `status`, `version`) из кэша.
 
 **Что даёт первый шаг загрузки (тот же ответ `POST { "status": "ACTUAL" }`, что и на вкладке «Создание» при шаге 6.2):**
 
@@ -154,6 +155,7 @@
   - **`cachedActualByObjectId`**: `objectId -> { parameterCode, parameterType, status, version }`.
 
 Эти карты используются для автоподстановки формы и для валидации связки полей (`objectId` и `parameterCode` должны указывать на одну и ту же запись).
+После автоподстановки из кэша скрипт выполняет дополнительный запрос детализации по `objectId`, чтобы предзаполнить **`parameterName`** и **`parameterValue`** (а также уточнить остальные поля, если они отличаются).
 
 **Допустимые значения для полей формы** считаются полученными после успешного выполнения **п. 7.2** (ниже): флаг **`editTabAllowedListsLoaded === true`** и непустые кэши кодов, **objectId** и типов.
 
@@ -176,6 +178,12 @@
 - `select` для **`parameterType`**;
 - карты соответствий по коду и по `objectId`;
 - флаг **`editTabAllowedListsLoaded`**.
+
+Дальше при выборе `parameterCode` или вводе `objectId` запускается:
+
+- **`POST …/parameters`** с `{ "objectIds": [ "<objectId>" ] }`,
+- из первой записи `body.parameters` берутся и подставляются:
+  `parameterName`, `parameterValue`, `parameterType`, `status`, `version` (и связанный `objectId`/`parameterCode`).
 
 **Побочный эффект:** обновляется селект **`parameterType` на вкладке «Создание»** (`cType`).
 
@@ -236,6 +244,8 @@
 | `getParameterTypeAllowedValues` | Список для проверки `parameterType` |
 | `fillParameterTypeSelect`, `fillParameterTypeSelectWithApiValues` | Заполнение селектов типов (на «Создание»; для правки — с опцией «пусто») |
 | `fillParameterCodeSelectFromActualCodes`, `clearEditTabParameterSelects` | Поле поиска `parameterCode` (`datalist`) и очистка полей вкладки «Редактирование» |
+| `extractActualMappingsFromListData` | Построение карт соответствий по `parameterCode` и `objectId` из ответа ACTUAL |
+| `readFirstParameterRowFromDetail`, `fetchAndApplyDetailByObjectId`, `scheduleDetailFillByObjectId` | Детализация по `objectId` и автозаполнение `parameterName/parameterValue` и связанных полей |
 | `fetchActualListAndCache`, `fetchParameterTypesDetailAndApply` | POST ACTUAL и детализация типов (журнал: тег `[Создание]` или `[Редактирование]`) |
 | `ensureCachesForCreateOperation` | Условная подготовка кэшей перед созданием формы/файла |
 | `refreshParameterTypesFromApi` | Кнопка ⬇ вкладки 2: всегда ACTUAL + детализация |
@@ -277,3 +287,4 @@
 | **3.0** | Подробно задокументированы порядок запросов по каждой кнопке; **`ensureCachesForCreateOperation`** перед созданием; разделение селектов вкладок 2 и 3; вкладка «Редактирование»: отдельная кнопка ⬇, селекты `parameterCode`/`parameterType` из кэша, флаг **`editTabAllowedListsLoaded`** до **`param-update`**; разбор файла со скобками и строками; таблица функций обновлена. |
 | **3.1** | Кэш **`cachedActualObjectIds`** из первого запроса ACTUAL; проверки **`objectId`** и **`parameterCode`** по сохранённым множествам; при отсутствии кода — указание создавать на вкладке 2; автозагрузка п. 7.2 при «Обновить» / файл; пакетное обновление без повторного POST списка ACTUAL на каждую строку; раздел 7 переписан. |
 | **3.2** | Вкладка «Редактирование»: поиск по `parameterCode` через ввод части текста (`input + datalist`), карты соответствий `parameterCode/objectId` с `parameterType/status/version`, автоподстановка полей при выборе кода или вводе `objectId`, ручное поле `version` рядом со `status`, приоритет источников `version` (поле → кэш 7.2 → детализация API), сверка связки `objectId <-> parameterCode` для формы и файла. |
+| **3.3** | После выбора `parameterCode` или `objectId` в редактировании автоматически выполняется детализация по `objectId` и предзаполняются `parameterName` и `parameterValue` (а также уточняются `parameterType`, `status`, `version`). Описан точный порядок этого запроса и источники данных для автоподстановки. |

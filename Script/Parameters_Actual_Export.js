@@ -1063,12 +1063,99 @@
     }
   }
 
+  /**
+   * Читает первую запись details-ответа по objectId для автоподстановки полей формы.
+   * @param {unknown} detailData
+   * @returns {{ objectId: string; parameterCode: string; parameterType: string; parameterName: string; parameterValue: string; status: string; version: number | null } | null}
+   */
+  function readFirstParameterRowFromDetail(detailData) {
+    const body = detailData && typeof detailData === "object" ? /** @type {Record<string, unknown>} */ (detailData).body : null;
+    const params = body && Array.isArray(body.parameters) ? /** @type {unknown[]} */ (body.parameters) : [];
+    const first = params[0];
+    if (!first || typeof first !== "object") return null;
+    const rec = /** @type {Record<string, unknown>} */ (first);
+    const objectId = typeof rec.objectId === "string" ? rec.objectId.trim() : "";
+    const parameterCode = typeof rec.parameterCode === "string" ? rec.parameterCode.trim() : "";
+    const parameterType = typeof rec.parameterType === "string" ? rec.parameterType.trim() : "";
+    const parameterName = typeof rec.parameterName === "string" ? rec.parameterName : "";
+    const status = typeof rec.status === "string" ? rec.status.trim() : "";
+    let parameterValue = "";
+    if (typeof rec.parameterValue === "string") {
+      parameterValue = rec.parameterValue;
+    } else if (rec.parameterValue !== undefined && rec.parameterValue !== null) {
+      try {
+        parameterValue = JSON.stringify(rec.parameterValue, null, 2);
+      } catch {
+        parameterValue = String(rec.parameterValue);
+      }
+    }
+    const version = readVersionFromDetailResponse(detailData);
+    return { objectId, parameterCode, parameterType, parameterName, parameterValue, status, version };
+  }
+
+  /** @type {number | null} */
+  let editAutofillTimer = null;
+  let editAutofillRequestSeq = 0;
+
+  /**
+   * Запрашивает детализацию по objectId и подставляет parameterName/parameterValue и связанные поля.
+   * @param {string} objectId
+   * @param {string} reason
+   * @returns {Promise<void>}
+   */
+  async function fetchAndApplyDetailByObjectId(objectId, reason) {
+    const id = String(objectId || "").trim();
+    if (!id) return;
+    const reqSeq = ++editAutofillRequestSeq;
+    try {
+      const origin = getOrigin(standSel.value, contourSel.value);
+      const det = await postParameters(origin, { objectIds: [id] });
+      if (reqSeq !== editAutofillRequestSeq) return;
+      if (!det.ok) {
+        log("[Редактирование] Автозаполнение по objectId=" + id + " (" + reason + "): HTTP " + det.status + ".");
+        return;
+      }
+      const row = readFirstParameterRowFromDetail(det.data);
+      if (!row) return;
+      if (row.objectId) uObjectId.value = row.objectId;
+      if (row.parameterCode) uCode.value = row.parameterCode;
+      if (row.parameterType) uType.value = row.parameterType;
+      if (row.status) uStatus.value = row.status;
+      uName.value = row.parameterName;
+      uValue.value = row.parameterValue;
+      if (row.version !== null && Number.isFinite(row.version)) {
+        uVersion.value = String(row.version);
+        uVersionInfo.textContent = "Версия из детализации по objectId: " + String(row.version) + " (можно изменить вручную).";
+      }
+    } catch (e) {
+      log("[Редактирование] Ошибка автозаполнения по objectId: " + (e && e.message ? e.message : String(e)));
+    }
+  }
+
+  /**
+   * Дебаунс автозапроса детализации, чтобы не спамить API на каждый символ.
+   * @param {string} objectId
+   * @param {string} reason
+   */
+  function scheduleDetailFillByObjectId(objectId, reason) {
+    const id = String(objectId || "").trim();
+    if (!id) return;
+    if (editAutofillTimer !== null) {
+      clearTimeout(editAutofillTimer);
+    }
+    editAutofillTimer = setTimeout(function () {
+      editAutofillTimer = null;
+      fetchAndApplyDetailByObjectId(id, reason);
+    }, 220);
+  }
+
   function tryFillByParameterCodeInput() {
     const code = uCode.value.trim();
     if (!code || cachedActualByCode.size === 0) return;
     const row = cachedActualByCode.get(code);
     if (!row) return;
     applyUpdateFormByActualMapping(row, "code");
+    scheduleDetailFillByObjectId(row.objectId, "выбор parameterCode");
   }
 
   function tryFillByObjectIdInput() {
@@ -1077,6 +1164,7 @@
     const row = cachedActualByObjectId.get(objectId);
     if (!row) return;
     applyUpdateFormByActualMapping(row, "objectId");
+    scheduleDetailFillByObjectId(objectId, "ввод objectId");
   }
 
   uCode.addEventListener("input", tryFillByParameterCodeInput);
@@ -1098,6 +1186,10 @@
     clearEditTabParameterSelects(uCode, uCodeList, uType);
     uVersion.value = "";
     uVersionInfo.textContent = "";
+    if (editAutofillTimer !== null) {
+      clearTimeout(editAutofillTimer);
+      editAutofillTimer = null;
+    }
     refreshEnvInfo();
   }
 
