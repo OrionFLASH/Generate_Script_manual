@@ -1147,6 +1147,27 @@
     return changed;
   }
 
+  /**
+   * Изменения только по редактируемым полям param-update.
+   * @param {{ parameterType: string; parameterName: string; parameterValue: string }} nextRow
+   * @param {{ parameterType: string; parameterName: string; parameterValue: string }} currentRow
+   * @returns {string[]}
+   */
+  function diffEditableUpdateFields(nextRow, currentRow) {
+    /** @type {string[]} */
+    const changed = [];
+    if (String(nextRow.parameterType || "").trim() !== String(currentRow.parameterType || "").trim()) {
+      changed.push("parameterType");
+    }
+    if (String(nextRow.parameterName || "").trim() !== String(currentRow.parameterName || "").trim()) {
+      changed.push("parameterName");
+    }
+    if (String(nextRow.parameterValue == null ? "" : nextRow.parameterValue) !== String(currentRow.parameterValue == null ? "" : currentRow.parameterValue)) {
+      changed.push("parameterValue");
+    }
+    return changed;
+  }
+
   /** @type {number | null} */
   let editAutofillTimer = null;
   let editAutofillRequestSeq = 0;
@@ -2016,10 +2037,14 @@
         log("Ошибка: не удалось прочитать текущие данные параметра по objectId.");
         return;
       }
-      const changed = diffUpdateFields(payloadBase, currentRow);
-      if (changed.length === 0) {
-        uVersionInfo.textContent = "Изменений нет: все поля совпадают с текущими значениями.";
-        log("[Редактирование] Изменений по objectId «" + objectId + "» не найдено — param-update не отправляется.");
+      if (currentRow.objectId !== objectId || currentRow.parameterCode !== payloadBase.parameterCode) {
+        log(
+          "Ошибка: комбинация objectId + parameterCode не подтверждена текущими данными API (objectId=" +
+            objectId +
+            ", parameterCode=" +
+            payloadBase.parameterCode +
+            ").",
+        );
         return;
       }
       const verFromApi = currentRow.version;
@@ -2027,15 +2052,53 @@
         log("Ошибка: не удалось прочитать version из ответа API по objectId.");
         return;
       }
+      const hasManualVersion = uVersion.value.trim() !== "";
+      if (hasManualVersion) {
+        const vnCheck = Number(uVersion.value.trim());
+        if (!Number.isFinite(vnCheck) || vnCheck < 0) {
+          log("Ошибка: version в форме заполнен некорректно.");
+          return;
+        }
+        if (vnCheck !== verFromApi) {
+          log(
+            "Ошибка: комбинация objectId + parameterCode + version не существует. Для objectId «" +
+              objectId +
+              "» и parameterCode «" +
+              payloadBase.parameterCode +
+              "» актуальная version из API = " +
+              String(verFromApi) +
+              ", в форме указано: " +
+              String(vnCheck) +
+              ".",
+          );
+          return;
+        }
+      }
+      const changedEditable = diffEditableUpdateFields(payloadBase, currentRow);
+      if (changedEditable.length === 0) {
+        uVersionInfo.textContent = "Изменений нет: parameterType/parameterName/parameterValue совпадают с текущими.";
+        log(
+          "[Редактирование] Изменений по полям parameterType/parameterName/parameterValue для objectId «" +
+            objectId +
+            "» не найдено — param-update не отправляется.",
+        );
+        return;
+      }
       let ver = verFromApi;
-      if (uVersion.value.trim() !== "") {
+      if (hasManualVersion) {
         const vn = Number(uVersion.value.trim());
         if (Number.isFinite(vn) && vn >= 0) ver = vn;
       } else {
         uVersion.value = String(verFromApi);
       }
       uVersionInfo.textContent =
-        "Версия для отправки: " + String(ver) + " (API=" + String(verFromApi) + "), изменены поля: " + changed.join(", ") + ".";
+        "Версия для отправки: " +
+        String(ver) +
+        " (API=" +
+        String(verFromApi) +
+        "), изменены поля: " +
+        changedEditable.join(", ") +
+        ".";
       const summary =
         "Обновить параметр (param-update)?\n\nobjectId: " +
         objectId +
@@ -2213,20 +2276,49 @@
           parameterValue: String(valid[i].parameterValue == null ? "" : valid[i].parameterValue),
           status: String(valid[i].status).trim(),
         };
-        const changed = diffUpdateFields(nextRow, currentRow);
-        if (changed.length === 0) {
+        if (currentRow.objectId !== objectId || currentRow.parameterCode !== nextRow.parameterCode) {
+          log(
+            "Ошибка записи #" +
+              (i + 1) +
+              ": комбинация objectId + parameterCode не подтверждена API (objectId=" +
+              objectId +
+              ", parameterCode=" +
+              nextRow.parameterCode +
+              ").",
+          );
+          continue;
+        }
+        const changedEditable = diffEditableUpdateFields(nextRow, currentRow);
+        if (changedEditable.length === 0) {
           log(
             "[Редактирование] Запись #" +
               (i + 1) +
               " (" +
               nextRow.parameterCode +
-              "): изменений нет относительно текущего состояния — пропуск.",
+              "): изменений по полям parameterType/parameterName/parameterValue нет — пропуск.",
           );
           continue;
         }
         const ver = currentRow.version;
         if (ver === null || !Number.isFinite(ver)) {
           log("Ошибка записи #" + (i + 1) + ": не удалось прочитать version из API.");
+          continue;
+        }
+        const fileVersion = Number(valid[i].version);
+        if (!Number.isFinite(fileVersion) || fileVersion < 0) {
+          log("Ошибка записи #" + (i + 1) + ": version в файле некорректен.");
+          continue;
+        }
+        if (fileVersion !== ver) {
+          log(
+            "Ошибка записи #" +
+              (i + 1) +
+              ": комбинация objectId + parameterCode + version не существует (файл=" +
+              String(fileVersion) +
+              ", API=" +
+              String(ver) +
+              ").",
+          );
           continue;
         }
         const body = {

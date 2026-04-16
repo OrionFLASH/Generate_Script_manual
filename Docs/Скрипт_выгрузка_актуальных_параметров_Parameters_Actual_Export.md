@@ -206,14 +206,19 @@
    - если для выбранного `objectId` в кэше найден **другой** `parameterCode` — ошибка, отправка блокируется;
    - если для выбранного `parameterCode` в кэше найден **другой** `objectId` — ошибка, отправка блокируется.
 5. Перед отправкой всегда выполняется детализация по `objectId`: **`POST …/parameters`** с **`{ "objectIds": [ "<objectId>" ] }`**.
-6. Из ответа детали берутся «текущие» поля и выполняется сравнение с новыми значениями:
-   `objectId`, `parameterCode`, `parameterType`, `parameterName`, `parameterValue`, `status`.
-   Если изменений нет — в журнале сообщение, **`param-update` не отправляется**.
-7. Определение `version` перед отправкой:
-   - базово из детализации API;
-   - если поле `version` в форме заполнено корректным числом >= 0 — используется введённое значение.
-8. Диалог подтверждения (в т.ч. `version`).
-9. **`POST …/param-update`** с телом:
+6. Из ответа детализации сначала подтверждается существование текущей связки:
+   - `objectId` из формы должен совпасть с `objectId` из ответа;
+   - `parameterCode` из формы должен совпасть с `parameterCode` из ответа.
+   При несовпадении отправка блокируется.
+7. Проверка `version`:
+   - из API читается текущая `version` по `objectId`;
+   - если в форме `version` заполнен вручную, он обязан быть числом `>= 0` и **совпадать** с `version` из API;
+   - при несовпадении отправка блокируется (комбинация `objectId + parameterCode + version` считается несуществующей).
+8. Проверка «есть что обновлять» выполняется только по редактируемым полям:
+   `parameterType`, `parameterName`, `parameterValue`.
+   Если ни одно из этих полей не отличается от текущих данных по `objectId`, **`param-update` не отправляется**.
+9. Диалог подтверждения (в т.ч. `version`).
+10. **`POST …/param-update`** с телом:
    `{ "parameterCode", "parameterType", "parameterName", "parameterValue", "objectId", "version", "status" }`.
 
 **Отмена** в диалоге — без отправки `param-update`.
@@ -229,8 +234,10 @@
    - проверка **`parameterCode`** ∈ **`cachedActualParameterCodes`**; если нет — в журнал: **создавать на вкладке «2. Создание»**, не редактировать;
    - проверка связки `objectId <-> parameterCode` по картам соответствий;
    - детализация по `objectId`: **`POST …/parameters`** `{ "objectIds": [ "<objectId>" ] }`;
-   - сравнение «новые поля vs текущие поля из API»; если изменений нет — запись пропускается;
-   - `version` берётся из детализации API;
+   - подтверждение существующей связки `objectId + parameterCode` по детализации API;
+   - сравнение только редактируемых полей (`parameterType`, `parameterName`, `parameterValue`); если отличий нет — запись пропускается;
+   - проверка `version` из файла: число `>= 0` и строгое совпадение с `version` из API (иначе запись пропускается);
+   - `version` в тело `param-update` берётся из детализации API (проверенное совпадение с версией файла обязательно);
    - **`POST …/param-update`** (`version` из API, не из файла).
 
 Пауза **`PARAM_BATCH_REQUEST_GAP_MS`** между пакетными **`param-update`**.
@@ -267,6 +274,7 @@
 | `parseJsonObjectsFromFileText`, `parseJsonObjectsByBraceScan` | Разбор файла (объект / массив / строки / скобки с учётом строк) |
 | `validateCreatePayload` / `validateUpdatePayload` | Проверка записей |
 | `readVersionFromDetailResponse` | Чтение `version` из ответа по `objectIds` |
+| `diffEditableUpdateFields` | Сравнение только редактируемых полей `parameterType`/`parameterName`/`parameterValue` перед `param-update` |
 | `isSuccessTrue` | Проверка `success === true` |
 | `downloadJson` | Сохранение результата выгрузки |
 
@@ -298,3 +306,4 @@
 | **3.3** | После выбора `parameterCode` или `objectId` в редактировании автоматически выполняется детализация по `objectId` и предзаполняются `parameterName` и `parameterValue` (а также уточняются `parameterType`, `status`, `version`). Описан точный порядок этого запроса и источники данных для автоподстановки. |
 | **3.4** | Для несуществующих `parameterCode`/`objectId` добавлена очистка связанных полей формы редактирования, чтобы не оставались значения от предыдущей найденной записи; уточнён порядок автоподстановки и поведение fallback. |
 | **3.5** | Перед `param-update` (форма и файл) добавлена проверка «есть ли реальные изменения» по `objectId`: сравнение всех полей обновления с текущим состоянием из детализации API. Если изменений нет, запрос `param-update` не отправляется. |
+| **3.6** | Уточнена валидация перед `param-update`: подтверждение существования комбинации `objectId + parameterCode + version` (версия из формы/файла должна совпадать с API), а также отдельная проверка, что изменяется хотя бы одно из полей `parameterType`/`parameterName`/`parameterValue`. |
