@@ -61,6 +61,9 @@ const PARAMETER_TYPE_OPTIONS = [
   const STAND_KEYS = ["PROM", "PSI", "IFT-SB", "IFT-GF"];
   const CONTOUR_KEYS = ["SIGMA", "ALPHA"];
   const DEFAULT_STATUS = "ACTUAL";
+  const PARAM_AUTO_ENV = detectParameterEnvFromLocation();
+  const DEFAULT_STAND = (PARAM_AUTO_ENV && PARAM_AUTO_ENV.stand) || "PROM";
+  const DEFAULT_CONTOUR = (PARAM_AUTO_ENV && PARAM_AUTO_ENV.contour) || "ALPHA";
 
   const PARAMETERS_PATH = "/bo/rmkib.gamification/proxy/v1/parameters";
   const PARAM_CREATE_PATH = "/bo/rmkib.gamification/proxy/v1/parameters/param-create";
@@ -240,6 +243,47 @@ const PARAMETER_TYPE_OPTIONS = [
   }
 
   /**
+   * Для вкладки «Создание»: оставляет все businessBlock по умолчанию и добавляет уникальные из API.
+   * @param {HTMLSelectElement} selectEl
+   * @param {string[]} values
+   */
+  function fillCreateBusinessBlockSelectWithDefaultsAndApi(selectEl, values) {
+    const prev = selectEl.value;
+    const byValue = new Map();
+    for (let i = 0; i < BUSINESS_BLOCK_OPTIONS.length; i++) {
+      const row = BUSINESS_BLOCK_OPTIONS[i];
+      const v = String(row && row.value != null ? row.value : "").trim();
+      if (!v) continue;
+      const lbl = String(row && row.label != null ? row.label : v).trim() || v;
+      byValue.set(v, lbl);
+    }
+    const extra = (Array.isArray(values) ? values : [])
+      .map(function (x) {
+        return String(x).trim();
+      })
+      .filter(Boolean)
+      .sort(function (a, b) {
+        return a.localeCompare(b, "ru");
+      });
+    for (let i = 0; i < extra.length; i++) {
+      const v = extra[i];
+      if (!byValue.has(v)) byValue.set(v, v);
+    }
+    selectEl.textContent = "";
+    const o0 = document.createElement("option");
+    o0.value = "";
+    o0.textContent = "— businessBlock (необязательно) —";
+    selectEl.appendChild(o0);
+    byValue.forEach(function (label, value) {
+      const o = document.createElement("option");
+      o.value = value;
+      o.textContent = label;
+      selectEl.appendChild(o);
+    });
+    if (prev && byValue.has(prev)) selectEl.value = prev;
+  }
+
+  /**
    * Заполняет select допустимыми businessBlock.
    * @param {HTMLSelectElement} selectEl
    * @param {string[] | null} values
@@ -269,17 +313,34 @@ const PARAMETER_TYPE_OPTIONS = [
    * @param {HTMLDataListElement} listEl
    * @param {Set<string>} codeSet
    */
-  function fillParameterCodeSelectFromActualCodes(inputEl, listEl, codeSet, selectedType) {
+  function fillParameterCodeSelectFromActualCodes(inputEl, listEl, codeSet, selectedType, selectedBusinessBlock) {
     const prev = inputEl.value;
     listEl.textContent = "";
+    /** @type {Set<string>} */
+    const allTypes = new Set();
+    /** @type {Set<string>} */
+    const allBbs = new Set();
+    cachedActualByCode.forEach(function (row) {
+      const t = String(row && row.parameterType ? row.parameterType : "").trim();
+      const bb = String(row && row.businessBlock ? row.businessBlock : "").trim();
+      if (t) allTypes.add(t);
+      if (bb) allBbs.add(bb);
+    });
+    const typeFilter = String(selectedType || "").trim();
+    const bbFilter = String(selectedBusinessBlock || "").trim();
+    const applyTypeFilter = !!typeFilter && allTypes.has(typeFilter);
+    const applyBbFilter = !!bbFilter && allBbs.has(bbFilter);
     const arr = Array.from(codeSet).sort(function (a, b) {
       return a.localeCompare(b, "ru");
     });
     for (let i = 0; i < arr.length; i++) {
       const code = arr[i];
-      if (selectedType && cachedActualByCode.has(code)) {
+      if ((applyTypeFilter || applyBbFilter) && cachedActualByCode.has(code)) {
         const row = cachedActualByCode.get(code);
-        if (row && String(row.parameterType || "").trim() !== String(selectedType).trim()) continue;
+        const rowType = String(row && row.parameterType ? row.parameterType : "").trim();
+        const rowBb = String(row && row.businessBlock ? row.businessBlock : "").trim();
+        if (applyTypeFilter && rowType !== typeFilter) continue;
+        if (applyBbFilter && rowBb !== bbFilter) continue;
       }
       const o = document.createElement("option");
       o.value = code;
@@ -299,11 +360,13 @@ const PARAMETER_TYPE_OPTIONS = [
     codeInput.value = "";
     codeInput.placeholder = "— сначала нажмите «загрузить допустимые значения» —";
     codeList.textContent = "";
-    typeSel.textContent = "";
-    const ot = document.createElement("option");
-    ot.value = "";
-    ot.textContent = "— сначала нажмите «загрузить допустимые значения» —";
-    typeSel.appendChild(ot);
+    fillParameterTypeSelectWithApiValues(
+      typeSel,
+      PARAMETER_TYPE_OPTIONS.map(function (x) {
+        return String(x.value || "").trim();
+      }).filter(Boolean),
+      true,
+    );
     typeSel.value = "";
   }
 
@@ -324,11 +387,6 @@ const PARAMETER_TYPE_OPTIONS = [
     }
     return null;
   }
-
-  const PARAM_AUTO_ENV = detectParameterEnvFromLocation();
-  const DEFAULT_STAND = (PARAM_AUTO_ENV && PARAM_AUTO_ENV.stand) || "PROM";
-  const DEFAULT_CONTOUR = (PARAM_AUTO_ENV && PARAM_AUTO_ENV.contour) || "SIGMA";
-
 
   /**
    * Единственный objectId для детализации при кнопке ⬇: только этот ответ разбирается на «parameterTypes».
@@ -594,7 +652,7 @@ const PARAMETER_TYPE_OPTIONS = [
    * @param {unknown} o
    * @returns {string | null} текст ошибки или null
    */
-  function validateCreatePayload(o) {
+  function validateCreatePayload(o, allowedTypesOverride) {
     if (!o || typeof o !== "object") return "Запись не является объектом JSON";
     const rec = /** @type {Record<string, unknown>} */ (o);
     const fields = ["parameterCode", "parameterType", "parameterName", "parameterValue"];
@@ -604,7 +662,9 @@ const PARAMETER_TYPE_OPTIONS = [
       }
     }
     const pt = String(rec.parameterType).trim();
-    const allowed = getParameterTypeAllowedValues();
+    const allowed = Array.isArray(allowedTypesOverride) && allowedTypesOverride.length > 0
+      ? allowedTypesOverride
+      : getParameterTypeAllowedValues();
     if (allowed.indexOf(pt) < 0) {
       return "parameterType «" + pt + "» не из списка допустимых: " + allowed.join(", ");
     }
@@ -625,7 +685,8 @@ const PARAMETER_TYPE_OPTIONS = [
    * @returns {string | null}
    */
   function validateUpdatePayload(o) {
-    const base = validateCreatePayload(o);
+    const allowedForUpdate = extractParameterTypesFromListData({ body: { parameters: Array.from(cachedActualByObjectId.values()) } });
+    const base = validateCreatePayload(o, allowedForUpdate);
     if (base) return base;
     const rec = /** @type {Record<string, unknown>} */ (o);
     if (editTabAllowedListsLoaded && cachedActualParameterCodes !== null) {
@@ -992,13 +1053,17 @@ const PARAMETER_TYPE_OPTIONS = [
   panel.appendChild(standRow);
   const tabsRow = document.createElement("div");
   tabsRow.style.cssText = "display:flex;gap:4px;margin-bottom:4px;flex-wrap:wrap;flex-shrink:0;";
+  const topActionsRow = document.createElement("div");
+  topActionsRow.style.cssText = "display:flex;gap:4px;flex-wrap:wrap;align-items:center;";
   const tabButtons = [];
   const tabPanels = [];
+  let activeTabIndex = 0;
 
   /**
    * @param {number} idx
    */
   function showTab(idx) {
+    activeTabIndex = idx;
     tabButtons.forEach((b, i) => {
       b.style.background = i === idx ? "#2563eb" : "#1f2937";
       b.style.color = "#e5e7eb";
@@ -1006,6 +1071,7 @@ const PARAMETER_TYPE_OPTIONS = [
     tabPanels.forEach((p, i) => {
       p.style.display = i === idx ? "flex" : "none";
     });
+    syncTopActionButtonsByTab();
   }
 
   function mkTabButton(label, idx) {
@@ -1036,7 +1102,7 @@ const PARAMETER_TYPE_OPTIONS = [
   tabsRow.appendChild(tab1Btn);
   tabsRow.appendChild(tab2Btn);
   tabsRow.appendChild(tab3Btn);
-  tabsRow.appendChild(sharedLoadBtn);
+  tabsRow.appendChild(topActionsRow);
   panel.appendChild(tabsRow);
 
   const wrap = document.createElement("div");
@@ -1093,12 +1159,11 @@ const PARAMETER_TYPE_OPTIONS = [
 
   const runBtn = document.createElement("button");
   runBtn.type = "button";
-  runBtn.textContent = "Запустить выгрузку";
+  runBtn.textContent = "▶ Запустить выгрузку";
   runBtn.style.cssText =
-    "width:100%;flex-shrink:0;border:1px solid #374151;border-radius:6px;padding:6px 8px;cursor:pointer;background:#2563eb;color:#f9fafb;font-weight:600;font-size:" +
+    "flex-shrink:0;border:1px solid #374151;border-radius:6px;padding:5px 10px;cursor:pointer;background:#2563eb;color:#f9fafb;font-weight:600;font-size:" +
     PANEL_FONT_BASE +
-    ";";
-  tab1.appendChild(runBtn);
+    ";line-height:1.2;";
 
   // --- Tab 2: создание ---
   const tab2 = document.createElement("div");
@@ -1175,12 +1240,11 @@ const PARAMETER_TYPE_OPTIONS = [
 
   const createBtn = document.createElement("button");
   createBtn.type = "button";
-  createBtn.textContent = "Создать параметр (param-create)";
+  createBtn.textContent = "➕ Создать параметр";
   createBtn.style.cssText =
-    "width:100%;flex-shrink:0;margin-top:6px;border:1px solid #374151;border-radius:6px;padding:6px 8px;cursor:pointer;background:#059669;color:#f9fafb;font-weight:600;font-size:" +
+    "flex-shrink:0;border:1px solid #374151;border-radius:6px;padding:5px 10px;cursor:pointer;background:#059669;color:#f9fafb;font-weight:600;font-size:" +
     PANEL_FONT_BASE +
-    ";";
-  tab2.appendChild(createBtn);
+    ";line-height:1.2;";
 
   const createFileRow = document.createElement("div");
   createFileRow.style.cssText = "flex-shrink:0;margin-top:8px;padding-top:6px;border-top:1px solid #374151;";
@@ -1194,13 +1258,12 @@ const PARAMETER_TYPE_OPTIONS = [
   createFileInput.style.cssText = "display:none;";
   const createFileBtn = document.createElement("button");
   createFileBtn.type = "button";
-  createFileBtn.textContent = "Создать из файла…";
+  createFileBtn.textContent = "📄 Создать из файла";
   createFileBtn.style.cssText =
-    "width:100%;flex-shrink:0;border:1px solid #374151;border-radius:6px;padding:6px 8px;cursor:pointer;background:#1f2937;color:#e5e7eb;font-size:" +
+    "flex-shrink:0;border:1px solid #374151;border-radius:6px;padding:5px 10px;cursor:pointer;background:#1f2937;color:#e5e7eb;font-size:" +
     PANEL_FONT_BASE +
-    ";";
-  createFileRow.appendChild(createFileBtn);
-  createFileRow.appendChild(createFileInput);
+    ";line-height:1.2;";
+  panel.appendChild(createFileInput);
   tab2.appendChild(createFileRow);
 
   // --- Tab 3: редактирование ---
@@ -1280,7 +1343,6 @@ const PARAMETER_TYPE_OPTIONS = [
     "flex:1;min-width:0;font-size:" + PANEL_FONT_SMALL + ";color:#9ca3af;display:flex;align-items:center;line-height:1.25;";
   editLoadLabel.textContent = "Загрузить допустимые значения для полей ниже";
   editLoadRow.appendChild(editLoadLabel);
-  tab3.appendChild(editLoadRow);
 
   tab3.appendChild(mkLabel("parameterCode *"));
   tab3.appendChild(uCode);
@@ -1306,12 +1368,11 @@ const PARAMETER_TYPE_OPTIONS = [
 
   const updateBtn = document.createElement("button");
   updateBtn.type = "button";
-  updateBtn.textContent = "Обновить параметр (param-update)";
+  updateBtn.textContent = "✏ Обновить параметр";
   updateBtn.style.cssText =
-    "width:100%;flex-shrink:0;margin-top:6px;border:1px solid #374151;border-radius:6px;padding:6px 8px;cursor:pointer;background:#d97706;color:#111827;font-weight:600;font-size:" +
+    "flex-shrink:0;border:1px solid #374151;border-radius:6px;padding:5px 10px;cursor:pointer;background:#d97706;color:#111827;font-weight:600;font-size:" +
     PANEL_FONT_BASE +
-    ";";
-  tab3.appendChild(updateBtn);
+    ";line-height:1.2;";
 
   const updateFileRow = document.createElement("div");
   updateFileRow.style.cssText = "flex-shrink:0;margin-top:8px;padding-top:6px;border-top:1px solid #374151;";
@@ -1325,21 +1386,45 @@ const PARAMETER_TYPE_OPTIONS = [
   updateFileInput.style.cssText = "display:none;";
   const updateFileBtn = document.createElement("button");
   updateFileBtn.type = "button";
-  updateFileBtn.textContent = "Обновить из файла…";
+  updateFileBtn.textContent = "🗂 Обновить из файла";
   updateFileBtn.style.cssText = createFileBtn.style.cssText;
   const templateExportBtn = document.createElement("button");
   templateExportBtn.type = "button";
-  templateExportBtn.textContent = "🧩";
+  templateExportBtn.textContent = "🧩 Сформировать шаблон Payload";
   templateExportBtn.title =
     "Сформировать шаблон: ACTUAL (как 7.2), затем ARCHIVE, затем детализация по каждому objectId и выгрузка блоков для редактирования.";
   templateExportBtn.style.cssText =
-    "width:100%;flex-shrink:0;margin-top:6px;border:1px solid #374151;border-radius:6px;padding:6px 8px;cursor:pointer;background:#334155;color:#e5e7eb;font-size:" +
+    "flex-shrink:0;border:1px solid #374151;border-radius:6px;padding:5px 10px;cursor:pointer;background:#334155;color:#e5e7eb;font-size:" +
     PANEL_FONT_BASE +
-    ";";
-  updateFileRow.appendChild(updateFileBtn);
-  updateFileRow.appendChild(updateFileInput);
-  updateFileRow.appendChild(templateExportBtn);
+    ";line-height:1.2;";
+  panel.appendChild(updateFileInput);
   tab3.appendChild(updateFileRow);
+
+  sharedLoadBtn.textContent = "⬇ Загрузить параметры";
+  sharedLoadBtn.title = "Загрузить параметры для вкладок «Создание» и «Редактирование».";
+  sharedLoadBtn.style.background = "#1f2937";
+  sharedLoadBtn.style.color = "#e5e7eb";
+
+  topActionsRow.appendChild(runBtn);
+  topActionsRow.appendChild(sharedLoadBtn);
+  topActionsRow.appendChild(createBtn);
+  topActionsRow.appendChild(createFileBtn);
+  topActionsRow.appendChild(updateBtn);
+  topActionsRow.appendChild(updateFileBtn);
+  topActionsRow.appendChild(templateExportBtn);
+
+  function syncTopActionButtonsByTab() {
+    const isExport = activeTabIndex === 0;
+    const isCreate = activeTabIndex === 1;
+    const isUpdate = activeTabIndex === 2;
+    runBtn.style.display = isExport ? "" : "none";
+    sharedLoadBtn.style.display = isCreate || isUpdate ? "" : "none";
+    createBtn.style.display = isCreate ? "" : "none";
+    createFileBtn.style.display = isCreate ? "" : "none";
+    updateBtn.style.display = isUpdate ? "" : "none";
+    updateFileBtn.style.display = isUpdate ? "" : "none";
+    templateExportBtn.style.display = isUpdate ? "" : "none";
+  }
 
   /**
    * Подставляет в форму редактирования связанные поля из кэша 7.2.
@@ -1479,28 +1564,211 @@ const PARAMETER_TYPE_OPTIONS = [
   }
 
   /**
-   * Текст подтверждения с парами «было/стало» только по изменённым полям.
-   * @param {{ objectId: string; parameterCode: string; version: number; status: string }} meta
+   * Красивое окно подтверждения param-update: показывает только parameterCode и реально изменённые поля.
+   * @param {{ parameterCode: string }} meta
    * @param {{ [k: string]: string }} oldValues
    * @param {{ [k: string]: string }} newValues
    * @param {string[]} changedFields
-   * @returns {string}
+   * @returns {Promise<boolean>}
    */
-  function buildUpdateConfirmText(meta, oldValues, newValues, changedFields) {
-    let out = "Подтвердите действие (param-update)\n\n";
-    out += "objectId: " + meta.objectId + "\n";
-    out += "parameterCode: " + meta.parameterCode + "\n";
-    out += "version: " + String(meta.version) + "\n";
-    out += "status: " + meta.status + "\n\n";
-    out += "Поле                 | Было                         | Стало\n";
-    out += "---------------------+------------------------------+------------------------------\n";
-    for (let i = 0; i < changedFields.length; i++) {
-      const k = changedFields[i];
-      const oldV = String(oldValues[k] == null ? "" : oldValues[k]).replace(/\s+/g, " ").slice(0, 28);
-      const newV = String(newValues[k] == null ? "" : newValues[k]).replace(/\s+/g, " ").slice(0, 28);
-      out += (k + "                    ").slice(0, 20) + " | " + (oldV + "                              ").slice(0, 28) + " | " + (newV + "                              ").slice(0, 28) + "\n";
-    }
-    return out;
+  function showUpdateConfirmDialog(meta, oldValues, newValues, changedFields) {
+    return new Promise(function (resolve) {
+      const overlay = document.createElement("div");
+      overlay.style.cssText =
+        "position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:2147483647;display:flex;align-items:center;justify-content:center;padding:18px;box-sizing:border-box;";
+
+      const box = document.createElement("div");
+      box.style.cssText =
+        "width:min(1200px,96vw);max-height:min(88vh,980px);overflow:auto;background:#111827;color:#e5e7eb;border:1px solid #374151;border-radius:12px;box-shadow:0 20px 45px rgba(0,0,0,.45);";
+
+      const head = document.createElement("div");
+      head.style.cssText = "padding:14px 16px;border-bottom:1px solid #374151;";
+      const title = document.createElement("div");
+      title.style.cssText = "font-size:15px;font-weight:700;color:#f9fafb;";
+      title.textContent = "Подтверждение изменений (param-update)";
+      const code = document.createElement("div");
+      code.style.cssText = "margin-top:6px;font-size:13px;color:#cbd5e1;word-break:break-word;";
+      code.textContent = "parameterCode: " + String(meta.parameterCode || "");
+      head.appendChild(title);
+      head.appendChild(code);
+
+      const body = document.createElement("div");
+      body.style.cssText = "padding:12px 16px;";
+      const table = document.createElement("table");
+      table.style.cssText = "width:100%;border-collapse:collapse;table-layout:fixed;";
+      const thead = document.createElement("thead");
+      const trh = document.createElement("tr");
+      ["Поле", "Было", "Стало"].forEach(function (txt) {
+        const th = document.createElement("th");
+        th.textContent = txt;
+        th.style.cssText =
+          "text-align:left;padding:8px 10px;border-bottom:1px solid #374151;color:#93c5fd;font-size:12px;font-weight:700;vertical-align:top;";
+        trh.appendChild(th);
+      });
+      thead.appendChild(trh);
+      table.appendChild(thead);
+
+      const tbody = document.createElement("tbody");
+      for (let i = 0; i < changedFields.length; i++) {
+        const k = changedFields[i];
+        const tr = document.createElement("tr");
+        const tdKey = document.createElement("td");
+        tdKey.textContent = k;
+        tdKey.style.cssText =
+          "padding:9px 10px;border-bottom:1px solid #1f2937;color:#e5e7eb;font-size:12px;font-weight:600;vertical-align:top;word-break:break-word;";
+        const tdOld = document.createElement("td");
+        tdOld.textContent = String(oldValues[k] == null ? "" : oldValues[k]);
+        tdOld.style.cssText =
+          "padding:9px 10px;border-bottom:1px solid #1f2937;color:#fca5a5;font-size:12px;white-space:pre-wrap;word-break:break-word;vertical-align:top;";
+        const tdNew = document.createElement("td");
+        tdNew.textContent = String(newValues[k] == null ? "" : newValues[k]);
+        tdNew.style.cssText =
+          "padding:9px 10px;border-bottom:1px solid #1f2937;color:#86efac;font-size:12px;white-space:pre-wrap;word-break:break-word;vertical-align:top;";
+        tr.appendChild(tdKey);
+        tr.appendChild(tdOld);
+        tr.appendChild(tdNew);
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+      body.appendChild(table);
+
+      const footer = document.createElement("div");
+      footer.style.cssText =
+        "display:flex;gap:8px;justify-content:flex-end;padding:12px 16px;border-top:1px solid #374151;position:sticky;bottom:0;background:#111827;";
+      const cancelBtn = document.createElement("button");
+      cancelBtn.type = "button";
+      cancelBtn.textContent = "Отмена";
+      cancelBtn.style.cssText =
+        "border:1px solid #4b5563;border-radius:8px;padding:8px 12px;cursor:pointer;background:#1f2937;color:#e5e7eb;font-size:12px;font-weight:600;";
+      const okBtn = document.createElement("button");
+      okBtn.type = "button";
+      okBtn.textContent = "Подтвердить";
+      okBtn.style.cssText =
+        "border:1px solid #065f46;border-radius:8px;padding:8px 12px;cursor:pointer;background:#059669;color:#ecfeff;font-size:12px;font-weight:700;";
+      footer.appendChild(cancelBtn);
+      footer.appendChild(okBtn);
+
+      box.appendChild(head);
+      box.appendChild(body);
+      box.appendChild(footer);
+      overlay.appendChild(box);
+      document.body.appendChild(overlay);
+
+      let done = false;
+      function finish(val) {
+        if (done) return;
+        done = true;
+        document.removeEventListener("keydown", onKey);
+        if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+        resolve(val);
+      }
+      function onKey(e) {
+        if (e.key === "Escape") finish(false);
+      }
+      overlay.addEventListener("click", function (e) {
+        if (e.target === overlay) finish(false);
+      });
+      cancelBtn.addEventListener("click", function () {
+        finish(false);
+      });
+      okBtn.addEventListener("click", function () {
+        finish(true);
+      });
+      document.addEventListener("keydown", onKey);
+      okBtn.focus();
+    });
+  }
+
+  /**
+   * Широкое окно подтверждения создания параметра в общем стиле панели.
+   * Показывает все поля будущего param-create.
+   * @param {{ parameterCode: string; parameterType: string; parameterName: string; businessBlock: string; parameterValue: string }} payload
+   * @returns {Promise<boolean>}
+   */
+  function showCreateConfirmDialog(payload) {
+    return new Promise(function (resolve) {
+      const overlay = document.createElement("div");
+      overlay.style.cssText =
+        "position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:2147483647;display:flex;align-items:center;justify-content:center;padding:18px;box-sizing:border-box;";
+
+      const box = document.createElement("div");
+      box.style.cssText =
+        "width:min(1200px,96vw);max-height:min(88vh,980px);overflow:auto;background:#111827;color:#e5e7eb;border:1px solid #374151;border-radius:12px;box-shadow:0 20px 45px rgba(0,0,0,.45);";
+
+      const head = document.createElement("div");
+      head.style.cssText = "padding:14px 16px;border-bottom:1px solid #374151;";
+      const title = document.createElement("div");
+      title.style.cssText = "font-size:15px;font-weight:700;color:#f9fafb;";
+      title.textContent = "Подтверждение создания (param-create)";
+      head.appendChild(title);
+
+      const body = document.createElement("div");
+      body.style.cssText = "padding:12px 16px;display:grid;grid-template-columns:minmax(180px,220px) 1fr;gap:8px 12px;";
+
+      function appendRow(label, value, accent) {
+        const k = document.createElement("div");
+        k.textContent = label;
+        k.style.cssText = "color:#93c5fd;font-size:12px;font-weight:700;align-self:start;";
+        const v = document.createElement("div");
+        v.textContent = value;
+        v.style.cssText =
+          "font-size:12px;white-space:pre-wrap;word-break:break-word;padding:8px 10px;border:1px solid #1f2937;border-radius:8px;background:#0b1220;" +
+          (accent ? "color:" + accent + ";" : "color:#e5e7eb;");
+        body.appendChild(k);
+        body.appendChild(v);
+      }
+
+      appendRow("parameterCode", String(payload.parameterCode || ""), "#fde68a");
+      appendRow("parameterType", String(payload.parameterType || ""), "#86efac");
+      appendRow("parameterName", String(payload.parameterName || ""), "");
+      appendRow("businessBlock", String(payload.businessBlock || "—"), "#c4b5fd");
+      appendRow("parameterValue", String(payload.parameterValue == null ? "" : payload.parameterValue), "");
+
+      const footer = document.createElement("div");
+      footer.style.cssText =
+        "display:flex;gap:8px;justify-content:flex-end;padding:12px 16px;border-top:1px solid #374151;position:sticky;bottom:0;background:#111827;";
+      const cancelBtn = document.createElement("button");
+      cancelBtn.type = "button";
+      cancelBtn.textContent = "Отмена";
+      cancelBtn.style.cssText =
+        "border:1px solid #4b5563;border-radius:8px;padding:8px 12px;cursor:pointer;background:#1f2937;color:#e5e7eb;font-size:12px;font-weight:600;";
+      const okBtn = document.createElement("button");
+      okBtn.type = "button";
+      okBtn.textContent = "Создать";
+      okBtn.style.cssText =
+        "border:1px solid #065f46;border-radius:8px;padding:8px 12px;cursor:pointer;background:#059669;color:#ecfeff;font-size:12px;font-weight:700;";
+      footer.appendChild(cancelBtn);
+      footer.appendChild(okBtn);
+
+      box.appendChild(head);
+      box.appendChild(body);
+      box.appendChild(footer);
+      overlay.appendChild(box);
+      document.body.appendChild(overlay);
+
+      let done = false;
+      function finish(val) {
+        if (done) return;
+        done = true;
+        document.removeEventListener("keydown", onKey);
+        if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+        resolve(val);
+      }
+      function onKey(e) {
+        if (e.key === "Escape") finish(false);
+      }
+      overlay.addEventListener("click", function (e) {
+        if (e.target === overlay) finish(false);
+      });
+      cancelBtn.addEventListener("click", function () {
+        finish(false);
+      });
+      okBtn.addEventListener("click", function () {
+        finish(true);
+      });
+      document.addEventListener("keydown", onKey);
+      okBtn.focus();
+    });
   }
 
   /** @type {number | null} */
@@ -1584,17 +1852,66 @@ const PARAMETER_TYPE_OPTIONS = [
     scheduleDetailFillByObjectId(objectId, "ввод objectId");
   }
 
-  function refreshEditCodeOptionsByType() {
+  function refreshEditFilterOptions() {
     if (!cachedActualParameterCodes) return;
-    const selectedType = uType.value.trim();
-    fillParameterCodeSelectFromActualCodes(uCode, uCodeList, cachedActualParameterCodes, selectedType || undefined);
+    const selectedType = String(uType.value || "").trim();
+    const selectedBb = String(uBusinessBlock.value || "").trim();
+
+    /** @type {Set<string>} */
+    const allTypes = new Set();
+    /** @type {Set<string>} */
+    const allBbs = new Set();
+    /** @type {Set<string>} */
+    const allowedTypes = new Set();
+    /** @type {Set<string>} */
+    const allowedBbs = new Set();
+    cachedActualByCode.forEach(function (row) {
+      const t = String(row && row.parameterType ? row.parameterType : "").trim();
+      const bb = String(row && row.businessBlock ? row.businessBlock : "").trim();
+      if (t) allTypes.add(t);
+      if (bb) allBbs.add(bb);
+      const typeOk = !selectedType || t === selectedType;
+      const bbOk = !selectedBb || bb === selectedBb;
+      if (typeOk && bb) allowedBbs.add(bb);
+      if (bbOk && t) allowedTypes.add(t);
+    });
+
+    const typeValid = !selectedType || allTypes.has(selectedType);
+    const bbValid = !selectedBb || allBbs.has(selectedBb);
+
+    if (typeValid && bbValid) {
+      fillParameterTypeSelectWithApiValues(uType, Array.from(allowedTypes), true);
+      if (selectedType && allowedTypes.has(selectedType)) uType.value = selectedType;
+      fillBusinessBlockSelect(uBusinessBlock, Array.from(allowedBbs));
+      if (selectedBb && allowedBbs.has(selectedBb)) uBusinessBlock.value = selectedBb;
+    } else {
+      fillParameterTypeSelectWithApiValues(
+        uType,
+        PARAMETER_TYPE_OPTIONS.map(function (x) {
+          return String(x.value || "").trim();
+        }).filter(Boolean),
+        true,
+      );
+      fillBusinessBlockSelect(uBusinessBlock, null);
+      uType.value = "";
+      uBusinessBlock.value = "";
+    }
+
+    fillParameterCodeSelectFromActualCodes(
+      uCode,
+      uCodeList,
+      cachedActualParameterCodes,
+      typeValid ? selectedType || undefined : undefined,
+      bbValid ? selectedBb || undefined : undefined,
+    );
   }
 
   uCode.addEventListener("input", tryFillByParameterCodeInput);
   uCode.addEventListener("change", tryFillByParameterCodeInput);
   uObjectId.addEventListener("input", tryFillByObjectIdInput);
   uObjectId.addEventListener("change", tryFillByObjectIdInput);
-  uType.addEventListener("change", refreshEditCodeOptionsByType);
+  uType.addEventListener("change", refreshEditFilterOptions);
+  uBusinessBlock.addEventListener("change", refreshEditFilterOptions);
 
   /**
    * Смена стенда/контура — сброс кэшей, селект создания и пустые селекты вкладки «Редактирование».
@@ -1895,12 +2212,12 @@ const PARAMETER_TYPE_OPTIONS = [
       log(logTag + " Единая загрузка справочников: ACTUAL + детализация parameterTypes.");
       const ok = await fetchActualListAndCache(origin, true, logTag);
       if (!ok) return false;
-      // Шаг 2 (детализация meta-parameterTypes) нужен для вкладки «Создание».
-      // Для «Редактирования» список типов заполняется только по шагу 1 (ACTUAL).
-      if (logTag !== "[Редактирование]") {
+      // Шаг 2 (детализация meta-parameterTypes) выполняется только для вкладки «Создание».
+      // Для всех сценариев обновления параметров типы/проверки идут только по шагу 1 (ACTUAL).
+      if (logTag === "[Создание]") {
         await fetchParameterTypesDetailAndApply(origin, true, logTag);
       } else {
-        log(logTag + " Шаг 2/2 (детализация objectId) пропущен: для редактирования типы берутся только из шага 1 ACTUAL.");
+        log(logTag + " Шаг 2/2 (детализация objectId) пропущен: для обновления типы и проверки берутся только из шага 1 ACTUAL.");
       }
 
       if (cachedActualParameterCodes !== null) {
@@ -1914,9 +2231,10 @@ const PARAMETER_TYPE_OPTIONS = [
       const editTypesFromStep1 = extractParameterTypesFromListData({ body: { parameters: Array.from(cachedActualByObjectId.values()) } });
       fillParameterTypeSelectWithApiValues(uType, editTypesFromStep1, true);
       const bbs = cachedAllowedBusinessBlocks || [];
-      fillBusinessBlockSelect(cBusinessBlock, bbs);
+      fillCreateBusinessBlockSelectWithDefaultsAndApi(cBusinessBlock, bbs);
       fillBusinessBlockSelect(uBusinessBlock, bbs);
       editTabAllowedListsLoaded = cachedActualParameterCodes !== null;
+      refreshEditFilterOptions();
       tryFillByParameterCodeInput();
       tryFillByObjectIdInput();
       return true;
@@ -2166,20 +2484,14 @@ const PARAMETER_TYPE_OPTIONS = [
     } finally {
       setBusy(false);
     }
-    const summary =
-      "Создать параметр (param-create)?\n\n" +
-      "parameterCode: " +
-      payload.parameterCode +
-      "\nparameterType: " +
-      payload.parameterType +
-      "\nparameterName: " +
-      payload.parameterName +
-      "\nbusinessBlock: " +
-      (payload.businessBlock || "—") +
-      "\nparameterValue (фрагмент): " +
-      String(payload.parameterValue).slice(0, 120) +
-      (String(payload.parameterValue).length > 120 ? "…" : "");
-    if (!window.confirm(summary)) {
+    const approved = await showCreateConfirmDialog({
+      parameterCode: payload.parameterCode,
+      parameterType: payload.parameterType,
+      parameterName: payload.parameterName,
+      businessBlock: payload.businessBlock,
+      parameterValue: payload.parameterValue,
+    });
+    if (!approved) {
       log("Создание отменено пользователем — запрос param-create не отправлялся.");
       return;
     }
@@ -2461,8 +2773,8 @@ const PARAMETER_TYPE_OPTIONS = [
         "), изменены поля: " +
         changedEditable.join(", ") +
         ".";
-      const summary = buildUpdateConfirmText(
-        { objectId, parameterCode: payloadBase.parameterCode, version: ver, status: payloadBase.status },
+      const approved = await showUpdateConfirmDialog(
+        { parameterCode: payloadBase.parameterCode },
         {
           parameterType: currentRow.parameterType,
           businessBlock: currentRow.businessBlock,
@@ -2479,7 +2791,7 @@ const PARAMETER_TYPE_OPTIONS = [
         },
         changedEditable,
       );
-      if (!window.confirm(summary)) {
+      if (!approved) {
         log("Обновление отменено пользователем.");
         return;
       }
@@ -2533,7 +2845,7 @@ const PARAMETER_TYPE_OPTIONS = [
           allIds.add(id);
         });
       }
-      await fetchParameterTypesDetailAndApply(origin, true, "[Редактирование][Шаблон]");
+      log("[Редактирование][Шаблон] Шаг детализации parameterTypes пропущен: для шаблона достаточно данных шага ACTUAL/ARCHIVE.");
 
       log('[Редактирование][Шаблон] Шаг ARCHIVE: POST { "status": "ARCHIVE" }.');
       const archiveRes = await postParameters(origin, { status: "ARCHIVE" });
