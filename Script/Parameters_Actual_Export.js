@@ -1064,6 +1064,24 @@
   }
 
   /**
+   * Очищает связанные автополя, когда введённый objectId/parameterCode не найден в кэше.
+   * @param {"code" | "objectId"} source
+   */
+  function clearUpdateFormDerivedFields(source) {
+    if (source === "code") {
+      uObjectId.value = "";
+    } else {
+      uCode.value = "";
+    }
+    uType.value = "";
+    uStatus.value = "ACTUAL";
+    uVersion.value = "";
+    uName.value = "";
+    uValue.value = "";
+    uVersionInfo.textContent = "Связанные данные не найдены в ACTUAL для введённого значения.";
+  }
+
+  /**
    * Читает первую запись details-ответа по objectId для автоподстановки полей формы.
    * @param {unknown} detailData
    * @returns {{ objectId: string; parameterCode: string; parameterType: string; parameterName: string; parameterValue: string; status: string; version: number | null } | null}
@@ -1153,7 +1171,10 @@
     const code = uCode.value.trim();
     if (!code || cachedActualByCode.size === 0) return;
     const row = cachedActualByCode.get(code);
-    if (!row) return;
+    if (!row) {
+      clearUpdateFormDerivedFields("code");
+      return;
+    }
     applyUpdateFormByActualMapping(row, "code");
     scheduleDetailFillByObjectId(row.objectId, "выбор parameterCode");
   }
@@ -1162,7 +1183,10 @@
     const objectId = uObjectId.value.trim();
     if (!objectId || cachedActualByObjectId.size === 0) return;
     const row = cachedActualByObjectId.get(objectId);
-    if (!row) return;
+    if (!row) {
+      clearUpdateFormDerivedFields("objectId");
+      return;
+    }
     applyUpdateFormByActualMapping(row, "objectId");
     scheduleDetailFillByObjectId(objectId, "ввод objectId");
   }

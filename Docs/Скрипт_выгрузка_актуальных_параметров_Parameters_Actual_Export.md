@@ -144,6 +144,7 @@
 - **`objectId`**, **`parameterName`**, **`parameterValue`**, **`status`** — ввод вручную (или из файла для пакета).
 - Рядом со `status` есть отдельное поле **`version`** (небольшое поле для информации и ручной корректировки перед отправкой).
 - При выборе `parameterCode` (поиск) или при вводе/выборе `objectId` выполняется автоподстановка связанных полей (`objectId`, `parameterCode`, `parameterType`, `status`, `version`) из кэша.
+- Если введённый `parameterCode` или `objectId` отсутствует в кэше ACTUAL, связанные поля очищаются (чтобы не оставались значения от предыдущей найденной записи).
 
 **Что даёт первый шаг загрузки (тот же ответ `POST { "status": "ACTUAL" }`, что и на вкладке «Создание» при шаге 6.2):**
 
@@ -156,6 +157,7 @@
 
 Эти карты используются для автоподстановки формы и для валидации связки полей (`objectId` и `parameterCode` должны указывать на одну и ту же запись).
 После автоподстановки из кэша скрипт выполняет дополнительный запрос детализации по `objectId`, чтобы предзаполнить **`parameterName`** и **`parameterValue`** (а также уточнить остальные поля, если они отличаются).
+При отсутствии соответствия в кэше по введённому значению запускается локальная очистка связанных полей (`objectId`/`parameterCode`, `parameterType`, `status`, `version`, `parameterName`, `parameterValue`) и выводится информационное сообщение.
 
 **Допустимые значения для полей формы** считаются полученными после успешного выполнения **п. 7.2** (ниже): флаг **`editTabAllowedListsLoaded === true`** и непустые кэши кодов, **objectId** и типов.
 
@@ -246,6 +248,7 @@
 | `fillParameterCodeSelectFromActualCodes`, `clearEditTabParameterSelects` | Поле поиска `parameterCode` (`datalist`) и очистка полей вкладки «Редактирование» |
 | `extractActualMappingsFromListData` | Построение карт соответствий по `parameterCode` и `objectId` из ответа ACTUAL |
 | `readFirstParameterRowFromDetail`, `fetchAndApplyDetailByObjectId`, `scheduleDetailFillByObjectId` | Детализация по `objectId` и автозаполнение `parameterName/parameterValue` и связанных полей |
+| `clearUpdateFormDerivedFields` | Очистка зависимых полей формы редактирования, если введённые `objectId`/`parameterCode` не найдены в кэше ACTUAL |
 | `fetchActualListAndCache`, `fetchParameterTypesDetailAndApply` | POST ACTUAL и детализация типов (журнал: тег `[Создание]` или `[Редактирование]`) |
 | `ensureCachesForCreateOperation` | Условная подготовка кэшей перед созданием формы/файла |
 | `refreshParameterTypesFromApi` | Кнопка ⬇ вкладки 2: всегда ACTUAL + детализация |
@@ -288,3 +291,4 @@
 | **3.1** | Кэш **`cachedActualObjectIds`** из первого запроса ACTUAL; проверки **`objectId`** и **`parameterCode`** по сохранённым множествам; при отсутствии кода — указание создавать на вкладке 2; автозагрузка п. 7.2 при «Обновить» / файл; пакетное обновление без повторного POST списка ACTUAL на каждую строку; раздел 7 переписан. |
 | **3.2** | Вкладка «Редактирование»: поиск по `parameterCode` через ввод части текста (`input + datalist`), карты соответствий `parameterCode/objectId` с `parameterType/status/version`, автоподстановка полей при выборе кода или вводе `objectId`, ручное поле `version` рядом со `status`, приоритет источников `version` (поле → кэш 7.2 → детализация API), сверка связки `objectId <-> parameterCode` для формы и файла. |
 | **3.3** | После выбора `parameterCode` или `objectId` в редактировании автоматически выполняется детализация по `objectId` и предзаполняются `parameterName` и `parameterValue` (а также уточняются `parameterType`, `status`, `version`). Описан точный порядок этого запроса и источники данных для автоподстановки. |
+| **3.4** | Для несуществующих `parameterCode`/`objectId` добавлена очистка связанных полей формы редактирования, чтобы не оставались значения от предыдущей найденной записи; уточнён порядок автоподстановки и поведение fallback. |
