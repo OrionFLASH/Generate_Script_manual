@@ -28,6 +28,9 @@ const TOURNAMENT_BASE = {
 };
 const TOURNAMENT_STAND_KEYS = ["PROM", "PSI", "IFT-SB", "IFT-GF"];
 const TOURNAMENT_CONTOUR_KEYS = ["ALPHA", "SIGMA"];
+const TOURNAMENT_AUTO_ENV = detectTournamentEnvFromLocation();
+const DEFAULT_TOURNAMENT_STAND = (TOURNAMENT_AUTO_ENV && TOURNAMENT_AUTO_ENV.stand) || "PROM";
+const DEFAULT_TOURNAMENT_CONTOUR = (TOURNAMENT_AUTO_ENV && TOURNAMENT_AUTO_ENV.contour) || "ALPHA";
 
 function detectTournamentEnvFromLocation() {
   var origin = "";
@@ -52,10 +55,6 @@ function detectTournamentEnvFromLocation() {
   }
   return null;
 }
-
-const TOURNAMENT_AUTO_ENV = detectTournamentEnvFromLocation();
-const DEFAULT_TOURNAMENT_STAND = (TOURNAMENT_AUTO_ENV && TOURNAMENT_AUTO_ENV.stand) || "PROM";
-const DEFAULT_TOURNAMENT_CONTOUR = (TOURNAMENT_AUTO_ENV && TOURNAMENT_AUTO_ENV.contour) || "SIGMA";
 
 /** Стенд/контур для GET leadersForAdmin; обновляются списками на панели. */
 let TOURNAMENT_UI_STAND = DEFAULT_TOURNAMENT_STAND;

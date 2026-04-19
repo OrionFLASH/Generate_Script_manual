@@ -313,9 +313,17 @@ const PARAMETER_TYPE_OPTIONS = [
    * @param {HTMLDataListElement} listEl
    * @param {Set<string>} codeSet
    */
-  function fillParameterCodeSelectFromActualCodes(inputEl, listEl, codeSet, selectedType, selectedBusinessBlock) {
+  function fillParameterCodeSelectFromActualCodes(inputEl, listEl, codeSet, selectedType, selectedBusinessBlock, pickerEl) {
     const prev = inputEl.value;
     listEl.textContent = "";
+    if (pickerEl) pickerEl.textContent = "";
+    function normalizeSelectedFilterValue(v) {
+      const s = String(v == null ? "" : v).trim();
+      if (!s) return "";
+      const low = s.toLowerCase();
+      if (low.indexOf("—") >= 0 || low.indexOf("выберите") >= 0 || low.indexOf("необязательно") >= 0) return "";
+      return s;
+    }
     /** @type {Set<string>} */
     const allTypes = new Set();
     /** @type {Set<string>} */
@@ -326,8 +334,8 @@ const PARAMETER_TYPE_OPTIONS = [
       if (t) allTypes.add(t);
       if (bb) allBbs.add(bb);
     });
-    const typeFilter = String(selectedType || "").trim();
-    const bbFilter = String(selectedBusinessBlock || "").trim();
+    const typeFilter = normalizeSelectedFilterValue(selectedType);
+    const bbFilter = normalizeSelectedFilterValue(selectedBusinessBlock);
     const applyTypeFilter = !!typeFilter && allTypes.has(typeFilter);
     const applyBbFilter = !!bbFilter && allBbs.has(bbFilter);
     const arr = Array.from(codeSet).sort(function (a, b) {
@@ -345,6 +353,18 @@ const PARAMETER_TYPE_OPTIONS = [
       const o = document.createElement("option");
       o.value = code;
       listEl.appendChild(o);
+      if (pickerEl) {
+        const p = document.createElement("option");
+        p.value = code;
+        p.textContent = code;
+        pickerEl.appendChild(p);
+      }
+    }
+    if (pickerEl && pickerEl.options.length === 0) {
+      const p0 = document.createElement("option");
+      p0.value = "";
+      p0.textContent = "— нет значений для выбранных фильтров —";
+      pickerEl.appendChild(p0);
     }
     inputEl.value = prev;
     inputEl.placeholder = "Введите часть parameterCode для поиска…";
@@ -356,10 +376,18 @@ const PARAMETER_TYPE_OPTIONS = [
    * @param {HTMLDataListElement} codeList
    * @param {HTMLSelectElement} typeSel
    */
-  function clearEditTabParameterSelects(codeInput, codeList, typeSel) {
+  function clearEditTabParameterSelects(codeInput, codeList, typeSel, codePicker) {
     codeInput.value = "";
     codeInput.placeholder = "— сначала нажмите «загрузить допустимые значения» —";
     codeList.textContent = "";
+    if (codePicker) {
+      codePicker.textContent = "";
+      const op = document.createElement("option");
+      op.value = "";
+      op.textContent = "— сначала нажмите «загрузить допустимые значения» —";
+      codePicker.appendChild(op);
+      codePicker.value = "";
+    }
     fillParameterTypeSelectWithApiValues(
       typeSel,
       PARAMETER_TYPE_OPTIONS.map(function (x) {
@@ -1287,7 +1315,13 @@ const PARAMETER_TYPE_OPTIONS = [
     ";line-height:1.25;background:#0b1220;color:#e5e7eb;border:1px solid #374151;border-radius:5px;padding:4px 6px;";
   const uType = document.createElement("select");
   uType.style.cssText = uCode.style.cssText + "flex:1;min-width:0;";
-  clearEditTabParameterSelects(uCode, uCodeList, uType);
+  const uCodePicker = document.createElement("select");
+  uCodePicker.size = 8;
+  uCodePicker.style.cssText =
+    "width:100%;flex-shrink:0;box-sizing:border-box;font-size:" +
+    PANEL_FONT_BASE +
+    ";line-height:1.25;background:#0b1220;color:#e5e7eb;border:1px solid #374151;border-radius:5px;padding:4px 6px;";
+  clearEditTabParameterSelects(uCode, uCodeList, uType, uCodePicker);
   const uBusinessBlock = document.createElement("select");
   uBusinessBlock.style.cssText = uCode.style.cssText;
   fillBusinessBlockSelect(uBusinessBlock, null);
@@ -1347,6 +1381,12 @@ const PARAMETER_TYPE_OPTIONS = [
   tab3.appendChild(mkLabel("parameterCode *"));
   tab3.appendChild(uCode);
   tab3.appendChild(uCodeList);
+  const uCodePickerHint = document.createElement("div");
+  uCodePickerHint.style.cssText =
+    "flex-shrink:0;font-size:" + PANEL_FONT_SMALL + ";color:#9ca3af;margin:2px 0 2px;line-height:1.25;";
+  uCodePickerHint.textContent = "Список для выбора (после «Загрузить параметры»):";
+  tab3.appendChild(uCodePickerHint);
+  tab3.appendChild(uCodePicker);
   tab3.appendChild(mkLabel("parameterType *"));
   const uTypeRow = document.createElement("div");
   uTypeRow.style.cssText = "flex-shrink:0;display:flex;gap:6px;align-items:stretch;width:100%;box-sizing:border-box;";
@@ -1854,8 +1894,15 @@ const PARAMETER_TYPE_OPTIONS = [
 
   function refreshEditFilterOptions() {
     if (!cachedActualParameterCodes) return;
-    const selectedType = String(uType.value || "").trim();
-    const selectedBb = String(uBusinessBlock.value || "").trim();
+    function normalizeSelectedFilterValue(v) {
+      const s = String(v == null ? "" : v).trim();
+      if (!s) return "";
+      const low = s.toLowerCase();
+      if (low.indexOf("—") >= 0 || low.indexOf("выберите") >= 0 || low.indexOf("необязательно") >= 0) return "";
+      return s;
+    }
+    const selectedType = normalizeSelectedFilterValue(uType.value);
+    const selectedBb = normalizeSelectedFilterValue(uBusinessBlock.value);
 
     /** @type {Set<string>} */
     const allTypes = new Set();
@@ -1885,29 +1932,31 @@ const PARAMETER_TYPE_OPTIONS = [
       fillBusinessBlockSelect(uBusinessBlock, Array.from(allowedBbs));
       if (selectedBb && allowedBbs.has(selectedBb)) uBusinessBlock.value = selectedBb;
     } else {
-      fillParameterTypeSelectWithApiValues(
-        uType,
-        PARAMETER_TYPE_OPTIONS.map(function (x) {
-          return String(x.value || "").trim();
-        }).filter(Boolean),
-        true,
-      );
-      fillBusinessBlockSelect(uBusinessBlock, null);
-      uType.value = "";
-      uBusinessBlock.value = "";
+      // Если фильтр введён некорректно/не существует, показываем полные списки и не ограничиваем parameterCode.
+      fillParameterTypeSelectWithApiValues(uType, Array.from(allTypes), true);
+      fillBusinessBlockSelect(uBusinessBlock, Array.from(allBbs));
+      if (selectedType && allTypes.has(selectedType)) uType.value = selectedType;
+      if (selectedBb && allBbs.has(selectedBb)) uBusinessBlock.value = selectedBb;
     }
 
     fillParameterCodeSelectFromActualCodes(
       uCode,
       uCodeList,
       cachedActualParameterCodes,
-      typeValid ? selectedType || undefined : undefined,
-      bbValid ? selectedBb || undefined : undefined,
+      typeValid && selectedType ? selectedType : undefined,
+      bbValid && selectedBb ? selectedBb : undefined,
+      uCodePicker,
     );
   }
 
   uCode.addEventListener("input", tryFillByParameterCodeInput);
   uCode.addEventListener("change", tryFillByParameterCodeInput);
+  uCodePicker.addEventListener("change", function () {
+    const code = String(uCodePicker.value || "").trim();
+    if (!code) return;
+    uCode.value = code;
+    tryFillByParameterCodeInput();
+  });
   uObjectId.addEventListener("input", tryFillByObjectIdInput);
   uObjectId.addEventListener("change", tryFillByObjectIdInput);
   uType.addEventListener("change", refreshEditFilterOptions);
@@ -1926,7 +1975,7 @@ const PARAMETER_TYPE_OPTIONS = [
     editTabAllowedListsLoaded = false;
     fillParameterTypeSelect(cType);
     fillBusinessBlockSelect(cBusinessBlock, null);
-    clearEditTabParameterSelects(uCode, uCodeList, uType);
+    clearEditTabParameterSelects(uCode, uCodeList, uType, uCodePicker);
     fillBusinessBlockSelect(uBusinessBlock, null);
     uVersion.value = "";
     uVersionInfo.textContent = "";
@@ -2029,6 +2078,7 @@ const PARAMETER_TYPE_OPTIONS = [
     cName.disabled = v;
     cValue.disabled = v;
     uCode.disabled = v;
+    uCodePicker.disabled = v;
     uType.disabled = v;
     uBusinessBlock.disabled = v;
     uName.disabled = v;
@@ -2221,7 +2271,7 @@ const PARAMETER_TYPE_OPTIONS = [
       }
 
       if (cachedActualParameterCodes !== null) {
-        fillParameterCodeSelectFromActualCodes(uCode, uCodeList, cachedActualParameterCodes);
+        fillParameterCodeSelectFromActualCodes(uCode, uCodeList, cachedActualParameterCodes, undefined, undefined, uCodePicker);
       }
       if (cachedAllowedParameterTypes !== null && cachedAllowedParameterTypes.length > 0) {
         fillCreateTypeSelectWithDefaultsAndApi(cType, cachedAllowedParameterTypes);
@@ -2254,7 +2304,7 @@ const PARAMETER_TYPE_OPTIONS = [
     const ok = await refreshSharedParameterListsFromApi("[Редактирование]");
     if (!ok) {
       editTabAllowedListsLoaded = false;
-      clearEditTabParameterSelects(uCode, uCodeList, uType);
+      clearEditTabParameterSelects(uCode, uCodeList, uType, uCodePicker);
     }
     return ok;
   }

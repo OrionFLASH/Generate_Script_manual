@@ -38,6 +38,9 @@ const STAND_ORIGINS = {
 
 const STAND_KEYS = ["PROM", "PSI", "IFT-SB", "IFT-GF"];
 const CONTOUR_KEYS = ["ALPHA", "SIGMA"];
+const FILE_DL_AUTO_ENV = detectFileDlEnvFromLocation();
+const DEFAULT_FILE_DL_STAND = (FILE_DL_AUTO_ENV && FILE_DL_AUTO_ENV.stand) || "PROM";
+const DEFAULT_FILE_DL_CONTOUR = (FILE_DL_AUTO_ENV && FILE_DL_AUTO_ENV.contour) || "SIGMA";
 
 function detectFileDlEnvFromLocation() {
   var origin = "";
@@ -60,9 +63,6 @@ function detectFileDlEnvFromLocation() {
 }
 
 // Пара "стенд/контур" по умолчанию до открытия панели (с автоопределением по текущей странице).
-const FILE_DL_AUTO_ENV = detectFileDlEnvFromLocation();
-const DEFAULT_FILE_DL_STAND = (FILE_DL_AUTO_ENV && FILE_DL_AUTO_ENV.stand) || "PROM";
-const DEFAULT_FILE_DL_CONTOUR = (FILE_DL_AUTO_ENV && FILE_DL_AUTO_ENV.contour) || "SIGMA";
 
 /** Текущий выбранный стенд/контур для POST (обновляется из UI панели). */
 var FILE_DL_ACTIVE_STAND = DEFAULT_FILE_DL_STAND;

@@ -50,6 +50,9 @@ const PROFILE_ORIGINS = {
 const PROFILE_STAND_KEYS = ["PROM", "PSI", "IFT-SB", "IFT-GF"];
 const PROFILE_CONTOUR_KEYS = ["ALPHA", "SIGMA"];
 const PROFILE_PATH = "/bo/rmkib.gamification/proxy/v1/profile";
+const PROFILE_AUTO_ENV = detectProfileEnvFromLocation();
+const DEFAULT_PROFILE_STAND = (PROFILE_AUTO_ENV && PROFILE_AUTO_ENV.stand) || "PROM";
+const DEFAULT_PROFILE_CONTOUR = (PROFILE_AUTO_ENV && PROFILE_AUTO_ENV.contour) || "SIGMA";
 
 /**
  * Снимок параметров одного прогона (задаются на панели или в коде).
@@ -111,10 +114,6 @@ function detectProfileEnvFromLocation() {
   }
   return null;
 }
-
-const PROFILE_AUTO_ENV = detectProfileEnvFromLocation();
-const DEFAULT_PROFILE_STAND = (PROFILE_AUTO_ENV && PROFILE_AUTO_ENV.stand) || "PROM";
-const DEFAULT_PROFILE_CONTOUR = (PROFILE_AUTO_ENV && PROFILE_AUTO_ENV.contour) || "SIGMA";
 
 /** Стенд/контур для URL профиля; меняются выпадающими списками на панели. */
 let PROFILE_UI_STAND = DEFAULT_PROFILE_STAND;
