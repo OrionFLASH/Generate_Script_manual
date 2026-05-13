@@ -4,7 +4,7 @@
 // Для AddressBook используется отдельный стенд ALPHA.
 // Для фактических запросов приоритет у window.location.origin (чтобы credentials: 'include' использовал куки текущей вкладки).
 // Если origin вкладки недоступен (редко: file://), берётся fallback ADDRESSBOOK_ORIGINS.ALPHA.
-// Карточка empInfoFull: empId = UUID (employeeId из search), не 8-значный ТН. Если в hits несколько записей — GET по каждому уникальному employeeId.
+// Карточка empInfoFull: empId = UUID (employeeId из search), не 8-значный ТН. Сценарий Search → empInfoFull: сначала все POST search, сохранение ответов и CSV «что искали» → employeeId, затем GET empInfoFull по каждому уникальному employeeId (порядок первого появления по всем поискам).
 // =============================================================================
 // Вся логика в IIFE: повторная вставка скрипта в консоль не падает на «уже объявлено» (const/let на верхнем уровне).
 (function () {
@@ -128,6 +128,68 @@ function pickEmployeeIdsFromSearchData(data) {
 }
 
 /**
+ * Все employeeId в порядке следования в hits (включая повторы в разных строках hits).
+ * Пагинация: страница за страницей, внутри страницы — порядок элементов массива hits.
+ * @param {Array<{data: *}>} pages
+ * @returns {string[]}
+ */
+function collectEmployeeIdsFromSearchPagesInHitOrder(pages) {
+  if (!Array.isArray(pages)) return [];
+  var out = [];
+  for (var pi = 0; pi < pages.length; pi++) {
+    var pg = pages[pi];
+    var data = pg && pg.data;
+    if (!data || typeof data !== "object") continue;
+    var hits = Array.isArray(data.hits)
+      ? data.hits
+      : data.body && Array.isArray(data.body.hits)
+        ? data.body.hits
+        : [];
+    for (var hi = 0; hi < hits.length; hi++) {
+      var h = hits[hi];
+      if (!h || typeof h.employeeId !== "string") continue;
+      var id = h.employeeId.trim();
+      if (id.length === 0) continue;
+      out.push(id);
+    }
+  }
+  return out;
+}
+
+/**
+ * Уникальные UUID в порядке первого появления в плоском списке.
+ * @param {string[]} flatOrdered
+ * @returns {string[]}
+ */
+function uniqueEmployeeIdsFirstOccurrence(flatOrdered) {
+  var seen = {};
+  var out = [];
+  if (!Array.isArray(flatOrdered)) return out;
+  for (var i = 0; i < flatOrdered.length; i++) {
+    var id = flatOrdered[i];
+    if (!id || typeof id !== "string") continue;
+    id = id.trim();
+    if (id.length === 0 || seen[id]) continue;
+    seen[id] = true;
+    out.push(id);
+  }
+  return out;
+}
+
+/**
+ * Экранирование поля для CSV.
+ * @param {string|number|null|undefined} s
+ * @returns {string}
+ */
+function escapeCsvField(s) {
+  var t = String(s == null ? "" : s);
+  if (/[\r\n",]/.test(t)) {
+    return '"' + t.replace(/"/g, '""') + '"';
+  }
+  return t;
+}
+
+/**
  * Ключ стенда ALPHA и origin для URL запросов без завершающего слэша.
  * Приоритет — origin текущей вкладки (куки сессии совпадают с документом); иначе ADDRESSBOOK_ORIGINS.ALPHA.
  * @returns {{ standKey: string, origin: string }}
@@ -220,6 +282,25 @@ function downloadJson(filename, obj) {
   const blob = new Blob([JSON.stringify(obj, null, 2)], {
     type: "application/json"
   });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(function () {
+    URL.revokeObjectURL(a.href);
+  }, 0);
+}
+
+/**
+ * Сохранение текстового файла (CSV и т.п.).
+ * @param {string} filename
+ * @param {string} text
+ * @param {string} [mimeType]
+ */
+function downloadText(filename, text, mimeType) {
+  const blob = new Blob([text], { type: mimeType || "text/csv;charset=utf-8" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = filename;
@@ -325,8 +406,8 @@ function startAddressBookPanel() {
     wrap.appendChild(inp);
     return { wrap: wrap, inp: inp };
   }
-  var fieldBetween = mkPauseField("Пауза между сотрудниками в списке, мс", REQUEST_PAUSE_MS, "Between");
-  var fieldAfterSearch = mkPauseField("Пауза после search перед empInfoFull, мс", REQUEST_PAUSE_MS, "AfterSearch");
+  var fieldBetween = mkPauseField("Пауза между запросами (Search и empInfoFull), мс", REQUEST_PAUSE_MS, "Between");
+  var fieldAfterSearch = mkPauseField("Пауза после всех Search перед empInfoFull, мс", REQUEST_PAUSE_MS, "AfterSearch");
   rowParams.appendChild(fieldBetween.wrap);
   rowParams.appendChild(fieldAfterSearch.wrap);
   box.appendChild(rowParams);
@@ -350,7 +431,7 @@ function startAddressBookPanel() {
   bLoadTnFlow.type = "button";
   bLoadTnFlow.textContent = "Файл: Search → empInfoFull";
   bLoadTnFlow.title =
-    "После выбора файла запустить Search → empInfoFull (по всем employeeId из hits). Режим разбора — как выбран ниже.";
+    "После выбора файла: сначала все Search, сохранение ответов и CSV, затем empInfoFull по уникальным employeeId. Режим разбора — как выбран ниже.";
   bLoadTnFlow.style.cssText =
     fileBtnCss + "background:linear-gradient(180deg,#0284c7,#0369a1);box-shadow:0 2px 6px rgba(3,105,161,.3);";
   const bLoadTnSearch = document.createElement("button");
@@ -473,7 +554,7 @@ function startAddressBookPanel() {
     "text-align:center;line-height:1.25;box-sizing:border-box;display:flex;align-items:center;justify-content:center;";
   const b1 = document.createElement("button");
   b1.type = "button";
-  b1.textContent = "Search → empInfoFull (по всем employeeId)";
+  b1.textContent = "Search → empInfoFull (все Search, затем карточки)";
   b1.style.cssText = btnCss + "background:linear-gradient(180deg,#0284c7,#0369a1);box-shadow:0 2px 6px rgba(3,105,161,.3);";
   const b2 = document.createElement("button");
   b2.type = "button";
@@ -664,37 +745,44 @@ function startAddressBookPanel() {
   }
 
   /**
-   * search → empInfoFull по всем employeeId из каждого ответа search.
+   * Search → empInfoFull: фаза 1 — все POST search; сохранение ответов Search и CSV
+   * («что искали», employeeId по каждой строке hit); фаза 2 — GET empInfoFull по каждому
+   * уникальному employeeId (порядок первого появления по всем поискам подряд).
    * @param {{input: string, searchText: string|number, asNumber: boolean}[]} items
-   * @param {number} pauseBetweenMs
-   * @param {number} pauseAfterSearchMs
+   * @param {number} pauseBetweenMs — между запросами в фазе Search и между GET в фазе empInfoFull
+   * @param {number} pauseAfterSearchMs — после завершения всех Search, перед первым empInfoFull
    * @param {string} [sourceTag]
    */
   async function runSearchThenEmpInfoFullExport(items, pauseBetweenMs, pauseAfterSearchMs, sourceTag) {
     var prefix = sourceTag ? sourceTag + " — " : "";
+    var envKey = getAddressBookEnvKey();
+    var ts = Date.now();
     console.log(
       "[Адресная книга] Запущен сценарий search → empInfoFull. Значений: " +
         items.length +
-        ". Подробности — в «Журнал работы» на панели."
+        ". Сначала все Search, затем empInfoFull. Подробности — в «Журнал работы»."
     );
     appendLog(
       prefix +
         "Search → empInfoFull, значений: " +
         items.length +
         ", стенд: " +
-        getAddressBookEnvKey()
+        envKey +
+        " (фаза 1: все Search; фаза 2: empInfoFull)"
     );
-    const results = [];
-    var totalEmpInfoFullCalls = 0;
+
+    /** @type {string[][]} */
+    var perItemHitOrderedIds = [];
+    const searchPhasePayload = [];
+
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
       appendLog(
-        "[" +
+        "[Search " +
           (i + 1) +
           "/" +
           items.length +
-          "] " +
-          "«" +
+          "] «" +
           String(item.input).slice(0, 60) +
           (String(item.input).length > 60 ? "…" : "") +
           "» → search(" +
@@ -703,92 +791,136 @@ function startAddressBookPanel() {
       );
       try {
         const searchBundle = await fetchAllSearchPages(item);
-        const searchRes = searchBundle.pages.length > 0 ? searchBundle.pages[0] : null;
-        const empUuids = searchBundle.employeeIds;
+        const idsPerHit = collectEmployeeIdsFromSearchPagesInHitOrder(searchBundle.pages);
+        perItemHitOrderedIds.push(idsPerHit);
+        searchPhasePayload.push({
+          input: item.input,
+          searchText: item.searchText,
+          asNumber: item.asNumber,
+          searchPages: searchBundle.pages,
+          searchStats: {
+            totalPages: searchBundle.totalPages,
+            totalHits: searchBundle.totalHits,
+            uniqueEmployeeIds: searchBundle.employeeIds.length,
+            rowsInCsv: idsPerHit.length,
+            stopReason: searchBundle.stopReason
+          }
+        });
         appendLog(
           "    → итог Search: страниц=" +
             searchBundle.totalPages +
             ", hits=" +
             searchBundle.totalHits +
             ", уникальных employeeId=" +
-            empUuids.length
+            searchBundle.employeeIds.length +
+            ", строк для CSV (по hits)=" +
+            idsPerHit.length
         );
-        if (empUuids.length === 0) {
-          results.push({
-            input: item.input,
-            searchText: item.searchText,
-            search: searchRes,
-            searchPages: searchBundle.pages,
-            searchStats: {
-              totalPages: searchBundle.totalPages,
-              totalHits: searchBundle.totalHits,
-              uniqueEmployeeIds: empUuids.length,
-              stopReason: searchBundle.stopReason
-            },
-            cards: [],
-            error: "Нет employeeId в ответе search (пустые hits или неуспех)"
-          });
-          appendLog("    → пропуск: нет employeeId после search");
-        } else {
-          appendLog("    → для каждого найденного employeeId выполняется GET empInfoFull");
-          var cards = [];
-          for (var j = 0; j < empUuids.length; j++) {
-            var empUuid = empUuids[j];
-            appendLog(
-              "    → [" +
-                (j + 1) +
-                "/" +
-                empUuids.length +
-                "] employeeId " +
-                empUuid +
-                " → GET empInfoFull …"
-            );
-            if (j === 0) {
-              if (pauseAfterSearchMs > 0) await delay(pauseAfterSearchMs);
-            } else if (pauseBetweenMs > 0) {
-              await delay(pauseBetweenMs);
-            }
-            const full = await fetchEmpInfoFull(empUuid);
-            totalEmpInfoFullCalls++;
-            cards.push({ employeeId: empUuid, empInfoFull: full });
-            appendLog("    → empInfoFull HTTP " + full.status + (full.ok ? " OK" : " ошибка"));
-          }
-          results.push({
-            input: item.input,
-            searchText: item.searchText,
-            search: searchRes,
-            searchPages: searchBundle.pages,
-            searchStats: {
-              totalPages: searchBundle.totalPages,
-              totalHits: searchBundle.totalHits,
-              uniqueEmployeeIds: empUuids.length,
-              stopReason: searchBundle.stopReason
-            },
-            cards: cards
-          });
-        }
       } catch (e) {
-        results.push({ input: item.input, searchText: item.searchText, error: String(e) });
+        perItemHitOrderedIds.push([]);
+        searchPhasePayload.push({
+          input: item.input,
+          searchText: item.searchText,
+          asNumber: item.asNumber,
+          error: String(e)
+        });
         appendLog("    → исключение: " + e);
       }
       if (i < items.length - 1 && pauseBetweenMs > 0) await delay(pauseBetweenMs);
     }
-    const fname = "addressbook_empInfoFull_" + getAddressBookEnvKey() + "_" + Date.now() + ".json";
-    downloadJson(fname, results);
+
+    var flatHitOrder = [];
+    for (var fi = 0; fi < perItemHitOrderedIds.length; fi++) {
+      flatHitOrder = flatHitOrder.concat(perItemHitOrderedIds[fi]);
+    }
+    const allUniqueEmpIds = uniqueEmployeeIdsFirstOccurrence(flatHitOrder);
+
+    const fnameSearch = "addressbook_search_" + envKey + "_" + ts + ".json";
+    const fnameCsv = "addressbook_search_employeeId_map_" + envKey + "_" + ts + ".csv";
+    const fnameEmp = "addressbook_empInfoFull_" + envKey + "_" + ts + ".json";
+
     appendLog(
-      "Готово. Файл: " +
-        fname +
-        " (строк по ТН: " +
-        results.length +
-        ", всего GET empInfoFull: " +
+      "Сохранение ответов Search и CSV (до empInfoFull). Уникальных employeeId для GET: " +
+        allUniqueEmpIds.length
+    );
+    downloadJson(fnameSearch, {
+      exportedAt: new Date().toISOString(),
+      scenario: "search_then_empInfoFull_search_phase",
+      sourceTag: sourceTag || null,
+      stand: envKey,
+      items: searchPhasePayload
+    });
+
+    var csvLines = ["\uFEFFчто искали,employeeId"];
+    for (let ci = 0; ci < items.length; ci++) {
+      var searched = items[ci].input;
+      var rowIds = perItemHitOrderedIds[ci] || [];
+      for (var cj = 0; cj < rowIds.length; cj++) {
+        csvLines.push(escapeCsvField(searched) + "," + escapeCsvField(rowIds[cj]));
+      }
+    }
+    downloadText(fnameCsv, csvLines.join("\r\n"), "text/csv;charset=utf-8");
+
+    appendLog("Файлы фазы Search: " + fnameSearch + ", " + fnameCsv);
+
+    if (pauseAfterSearchMs > 0 && allUniqueEmpIds.length > 0) {
+      await delay(pauseAfterSearchMs);
+    }
+
+    appendLog("Фаза empInfoFull: запросов: " + allUniqueEmpIds.length);
+    const empResults = [];
+    var totalEmpInfoFullCalls = 0;
+    for (let k = 0; k < allUniqueEmpIds.length; k++) {
+      var empUuid = allUniqueEmpIds[k];
+      appendLog(
+        "[" +
+          (k + 1) +
+          "/" +
+          allUniqueEmpIds.length +
+          "] employeeId " +
+          empUuid +
+          " → GET empInfoFull …"
+      );
+      if (k > 0 && pauseBetweenMs > 0) await delay(pauseBetweenMs);
+      try {
+        const full = await fetchEmpInfoFull(empUuid);
+        totalEmpInfoFullCalls++;
+        empResults.push({ employeeId: empUuid, empInfoFull: full });
+        appendLog("    → empInfoFull HTTP " + full.status + (full.ok ? " OK" : " ошибка"));
+      } catch (e) {
+        empResults.push({ employeeId: empUuid, error: String(e) });
+        appendLog("    → исключение: " + e);
+      }
+    }
+
+    downloadJson(fnameEmp, {
+      exportedAt: new Date().toISOString(),
+      scenario: "search_then_empInfoFull_empInfoFull_phase",
+      sourceTag: sourceTag || null,
+      stand: envKey,
+      searchFiles: { searchJson: fnameSearch, searchEmployeeIdCsv: fnameCsv },
+      totalUniqueEmployeeIds: allUniqueEmpIds.length,
+      results: empResults
+    });
+
+    appendLog(
+      "Готово. Файлы: " +
+        fnameSearch +
+        ", " +
+        fnameCsv +
+        ", " +
+        fnameEmp +
+        " (GET empInfoFull: " +
         totalEmpInfoFullCalls +
         ")"
     );
     console.log(
-      "[Адресная книга] Готово. Файл: " +
-        fname +
-        " | строк по входу: " +
-        results.length +
+      "[Адресная книга] Готово. Search: " +
+        fnameSearch +
+        " | CSV: " +
+        fnameCsv +
+        " | empInfoFull: " +
+        fnameEmp +
         " | запросов empInfoFull: " +
         totalEmpInfoFullCalls
     );
