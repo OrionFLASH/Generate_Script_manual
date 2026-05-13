@@ -26,23 +26,27 @@
 Оформление: ширина панели **`min(700px, 100vw − отступы)`**; один общий блок ввода + режим разбора + наборы кнопок по полю и по файлу.
 
 1. **Стенд** — фиксированный `ALPHA`, плюс фактический `origin` + `/api/home/…`.
-2. **Параметры** — компактный блок в две колонки: подпись и поле числа **в одной строке** (пауза **между сотрудниками в списке**, мс — для всех сценариев с циклом; пауза **после search перед empInfoFull**, мс — только для цепочки карточек). Диапазон 0…300000; на время выполнения поля блокируются.
+2. **Параметры** — компактный блок в две колонки: подпись и поле числа **в одной строке** (пауза **между запросами в списке**, мс — между вызовами в фазе Search, между GET в фазе empInfoFull; пауза **после всех Search перед первым empInfoFull**, мс). Диапазон 0…300000; на время выполнения поля блокируются.
 3. **Три кнопки для файла `.txt`** (в одну строку): `Файл: Search → empInfoFull`, `Файл: Только Search`, `Файл: Только empInfoFull`. После выбора файла запускается тот сценарий, который был нажат.
 4. **Один общий textarea** для всех сценариев со значением по умолчанию из **`EMP_IDS`**.
 5. **Режим разбора**:
    - `Табельный номер (нормализация)` — любые разделители, берутся группы цифр (`parseEmpIdsFromText`), для search отправляется число без ведущих нулей (`tabNumToSearchNumber`);
    - `Значения для поиска (без нормализации)` — разделители только перенос строки, `;`, `,` (`parseSearchValuesRaw`), пробел внутри строки сохраняется (ФИО уходит целиком).
-6. **Три кнопки для поля** (в одну строку): `Search → empInfoFull (по всем employeeId)`, `Только Search`, `Только empInfoFull`.
+6. **Три кнопки для поля** (в одну строку): `Search → empInfoFull (все Search, затем карточки)`, `Только Search`, `Только empInfoFull`.
 7. **Журнал работы** — область с **min-height ~168px**, max-height ~300px, прокрутка; подробные сообщения **только** здесь. В **консоли** — кратко: открытие панели, старт сценария, итог (имя файла и счётчики).
 8. На время сценария блокируются кнопки, поля пауз и переключатели режима (`setBusy`).
 9. **Закрыть панель** — `remove()` корня панели (см. п. «Запуск»).
 
-Имена файлов (суффикс стенда **ALPHA**):
-- `addressbook_empInfoFull_ALPHA_<timestamp>.json` — сценарий `Search → empInfoFull` (поле/файл),
+Имена файлов (суффикс стенда **ALPHA**; для `Search → empInfoFull` у трёх файлов **одинаковый** `<timestamp>`):
+- `addressbook_search_ALPHA_<timestamp>.json` — ответы **всех** POST search (фаза 1),
+- `addressbook_search_employeeId_map_ALPHA_<timestamp>.csv` — столбцы **`что искали`**, **`employeeId`**: по одной строке на каждую запись в `hits` (если по одному запросу несколько строк — несколько строк CSV); UTF-8 с BOM для Excel,
+- `addressbook_empInfoFull_ALPHA_<timestamp>.json` — результаты GET **empInfoFull** по каждому **уникальному** `employeeId` (порядок первого появления по всем поискам подряд); в корне объекта — ссылки на два файла фазы Search.
+
+Сценарии **только Search** / **только empInfoFull** — по-прежнему по одному JSON на выгрузку:
 - `addressbook_search_only_ALPHA_<timestamp>.json` — сценарий `Только Search`,
 - `addressbook_empInfoFull_only_ALPHA_<timestamp>.json` — сценарий `Только empInfoFull`.
 
-**Структура JSON для сценария `Search → empInfoFull`:** массив объектов по одному входному значению. Поля: `input`, `searchText`, `search` (ответ POST search). Если в `hits` есть валидные `employeeId` — массив **`cards`**: элементы `{ employeeId, empInfoFull }` (GET по каждому UUID, дубликаты UUID в выборке опускаются). Если подходящих id нет — **`cards`: []** и строка **`error`**. Пауза «после search» применяется перед первым `empInfoFull`; между несколькими карточками одного входа — пауза «между сотрудниками».
+**Сценарий `Search → empInfoFull`:** сначала выполняются **все** поиски по списку входа; затем сохраняются JSON с полными страницами search и CSV соответствия; после этого — последовательные GET `empInfoFull` (один запрос на UUID, без дубликатов). Структура `addressbook_empInfoFull_…json`: объект с полями `results` (массив `{ employeeId, empInfoFull }` или `error`), `totalUniqueEmployeeIds`, `searchFiles`, метаданные экспорта.
 
 ## 5. Переменные и функции
 
@@ -52,6 +56,9 @@
 | `ADDRESSBOOK_ORIGINS` | `ALPHA` — отдельный fallback-host AddressBook, если нет `location.origin` |
 | `getAddressBookStandAndOrigin()` | `origin` = вкладка или fallback; `standKey` = `ALPHA` |
 | `tabNumToSearchNumber` | ТН из поля (8 цифр) → число для тела search (без ведущих нулей) |
+| `collectEmployeeIdsFromSearchPagesInHitOrder` | Все `employeeId` из hits по порядку (с повторами по строкам hits), с учётом пагинации |
+| `uniqueEmployeeIdsFirstOccurrence` | Уникальные UUID в порядке первого появления в плоском списке |
+| `escapeCsvField`, `downloadText` | CSV-экранирование и сохранение текстового файла |
 | `pickEmployeeIdsFromSearchData` | Из JSON ответа search — все уникальные `employeeId` из `hits` (порядок как в ответе) |
 | `ADDRESSBOOK_API_HOME` | Префикс пути `/api/home` |
 | `EMP_IDS` | Табельные по умолчанию для подсказки в textarea |
@@ -68,6 +75,7 @@
 | `fetchEmpInfoFull(empId)` | GET empInfoFull (`empId` — UUID) |
 | `fetchEmployeesSearch(searchText, asNumber)` | POST search; `asNumber === true` — ТН в JSON как число |
 | `downloadJson(filename, obj)` | Сохранение объекта в JSON на диск |
+| `downloadText(filename, text, mimeType?)` | Сохранение текста (CSV) на диск |
 | `startAddressBookPanel()` | Панель: `addressBookExportPanelRoot`, «Журнал работы», блокировка параллельных сценариев; вызывается в конце файла **внутри IIFE** |
 
 ## 6. История версий (документ)
@@ -92,5 +100,7 @@
 | 1.15 | Добавлен выбор окружения на панели: **стенд `PROM/PSI`** и **контур `ALPHA/SIGMA`**. В логах и именах файлов используется суффикс `<STAND>_<CONTOUR>`. Запросы по-прежнему с приоритетом на `origin` текущей вкладки, fallback — по `ADDRESSBOOK_ORIGINS`. |
 | 1.16 | Возвращён режим с **одним отдельным стендом ALPHA** без выбора стенда/контура на панели. В логах и именах файлов снова фиксированный суффикс `ALPHA`; fallback возвращён на `ADDRESSBOOK_ORIGINS.ALPHA`. |
 | 1.17 | Актуализирована документация и описания по текущему состоянию скрипта; изменений бизнес-логики нет. |
+| 1.18 | Сценарий **Search → empInfoFull**: фаза 1 — все POST search; сохранение `addressbook_search_…json` и CSV **`что искали`, `employeeId`** (строка на каждый hit); фаза 2 — GET empInfoFull по уникальным UUID (`addressbook_empInfoFull_…json`); общий `<timestamp>` у трёх файлов; пауза «после Search» — после всех поисков перед первым GET. |
+| 1.19 | В корне репозитория добавлен [ROADMAP.md](../ROADMAP.md) (§ 3 — план работ и декомпозиция по этому скрипту). |
 
 *Актуальность проверяйте по `Script/AddressBook_export.js`.*
