@@ -6,15 +6,25 @@
 
 `POST {origin}/bo/rmkib.gamification/proxy/v1/news`
 
-Тело запроса (по умолчанию):
+Тело запроса собирается с панели (чекбоксы). Пример с несколькими тегами:
 
 ```json
 {
   "newsStatus": "published",
-  "newsTagList": [{ "tagType": "NEWS_TYPE", "tagCode": "bestPractice" }],
+  "newsTagList": [
+    { "tagType": "NEWS_TYPE", "tagCode": "bestPractice" },
+    { "tagType": "NEWS_TYPE", "tagCode": "achievement" }
+  ],
   "pageNum": 1
 }
 ```
+
+Списки допустимых значений задаются в скрипте:
+
+- `NEWS_STATUS_OPTIONS` — варианты `newsStatus` (по умолчанию отмечен `published`);
+- `NEWS_TAG_OPTIONS` — пары `tagType` + `tagCode` (по умолчанию `bestPractice`; также `achievement`, `publication`).
+
+Если отмечён один `newsStatus`, в JSON уходит строка; если несколько — массив строк.
 
 Пагинация: в ответе `body.page` — поля `total`, `isLast`, `num`. Скрипт увеличивает `pageNum`, пока `isLast !== true` и пока `pageNum < total`.
 
@@ -51,12 +61,15 @@
 ## Панель
 
 - Выбор стенда и контура, автоопределение по `window.location.origin`
-- Поля `newsStatus`, `tagType`, `tagCode`
+- Чекбоксы `newsStatus` и `newsTagList` (без ручного ввода)
 - Пауза между страницами (мс), префикс имени файла
 - **Журнал работы** (лента)
+
+Сводка HTTP и порядок шагов: [Справочник_скрипты_HTTP_запросы_и_последовательность.md](Справочник_скрипты_HTTP_запросы_и_последовательность.md) (§ 6).
 
 ## История версий
 
 | Версия | Изменения |
 |--------|-----------|
 | 1.0 | Первая версия: POST news, пагинация, JSON + CSV leaders/authors |
+| 1.1 | Множественный выбор newsStatus и newsTagList через чекбоксы; справочники в константах скрипта |

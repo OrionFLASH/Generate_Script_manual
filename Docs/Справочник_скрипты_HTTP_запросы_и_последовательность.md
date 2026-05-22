@@ -1,6 +1,6 @@
 # Справочник: скрипты каталога `Script/` — HTTP-запросы, payload и порядок выполнения
 
-Документ описывает **все семь скриптов** из `Script/`: какие обращения к сети выполняются, **тело запроса (payload)** где применимо, и **логическая последовательность** шагов. Аутентификация везде опирается на **куки текущей вкладки** (`credentials: "include"`); URL-ы стендов приведены как в коде (без реальных секретов).
+Документ описывает **все восемь скриптов** из `Script/`: какие обращения к сети выполняются, **тело запроса (payload)** где применимо, и **логическая последовательность** шагов. Аутентификация везде опирается на **куки текущей вкладки** (`credentials: "include"`); URL-ы стендов приведены как в коде (без реальных секретов).
 
 Подробные ТЗ по отдельным скриптам остаются в профильных файлах `Docs/*.md`; здесь — **единая сводка для быстрого поиска**. Маршрутный план по модулям и подпунктам — в корневом [ROADMAP.md](../ROADMAP.md).
 
@@ -161,7 +161,30 @@
 
 ---
 
-## 6. `UI_AutoTest.js`
+## 6. `News_Community_Export.js`
+
+**Назначение:** выгрузка списка новостей community с пагинацией и экспорт JSON / CSV (leaders + authors).
+
+**Origin:** `NEWS_ORIGINS[стенд][контур]` — путь **`/bo/rmkib.gamification/proxy/v1/news`** (через proxy). Стенды: `PROM` | `PSI` | `IFT-SB` | `IFT-GF`; контуры: `ALPHA` | `SIGMA`. Автоопределение по `window.location.origin`.
+
+| Шаг | Метод | Путь | Payload (JSON) |
+|-----|--------|------|----------------|
+| 1..N | **POST** | `/bo/rmkib.gamification/proxy/v1/news` | `{ "newsStatus": "<строка или массив>", "newsTagList": [ { "tagType", "tagCode" }, … ], "pageNum": 1..total }` |
+
+**Параметры payload** задаются чекбоксами на панели; допустимые значения — константы **`NEWS_STATUS_OPTIONS`** и **`NEWS_TAG_OPTIONS`** в скрипте. Один отмеченный `newsStatus` → строка в JSON; несколько → массив. В `newsTagList` — только выбранные пары `tagType` + `tagCode`.
+
+**Последовательность:**
+
+1. Пользователь отмечает `newsStatus` и теги, задаёт паузу между страницами.
+2. Цикл **POST** с `pageNum = 1, 2, …` до `body.page.isLast === true` или `pageNum >= body.page.total`.
+3. Ответы объединяются в `merged` (`timePeriod[].news` по имени периода).
+4. Сохранение: только JSON (**«Загрузить новости → JSON»**) или JSON + CSV leaders/authors (**«Выгрузить JSON + CSV»**) с одним таймштампом в имени.
+
+Для контура **SIGMA** в заголовках — `Origin` и `Referer` (первая выбранная пара тега). Подробности: [Docs/Скрипт_новости_community_News_Community_Export.md](Скрипт_новости_community_News_Community_Export.md).
+
+---
+
+## 7. `UI_AutoTest.js`
 
 **Назначение:** локальная автоматизация UI **без прямых вызовов `fetch`**: последовательный проход по фиксированному списку внутренних путей меню (`MENU_HREFS`: `/community`, `/tournaments`, …, `/admin/parameters` и др.) — поиск `a[href="…"]` в DOM и вызов **`click()`** для каждого шага.
 
@@ -171,7 +194,7 @@
 
 ---
 
-## 7. `UI_AutoTest_LinksCrawler.js`
+## 8. `UI_AutoTest_LinksCrawler.js`
 
 **Назначение:** многоэтапный обход **внутренних ссылок** текущего приложения из консоли: сбор ссылок, ручной выбор, переходы **только кликом** по `<a>` (без подмены `location` скриптом), построение следующего этапа из дочерних ссылок успешных переходов, статусы `OK` / `FAIL` / `SKIPPED`, остановка, лимиты объёма, опциональный лог в файл и восстановление из `sessionStorage`.
 
@@ -189,6 +212,7 @@
 | `AddressBook_export.js` | POST JSON + GET | search: `{ searchText, pageToken }`; empInfoFull: query `empId` |
 | `Parameters_Actual_Export.js` | POST JSON | `{ status }`, `{ objectIds }`, create body, update body |
 | `Tournament_LeadersForAdmin.js` | GET JSON | — |
+| `News_Community_Export.js` | POST JSON | `{ newsStatus, newsTagList[], pageNum }` |
 | `UI_AutoTest.js` | — | — (клики по меню, без `fetch`) |
 | `UI_AutoTest_LinksCrawler.js` | — | — (клики по ссылкам этапов, без `fetch`) |
 
@@ -215,5 +239,6 @@
 | **1.14** | `Parameters_Actual_Export`: обновлён верхний UI действий — кнопки вынесены в строку рядом со вкладками и показываются по контексту вкладки; `🧩` перенесена наверх и подписана как «Сформировать шаблон Payload». Для «Создания» объединение дефолт+API распространяется и на `businessBlock`. В «Редактировании» добавлены взаимозависимые фильтры `businessBlock`/`parameterType` для `parameterCode` (с fallback на полный список при невалидном фильтре), подтверждения create/update переведены на широкие модальные окна общего стиля. Также обновлён fallback окружения при автоопределении на `PROM/ALPHA`. |
 | **1.15** | `AddressBook_export`: сценарий **Search → empInfoFull** — сначала все POST search по списку, затем выгрузка JSON+CSV, затем GET **empInfoFull** только по **уникальным** UUID (один GET на id). |
 | **1.16** | Актуализирован § **6** (`UI_AutoTest.js` — проход по списку `MENU_HREFS`, ожидание загрузки). Добавлен § **7** (`UI_AutoTest_LinksCrawler.js`); сводная таблица дополнена строкой для краулера; введение и ссылка на [ROADMAP.md](../ROADMAP.md). |
+| **1.17** | Добавлен § **6** `News_Community_Export.js` (POST `/proxy/v1/news`, пагинация, чекбоксы `NEWS_STATUS_OPTIONS` / `NEWS_TAG_OPTIONS`); разделы UI-автотестов сдвинуты на § **7** и § **8**; сводная таблица и введение (восемь скриптов). |
 
 *Актуальность проверяйте по скриптам в `Script/`.*

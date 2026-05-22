@@ -32,11 +32,40 @@
   const DEFAULT_NEWS_STAND = (NEWS_AUTO_ENV && NEWS_AUTO_ENV.stand) || "PROM";
   const DEFAULT_NEWS_CONTOUR = (NEWS_AUTO_ENV && NEWS_AUTO_ENV.contour) || "SIGMA";
 
-  /** Значения payload по умолчанию (как в ToDo / HAR). */
-  const DEFAULT_NEWS_STATUS = "published";
-  const DEFAULT_TAG_TYPE = "NEWS_TYPE";
-  const DEFAULT_TAG_CODE = "bestPractice";
   const DEFAULT_REQUEST_GAP_MS = 5;
+
+  /**
+   * Допустимые newsStatus — чекбоксы на панели (редактируйте список в скрипте).
+   * @type {{ value: string, label: string, defaultChecked?: boolean }[]}
+   */
+  const NEWS_STATUS_OPTIONS = [
+    { value: "published", label: "published", defaultChecked: true }
+  ];
+
+  /**
+   * Пары tagType + tagCode для newsTagList — каждый пункт = одна отмеченная пара в payload.
+   * @type {{ tagType: string, tagCode: string, label: string, defaultChecked?: boolean }[]}
+   */
+  const NEWS_TAG_OPTIONS = [
+    {
+      tagType: "NEWS_TYPE",
+      tagCode: "bestPractice",
+      label: "bestPractice · NEWS_TYPE",
+      defaultChecked: true
+    },
+    {
+      tagType: "NEWS_TYPE",
+      tagCode: "achievement",
+      label: "achievement · NEWS_TYPE",
+      defaultChecked: false
+    },
+    {
+      tagType: "NEWS_TYPE",
+      tagCode: "publication",
+      label: "publication · NEWS_TYPE",
+      defaultChecked: false
+    }
+  ];
   const DEFAULT_EXPORT_FILENAME_PREFIX_PLACEHOLDER = "авто: news_community_{стенд}_{контур}_";
 
   /** Поля person (leaders / authors) в CSV — без colorCode и tags. */
@@ -132,35 +161,86 @@
   /**
    * Тело POST для страницы списка новостей.
    * @param {number} pageNum
-   * @param {{ newsStatus: string, tagType: string, tagCode: string }} opts
+   * @param {{ newsStatuses: string[], newsTagList: { tagType: string, tagCode: string }[] }} opts
    */
   function buildNewsPayload(pageNum, opts) {
     var o = opts || {};
-    return {
-      newsStatus: String(o.newsStatus || DEFAULT_NEWS_STATUS).trim() || DEFAULT_NEWS_STATUS,
-      newsTagList: [
-        {
-          tagType: String(o.tagType || DEFAULT_TAG_TYPE).trim() || DEFAULT_TAG_TYPE,
-          tagCode: String(o.tagCode || DEFAULT_TAG_CODE).trim() || DEFAULT_TAG_CODE
-        }
-      ],
+    var statuses = Array.isArray(o.newsStatuses) ? o.newsStatuses.slice() : [];
+    var tags = Array.isArray(o.newsTagList) ? o.newsTagList.slice() : [];
+
+    if (statuses.length === 0 && NEWS_STATUS_OPTIONS.length > 0) {
+      statuses.push(String(NEWS_STATUS_OPTIONS[0].value));
+    }
+    if (tags.length === 0 && NEWS_TAG_OPTIONS.length > 0) {
+      tags.push({
+        tagType: String(NEWS_TAG_OPTIONS[0].tagType),
+        tagCode: String(NEWS_TAG_OPTIONS[0].tagCode)
+      });
+    }
+
+    var payload = {
+      newsTagList: tags.map(function (t) {
+        return {
+          tagType: String(t.tagType || "").trim(),
+          tagCode: String(t.tagCode || "").trim()
+        };
+      }),
       pageNum: Math.max(1, Math.floor(Number(pageNum) || 1))
     };
+
+    if (statuses.length === 1) {
+      payload.newsStatus = statuses[0];
+    } else if (statuses.length > 1) {
+      payload.newsStatus = statuses;
+    } else {
+      payload.newsStatus = "published";
+    }
+
+    return payload;
   }
 
   /**
-   * Referer для SIGMA — как в UI community с фильтром тега.
-   * @param {string} origin
-   * @param {string} tagCode
-   * @param {string} tagType
+   * Краткая подпись выбранных параметров для журнала.
+   * @param {{ newsStatuses: string[], newsTagList: { tagType: string, tagCode: string }[] }} opts
    */
-  function buildCommunityReferer(origin, tagCode, tagType) {
+  function formatPayloadOptsForLog(opts) {
+    var st = opts.newsStatuses || [];
+    var tags = opts.newsTagList || [];
+    var stTxt =
+      st.length === 0
+        ? "—"
+        : st.length === 1
+          ? st[0]
+          : "[" + st.join(", ") + "]";
+    var tagTxt =
+      tags.length === 0
+        ? "—"
+        : tags
+            .map(function (t) {
+              return t.tagCode + "/" + t.tagType;
+            })
+            .join(", ");
+    return "newsStatus=" + stTxt + " | newsTagList: " + tags.length + " (" + tagTxt + ")";
+  }
+
+  /**
+   * Referer для SIGMA — как в UI community (первая выбранная пара тега).
+   * @param {string} origin
+   * @param {{ tagType: string, tagCode: string }[]} tagList
+   */
+  function buildCommunityReferer(origin, tagList) {
     var base = String(origin || "").replace(/\/$/, "");
+    var first =
+      tagList && tagList.length > 0
+        ? tagList[0]
+        : NEWS_TAG_OPTIONS.length > 0
+          ? NEWS_TAG_OPTIONS[0]
+          : { tagCode: "bestPractice", tagType: "NEWS_TYPE" };
     var q =
       "newsTagList=" +
-      encodeURIComponent(String(tagCode || DEFAULT_TAG_CODE)) +
+      encodeURIComponent(String(first.tagCode)) +
       "%7C" +
-      encodeURIComponent(String(tagType || DEFAULT_TAG_TYPE));
+      encodeURIComponent(String(first.tagType));
     return base + "/community?" + q;
   }
 
@@ -178,11 +258,7 @@
     };
     if (contourKey === "SIGMA") {
       headers.Origin = origin;
-      headers.Referer = buildCommunityReferer(
-        origin,
-        payload.newsTagList && payload.newsTagList[0] && payload.newsTagList[0].tagCode,
-        payload.newsTagList && payload.newsTagList[0] && payload.newsTagList[0].tagType
-      );
+      headers.Referer = buildCommunityReferer(origin, payload.newsTagList);
     }
     var res = await fetch(url, {
       method: "POST",
@@ -433,7 +509,7 @@
     const titleSub = document.createElement("div");
     titleSub.style.cssText = "font-size:11px;color:#64748b;margin-bottom:10px;line-height:1.4;";
     titleSub.textContent =
-      "Последовательные POST с pageNum по полям page.total / page.isLast. «JSON» — только полный JSON. «CSV» — те же запросы в фоне, затем полный JSON и CSV (leaders + authors) с одним таймштампом в имени.";
+      "POST с pageNum и пагинацией. newsStatus и newsTagList (пары tagType+tagCode) — чекбоксы; списки вариантов задаются константами NEWS_STATUS_OPTIONS и NEWS_TAG_OPTIONS в скрипте.";
     root.appendChild(titleSub);
 
     const stRow = document.createElement("div");
@@ -510,30 +586,80 @@
       "margin-bottom:10px;padding:10px;border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc;";
     const payloadTitle = document.createElement("div");
     payloadTitle.style.cssText = "font-weight:600;font-size:11px;color:#475569;margin-bottom:8px;";
-    payloadTitle.textContent = "Параметры POST (payload по умолчанию)";
+    payloadTitle.textContent = "Параметры POST — отметьте чекбоксами (списки в NEWS_STATUS_OPTIONS / NEWS_TAG_OPTIONS)";
     payloadBox.appendChild(payloadTitle);
 
-    function addPayloadField(label, id, value, width) {
-      const wrap = document.createElement("label");
-      wrap.style.cssText =
-        "display:inline-flex;align-items:center;gap:6px;margin:0 12px 6px 0;font-size:11px;color:#334155;";
-      wrap.appendChild(document.createTextNode(label + ":"));
-      const inp = document.createElement("input");
-      inp.id = id;
-      inp.type = "text";
-      inp.value = value;
-      inp.style.cssText =
-        "padding:4px 8px;font-size:11px;border:1px solid #94a3b8;border-radius:4px;color:#111827;background:#fff;width:" +
-        (width || "140px") +
-        ";box-sizing:border-box;color-scheme:light;";
-      wrap.appendChild(inp);
-      payloadBox.appendChild(wrap);
-      return inp;
+    /**
+     * Сетка чекбоксов; возвращает функции чтения выбранных значений.
+     * @param {HTMLElement} parent
+     * @param {string} blockTitle
+     * @param {{ key: string, label: string, defaultChecked?: boolean }[]} items
+     * @returns {{ getSelectedKeys: function(): string[] }}
+     */
+    function appendCheckboxBlock(parent, blockTitle, items) {
+      const block = document.createElement("div");
+      block.style.cssText = "margin-bottom:10px;";
+      const lab = document.createElement("div");
+      lab.style.cssText = "font-weight:600;font-size:11px;color:#334155;margin-bottom:6px;";
+      lab.textContent = blockTitle;
+      block.appendChild(lab);
+
+      const grid = document.createElement("div");
+      grid.style.cssText =
+        "display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 12px;align-items:center;";
+      const checks = {};
+      items.forEach(function (item) {
+        const row = document.createElement("label");
+        row.style.cssText =
+          "margin:0;color:#111827;line-height:1.35;display:flex;align-items:center;gap:6px;min-width:0;cursor:pointer;font-size:11px;";
+        const c = document.createElement("input");
+        c.type = "checkbox";
+        c.checked = !!item.defaultChecked;
+        checks[item.key] = c;
+        row.appendChild(c);
+        const sp = document.createElement("span");
+        sp.style.cssText = "color:#334155;word-break:break-word;";
+        sp.textContent = item.label;
+        row.appendChild(sp);
+        grid.appendChild(row);
+      });
+      block.appendChild(grid);
+      parent.appendChild(block);
+
+      return {
+        getSelectedKeys: function () {
+          const out = [];
+          Object.keys(checks).forEach(function (k) {
+            if (checks[k].checked) out.push(k);
+          });
+          return out;
+        }
+      };
     }
 
-    const inpNewsStatus = addPayloadField("newsStatus", "newsPayloadStatus", DEFAULT_NEWS_STATUS, "120px");
-    const inpTagType = addPayloadField("tagType", "newsPayloadTagType", DEFAULT_TAG_TYPE, "120px");
-    const inpTagCode = addPayloadField("tagCode", "newsPayloadTagCode", DEFAULT_TAG_CODE, "140px");
+    const statusCtl = appendCheckboxBlock(
+      payloadBox,
+      "newsStatus (можно несколько)",
+      NEWS_STATUS_OPTIONS.map(function (opt) {
+        return {
+          key: opt.value,
+          label: opt.label || opt.value,
+          defaultChecked: !!opt.defaultChecked
+        };
+      })
+    );
+
+    const tagCtl = appendCheckboxBlock(
+      payloadBox,
+      "newsTagList — пары tagType + tagCode (можно несколько)",
+      NEWS_TAG_OPTIONS.map(function (opt, idx) {
+        return {
+          key: String(idx),
+          label: opt.label || opt.tagCode + " · " + opt.tagType,
+          defaultChecked: !!opt.defaultChecked
+        };
+      })
+    );
 
     const stRowRight = document.createElement("div");
     stRowRight.style.cssText =
@@ -611,11 +737,29 @@
     log("Панель открыта. «CSV» сразу запускает выгрузку и сохраняет JSON + CSV; «JSON» — только JSON.");
 
     function readPayloadOpts() {
-      return {
-        newsStatus: inpNewsStatus.value,
-        tagType: inpTagType.value,
-        tagCode: inpTagCode.value
-      };
+      var statuses = statusCtl.getSelectedKeys();
+      var tagKeys = tagCtl.getSelectedKeys();
+      var tags = [];
+      tagKeys.forEach(function (key) {
+        var idx = parseInt(key, 10);
+        var opt = NEWS_TAG_OPTIONS[idx];
+        if (opt) {
+          tags.push({ tagType: String(opt.tagType), tagCode: String(opt.tagCode) });
+        }
+      });
+      return { newsStatuses: statuses, newsTagList: tags };
+    }
+
+    function validatePayloadOpts(opts) {
+      if (!opts.newsStatuses || opts.newsStatuses.length === 0) {
+        log("Остановка: не выбран ни один newsStatus.");
+        return false;
+      }
+      if (!opts.newsTagList || opts.newsTagList.length === 0) {
+        log("Остановка: не выбрана ни одна пара newsTagList (tagType + tagCode).");
+        return false;
+      }
+      return true;
     }
 
     function readRequestGapMs() {
@@ -653,6 +797,9 @@
       var env = getNewsEnv();
       var gapMs = readRequestGapMs();
       var payloadOpts = readPayloadOpts();
+      if (!validatePayloadOpts(payloadOpts)) {
+        return null;
+      }
       var prefix = buildExportFilenamePrefix(env.stand, env.contour);
 
       log(
@@ -662,12 +809,8 @@
           env.stand +
           "/" +
           env.contour +
-          " | newsStatus=" +
-          payloadOpts.newsStatus +
-          " | tag=" +
-          payloadOpts.tagCode +
-          "/" +
-          payloadOpts.tagType +
+          " | " +
+          formatPayloadOptsForLog(payloadOpts) +
           " | пауза " +
           gapMs +
           " мс"
@@ -681,7 +824,18 @@
 
       while (true) {
         var payload = buildNewsPayload(pageNum, payloadOpts);
-        log("Страница " + pageNum + " — POST pageNum=" + pageNum);
+        log(
+          "Страница " +
+            pageNum +
+            " — POST pageNum=" +
+            pageNum +
+            " | " +
+            JSON.stringify({
+              newsStatus: payload.newsStatus,
+              newsTagList: payload.newsTagList,
+              pageNum: payload.pageNum
+            })
+        );
         var fr;
         try {
           fr = await fetchNewsPage(env.origin, env.contour, payload);
@@ -753,7 +907,7 @@
           origin: env.origin,
           fetchedAt: new Date().toISOString(),
           pagesFetched: rawPages.length,
-          payloadDefaults: readPayloadOpts(),
+            payloadDefaults: payloadOpts,
           newsItemsMerged: newsTotal
         },
         pages: rawPages,

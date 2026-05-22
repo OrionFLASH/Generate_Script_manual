@@ -228,7 +228,7 @@
 ### 6.1 Конфигурация
 
 - `[v]` `NEWS_ORIGINS`, стенды/контуры, автоопределение по `window.location.origin`.
-- `[v]` Параметры payload по умолчанию: `newsStatus`, `newsTagList` (tagType + tagCode).
+- `[v]` Справочники `NEWS_STATUS_OPTIONS` и `NEWS_TAG_OPTIONS` (чекбоксы на панели, без ручного ввода).
 
 ### 6.2 POST `/proxy/v1/news`
 
@@ -242,7 +242,8 @@
 
 ### 6.4 UI-панель
 
-- `[v]` IIFE, журнал, две кнопки (JSON / CSV), блокировка повторного запуска.
+- `[v]` IIFE, журнал, две кнопки (JSON / JSON+CSV), блокировка повторного запуска.
+- `[v]` Валидация: хотя бы один `newsStatus` и одна пара `newsTagList` перед POST.
 
 ---
 
