@@ -40,6 +40,9 @@ const PARAMETER_TYPE_OPTIONS = [
   /** Пауза между последовательными POST из файла (create/update), мс. */
   const PARAM_BATCH_REQUEST_GAP_MS = 50;
 
+  /** Автоэкранирование внутренних кавычек в parameterName/parameterValue перед POST. */
+  let autoEscapeQuotesEnabled = true;
+
   const PARAMETER_ORIGINS = {
     PROM: {
       SIGMA: "https://salesheroes.sberbank.ru",
@@ -677,17 +680,167 @@ const PARAMETER_TYPE_OPTIONS = [
   }
 
   /**
+   * @param {Record<string, unknown>} rec
+   * @returns {boolean}
+   */
+  function isParameterValuePresent(rec) {
+    if (!("parameterValue" in rec)) return false;
+    const v = rec.parameterValue;
+    if (v == null) return false;
+    if (typeof v === "object") return true;
+    return String(v).trim() !== "";
+  }
+
+  /**
+   * Экранирует неэкранированные двойные кавычки внутри строки (не трогает уже экранированные).
+   * @param {string} s
+   * @returns {string}
+   */
+  function escapeInnerDoubleQuotes(s) {
+    let out = "";
+    for (let i = 0; i < s.length; i++) {
+      const ch = s[i];
+      if (ch === '"' && (i === 0 || s[i - 1] !== "\\")) {
+        out += '\\"';
+      } else {
+        out += ch;
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Приводит parameterValue к строке для API: объект из файла → JSON.stringify; строка-JSON → канонический JSON.
+   * @param {unknown} pv
+   * @returns {string}
+   */
+  function normalizeParameterValueForApi(pv) {
+    if (pv != null && typeof pv === "object") {
+      return JSON.stringify(pv);
+    }
+    const s = String(pv == null ? "" : pv);
+    const trimmed = s.trim();
+    if (!trimmed) return "";
+    try {
+      return JSON.stringify(JSON.parse(trimmed));
+    } catch {
+      if (autoEscapeQuotesEnabled) {
+        return escapeInnerDoubleQuotes(s);
+      }
+      return s;
+    }
+  }
+
+  /**
+   * Нормализация записи перед validate/POST: object parameterValue, escape имён и текстовых значений.
+   * @param {unknown} rec
+   * @returns {Record<string, unknown>}
+   */
+  function normalizeParameterRecordForApi(rec) {
+    const out = /** @type {Record<string, unknown>} */ (Object.assign({}, /** @type {object} */ (rec)));
+    if (typeof out.parameterName === "string" && autoEscapeQuotesEnabled) {
+      out.parameterName = escapeInnerDoubleQuotes(out.parameterName);
+    }
+    out.parameterValue = normalizeParameterValueForApi(out.parameterValue);
+    return out;
+  }
+
+  /**
+   * @param {unknown} pv
+   * @returns {string | null}
+   */
+  function validateParameterValueJsonString(pv) {
+    const s = String(pv == null ? "" : pv).trim();
+    if (!s) return "parameterValue пустой";
+    try {
+      JSON.parse(s);
+      return null;
+    } catch (e) {
+      const msg = e && typeof e === "object" && "message" in /** @type {object} */ (e) ? String(/** @type {{ message: string }} */ (e).message) : String(e);
+      return "parameterValue не является валидным JSON: " + msg;
+    }
+  }
+
+  /**
+   * Пытается починить неэкранированные кавычки внутри JSON-строк (loose-файлы).
+   * @param {string} text
+   * @returns {string}
+   */
+  function repairUnescapedQuotesInJsonText(text) {
+    let out = "";
+    let i = 0;
+    const len = text.length;
+    while (i < len) {
+      const ch = text[i];
+      if (ch !== '"') {
+        out += ch;
+        i++;
+        continue;
+      }
+      out += '"';
+      i++;
+      while (i < len) {
+        const c = text[i];
+        if (c === "\\") {
+          out += c;
+          if (i + 1 < len) {
+            out += text[i + 1];
+            i += 2;
+          } else {
+            i++;
+          }
+          continue;
+        }
+        if (c === '"') {
+          let j = i + 1;
+          while (j < len && /\s/.test(text[j])) j++;
+          const next = j < len ? text[j] : "";
+          if (next === "" || next === "," || next === "}" || next === "]" || next === ":") {
+            out += '"';
+            i++;
+            break;
+          }
+          out += '\\"';
+          i++;
+          continue;
+        }
+        out += c;
+        i++;
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Разбор файла для пакетных create/update с опциональным авто-repair кавычек.
+   * @param {string} text
+   * @returns {{ error: string | null, items: unknown[] }}
+   */
+  function parseJsonObjectsFromFileTextForBatch(text) {
+    let result = parseJsonObjectsFromFileText(text);
+    if (!result.error) return result;
+    if (!autoEscapeQuotesEnabled) return result;
+    const repaired = repairUnescapedQuotesInJsonText(text);
+    if (repaired === text) return result;
+    const retry = parseJsonObjectsFromFileText(repaired);
+    return retry.error ? result : retry;
+  }
+
+  /**
    * @param {unknown} o
    * @returns {string | null} текст ошибки или null
    */
   function validateCreatePayload(o, allowedTypesOverride) {
     if (!o || typeof o !== "object") return "Запись не является объектом JSON";
     const rec = /** @type {Record<string, unknown>} */ (o);
-    const fields = ["parameterCode", "parameterType", "parameterName", "parameterValue"];
+    const fields = ["parameterCode", "parameterType", "parameterName"];
     for (const f of fields) {
       if (!(f in rec) || String(rec[f]).trim() === "") {
         return "Пустое или отсутствует поле: " + f;
       }
+    }
+    if (!isParameterValuePresent(rec)) {
+      return "Пустое или отсутствует поле: parameterValue";
     }
     const pt = String(rec.parameterType).trim();
     const allowed = Array.isArray(allowedTypesOverride) && allowedTypesOverride.length > 0
@@ -1278,7 +1431,8 @@ const PARAMETER_TYPE_OPTIONS = [
   createFileRow.style.cssText = "flex-shrink:0;margin-top:8px;padding-top:6px;border-top:1px solid #374151;";
   const createFileHint = document.createElement("div");
   createFileHint.style.cssText = "font-size:" + PANEL_FONT_SMALL + ";color:#9ca3af;margin-bottom:4px;line-height:1.3;";
-  createFileHint.textContent = "Из файла: JSON-объект(ы) с полями parameterCode, parameterType, parameterName, parameterValue и необязательным businessBlock. Несколько — по одному объекту на строку, массив, или блоки {...}{...}.";
+  createFileHint.textContent =
+    "Из файла: JSON-объект(ы) с полями parameterCode, parameterType, parameterName, parameterValue (строка или объект {…}) и необязательным businessBlock. Несколько — по одному объекту на строку, массив, или блоки {...}{...}. Перед отправкой — preflight всего файла.";
   createFileRow.appendChild(createFileHint);
   const createFileInput = document.createElement("input");
   createFileInput.type = "file";
@@ -1418,7 +1572,72 @@ const PARAMETER_TYPE_OPTIONS = [
   updateFileRow.style.cssText = "flex-shrink:0;margin-top:8px;padding-top:6px;border-top:1px solid #374151;";
   const updateFileHint = document.createElement("div");
   updateFileHint.style.cssText = "font-size:" + PANEL_FONT_SMALL + ";color:#9ca3af;margin-bottom:4px;line-height:1.3;";
-  updateFileHint.textContent = "Из файла: те же поля + objectId, status, необязательный businessBlock; version проверяется по API.";
+  updateFileHint.textContent =
+    "Из файла: те же поля + objectId, status, необязательный businessBlock; parameterValue — строка или объект {…}; version проверяется по API. Preflight всего файла до первого POST.";
+
+  const templateFilterWrap = document.createElement("div");
+  templateFilterWrap.style.cssText =
+    "flex-shrink:0;margin:6px 0 4px;padding:6px 8px;border:1px solid #374151;border-radius:6px;background:#0f172a;";
+  const templateFilterTitle = document.createElement("div");
+  templateFilterTitle.style.cssText =
+    "font-size:" + PANEL_FONT_SMALL + ";color:#9ca3af;margin:0 0 4px;line-height:1.3;font-weight:600;";
+  templateFilterTitle.textContent =
+    "Фильтр parameterType для «🧩 Сформировать шаблон» (ничего не отмечено — все типы):";
+  templateFilterWrap.appendChild(templateFilterTitle);
+  const templateFilterGrid = document.createElement("div");
+  templateFilterGrid.style.cssText = "display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center;";
+  templateFilterWrap.appendChild(templateFilterGrid);
+  /** @type {Record<string, HTMLInputElement>} */
+  const templateFilterChecks = {};
+
+  /**
+   * Перестраивает чекбоксы фильтра типов для шаблона.
+   */
+  function rebuildTemplateFilterCheckboxes() {
+    templateFilterGrid.innerHTML = "";
+    Object.keys(templateFilterChecks).forEach(function (k) {
+      delete templateFilterChecks[k];
+    });
+    const types = getParameterTypeAllowedValues();
+    types.forEach(function (t) {
+      const lab = document.createElement("label");
+      lab.style.cssText =
+        "display:inline-flex;align-items:center;gap:3px;font-size:" + PANEL_FONT_SMALL + ";color:#e5e7eb;cursor:pointer;";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.value = t;
+      cb.style.cssText = "width:13px;height:13px;cursor:pointer;accent-color:#0369a1;";
+      lab.appendChild(cb);
+      lab.appendChild(document.createTextNode(t));
+      templateFilterGrid.appendChild(lab);
+      templateFilterChecks[t] = cb;
+    });
+  }
+
+  rebuildTemplateFilterCheckboxes();
+
+  /**
+   * @returns {string[]}
+   */
+  function getSelectedTemplateFilterTypes() {
+    const out = [];
+    Object.keys(templateFilterChecks).forEach(function (k) {
+      if (templateFilterChecks[k].checked) out.push(k);
+    });
+    return out;
+  }
+
+  /**
+   * @param {string} parameterType
+   * @returns {boolean}
+   */
+  function parameterTypeMatchesTemplateFilter(parameterType) {
+    const selected = getSelectedTemplateFilterTypes();
+    if (selected.length === 0) return true;
+    return selected.indexOf(String(parameterType || "").trim()) >= 0;
+  }
+
+  tab3.appendChild(templateFilterWrap);
   updateFileRow.appendChild(updateFileHint);
   const updateFileInput = document.createElement("input");
   updateFileInput.type = "file";
@@ -1453,6 +1672,24 @@ const PARAMETER_TYPE_OPTIONS = [
   topActionsRow.appendChild(updateFileBtn);
   topActionsRow.appendChild(templateExportBtn);
 
+  const autoEscapeLab = document.createElement("label");
+  autoEscapeLab.style.cssText =
+    "display:none;align-items:center;gap:4px;font-size:" +
+    PANEL_FONT_SMALL +
+    ";color:#9ca3af;cursor:pointer;flex-shrink:0;white-space:nowrap;";
+  const autoEscapeCb = document.createElement("input");
+  autoEscapeCb.type = "checkbox";
+  autoEscapeCb.checked = true;
+  autoEscapeCb.title =
+    "Экранировать неэкранированные кавычки в parameterName/parameterValue; при ошибке разбора файла — попытка repair JSON.";
+  autoEscapeCb.style.cssText = "width:13px;height:13px;cursor:pointer;accent-color:#0369a1;";
+  autoEscapeCb.addEventListener("change", function () {
+    autoEscapeQuotesEnabled = autoEscapeCb.checked;
+  });
+  autoEscapeLab.appendChild(autoEscapeCb);
+  autoEscapeLab.appendChild(document.createTextNode("Автоэкранирование кавычек"));
+  topActionsRow.appendChild(autoEscapeLab);
+
   function syncTopActionButtonsByTab() {
     const isExport = activeTabIndex === 0;
     const isCreate = activeTabIndex === 1;
@@ -1464,6 +1701,7 @@ const PARAMETER_TYPE_OPTIONS = [
     updateBtn.style.display = isUpdate ? "" : "none";
     updateFileBtn.style.display = isUpdate ? "" : "none";
     templateExportBtn.style.display = isUpdate ? "" : "none";
+    autoEscapeLab.style.display = isCreate || isUpdate ? "inline-flex" : "none";
   }
 
   /**
@@ -2211,6 +2449,7 @@ const PARAMETER_TYPE_OPTIONS = [
     } else {
       fillParameterTypeSelect(cType);
     }
+    rebuildTemplateFilterCheckboxes();
   }
 
   /**
@@ -2285,6 +2524,7 @@ const PARAMETER_TYPE_OPTIONS = [
       fillBusinessBlockSelect(uBusinessBlock, bbs);
       editTabAllowedListsLoaded = cachedActualParameterCodes !== null;
       refreshEditFilterOptions();
+      rebuildTemplateFilterCheckboxes();
       tryFillByParameterCodeInput();
       tryFillByObjectIdInput();
       return true;
@@ -2501,13 +2741,13 @@ const PARAMETER_TYPE_OPTIONS = [
 
   createBtn.addEventListener("click", async () => {
     if (busy) return;
-    const payload = {
+    const payload = normalizeParameterRecordForApi({
       parameterCode: cCode.value.trim(),
       parameterType: cType.value.trim(),
       parameterName: cName.value.trim(),
       parameterValue: cValue.value,
       businessBlock: cBusinessBlock.value.trim(),
-    };
+    });
     setBusy(true);
     try {
       const cachesOk = await ensureCachesForCreateOperation();
@@ -2518,6 +2758,11 @@ const PARAMETER_TYPE_OPTIONS = [
       const err = validateCreatePayload(payload);
       if (err) {
         log("Ошибка проверки полей и типа: " + err);
+        return;
+      }
+      const jvErr = validateParameterValueJsonString(payload.parameterValue);
+      if (jvErr) {
+        log("Ошибка parameterValue: " + jvErr);
         return;
       }
       if (cachedActualParameterCodes && cachedActualParameterCodes.has(payload.parameterCode)) {
@@ -2579,28 +2824,35 @@ const PARAMETER_TYPE_OPTIONS = [
         return;
       }
       const text = await f.text();
-      const parsed = parseJsonObjectsFromFileText(text);
+      const parsed = parseJsonObjectsFromFileTextForBatch(text);
       if (parsed.error) {
         log("Ошибка файла: " + parsed.error);
         return;
       }
       const items = parsed.items;
-      const valid = [];
+      /** @type {Record<string, unknown>[]} */
+      const prepared = [];
       for (let i = 0; i < items.length; i++) {
-        const ve = validateCreatePayload(items[i]);
+        const normalized = normalizeParameterRecordForApi(items[i]);
+        const ve = validateCreatePayload(normalized);
         if (ve) {
-          log("Ошибка записи #" + (i + 1) + ": " + ve);
+          log("[Preflight] Ошибка записи #" + (i + 1) + ": " + ve);
           return;
         }
-        valid.push(/** @type {Record<string, string>} */ (items[i]));
+        const jvErr = validateParameterValueJsonString(normalized.parameterValue);
+        if (jvErr) {
+          log("[Preflight] Запись #" + (i + 1) + ": " + jvErr);
+          return;
+        }
+        prepared.push(normalized);
       }
-      if (valid.length === 0) {
+      if (prepared.length === 0) {
         log("В файле нет записей.");
         return;
       }
       const filtered = [];
-      for (let fi = 0; fi < valid.length; fi++) {
-        const code = String(valid[fi].parameterCode).trim();
+      for (let fi = 0; fi < prepared.length; fi++) {
+        const code = String(prepared[fi].parameterCode).trim();
         if (cachedActualParameterCodes && cachedActualParameterCodes.has(code)) {
           log(
             "[Создание] Файл, запись #" +
@@ -2611,12 +2863,13 @@ const PARAMETER_TYPE_OPTIONS = [
           );
           continue;
         }
-        filtered.push(valid[fi]);
+        filtered.push(prepared[fi]);
       }
       if (filtered.length === 0) {
         log("[Создание] После проверки дублей со списком ACTUAL не осталось записей для создания.");
         return;
       }
+      log("[Preflight] Файл: проверено записей " + prepared.length + ", к отправке (без дублей ACTUAL): " + filtered.length + ".");
       const first = filtered[0];
       const firstMsg =
         "Внести первый параметр из файла?\n\nparameterCode: " +
@@ -2656,10 +2909,10 @@ const PARAMETER_TYPE_OPTIONS = [
           await delay(PARAM_BATCH_REQUEST_GAP_MS);
         }
         const payload = {
-          parameterCode: filtered[i].parameterCode,
-          parameterType: filtered[i].parameterType,
-          parameterName: filtered[i].parameterName,
-          parameterValue: filtered[i].parameterValue,
+          parameterCode: String(filtered[i].parameterCode).trim(),
+          parameterType: String(filtered[i].parameterType).trim(),
+          parameterName: String(filtered[i].parameterName).trim(),
+          parameterValue: String(filtered[i].parameterValue),
           businessBlock: String(filtered[i].businessBlock == null ? "" : filtered[i].businessBlock).trim(),
         };
         const res = await postJson(origin, PARAM_CREATE_PATH, payload);
@@ -2693,7 +2946,7 @@ const PARAMETER_TYPE_OPTIONS = [
       return;
     }
     const objectId = uObjectId.value.trim();
-    const payloadBase = {
+    const payloadBase = normalizeParameterRecordForApi({
       parameterCode: uCode.value.trim(),
       parameterType: uType.value.trim(),
       parameterName: uName.value.trim(),
@@ -2702,10 +2955,15 @@ const PARAMETER_TYPE_OPTIONS = [
       objectId,
       version: uVersion.value.trim() !== "" ? Number(uVersion.value.trim()) : 0,
       status: uStatus.value.trim(),
-    };
+    });
     const err = validateUpdatePayload(payloadBase);
     if (err) {
       log("Ошибка проверки формы: " + err);
+      return;
+    }
+    const jvErr = validateParameterValueJsonString(payloadBase.parameterValue);
+    if (jvErr) {
+      log("Ошибка parameterValue: " + jvErr);
       return;
     }
     if (!cachedActualObjectIds || !cachedActualObjectIds.has(objectId)) {
@@ -2892,7 +3150,10 @@ const PARAMETER_TYPE_OPTIONS = [
       }
       if (cachedActualObjectIds) {
         cachedActualObjectIds.forEach(function (id) {
-          allIds.add(id);
+          const row = cachedActualByObjectId.get(id);
+          if (parameterTypeMatchesTemplateFilter(row ? row.parameterType : "")) {
+            allIds.add(id);
+          }
         });
       }
       log("[Редактирование][Шаблон] Шаг детализации parameterTypes пропущен: для шаблона достаточно данных шага ACTUAL/ARCHIVE.");
@@ -2902,9 +3163,22 @@ const PARAMETER_TYPE_OPTIONS = [
       if (!archiveRes.ok) {
         log("[Редактирование][Шаблон] ARCHIVE: HTTP " + archiveRes.status + " — " + archiveRes.text.slice(0, 400));
       } else {
-        const archiveIds = extractObjectIds(archiveRes.data);
-        for (let i = 0; i < archiveIds.length; i++) allIds.add(archiveIds[i]);
-        log("[Редактирование][Шаблон] ARCHIVE objectId: " + archiveIds.length + ".");
+        const archiveMappings = extractActualMappingsFromListData(archiveRes.data);
+        archiveMappings.byObjectId.forEach(function (row, id) {
+          if (parameterTypeMatchesTemplateFilter(row.parameterType)) {
+            allIds.add(id);
+          }
+        });
+        log(
+          "[Редактирование][Шаблон] ARCHIVE objectId (с учётом фильтра type): " +
+            archiveMappings.byObjectId.size +
+            ".",
+        );
+      }
+
+      const selectedTypes = getSelectedTemplateFilterTypes();
+      if (selectedTypes.length > 0) {
+        log("[Редактирование][Шаблон] Фильтр parameterType: " + selectedTypes.join(", ") + ".");
       }
 
       const ids = Array.from(allIds);
@@ -2984,25 +3258,34 @@ const PARAMETER_TYPE_OPTIONS = [
       }
       setBusy(true);
       const text = await f.text();
-      const parsed = parseJsonObjectsFromFileText(text);
+      const parsed = parseJsonObjectsFromFileTextForBatch(text);
       if (parsed.error) {
         log("Ошибка файла: " + parsed.error);
         return;
       }
       const items = parsed.items;
-      const valid = [];
+      /** @type {Record<string, unknown>[]} */
+      const prepared = [];
       for (let i = 0; i < items.length; i++) {
-        const ve = validateUpdatePayload(items[i]);
+        const normalized = normalizeParameterRecordForApi(items[i]);
+        const ve = validateUpdatePayload(normalized);
         if (ve) {
-          log("Ошибка записи #" + (i + 1) + ": " + ve);
+          log("[Preflight] Ошибка записи #" + (i + 1) + ": " + ve);
           return;
         }
-        valid.push(/** @type {Record<string, unknown>} */ (items[i]));
+        const jvErr = validateParameterValueJsonString(normalized.parameterValue);
+        if (jvErr) {
+          log("[Preflight] Запись #" + (i + 1) + ": " + jvErr);
+          return;
+        }
+        prepared.push(normalized);
       }
-      if (valid.length === 0) {
+      if (prepared.length === 0) {
         log("В файле нет записей.");
         return;
       }
+      log("[Preflight] Файл: проверено записей " + prepared.length + ", все валидны — можно отправлять.");
+      const valid = prepared;
       const first = valid[0];
       const firstMsg =
         "Обновить первый параметр из файла?\n\nobjectId: " +

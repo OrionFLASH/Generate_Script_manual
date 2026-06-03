@@ -62,6 +62,38 @@
 
 ---
 
+## 2A. `File_DB_Load_GP_v2.js`
+
+**Назначение:** то же, что § 2, но скачивание **только** через «Скачать выделенное»; конфиги блоков; расширенный рейтинг и «Итоги года».
+
+**Origin:** как v1 (`STAND_ORIGINS`, автоопределение).
+
+### 2A.1. Основные задачи (`DOWNLOAD_JOBS`, 4 шт.)
+
+| Задача (id) | Путь | Payload |
+|-------------|------|---------|
+| `tournamentListCsv` | `…/tournaments/file-download` | `{}` |
+| `employeeRewardsSummary` | `…/employee-rewards/file-download` | `{ "dateFrom": "YYYY-MM-DD" }` с панели |
+| `administrationStatisticCsv` | `…/administration/statistic/file-download` | `{}` |
+| `yearResultsCsv` | `…/year-result/file-download` | `{}` |
+
+### 2A.2. Рейтинг (`RATING_GROUP_JOBS`, из `FILE_DL_RATING_BLOCKS_CONFIG`)
+
+- **POST** `…/ratinglist/file-download`
+- **Payload:** `{ "businessBlock": "<BLOCK>", "timePeriod": "<PERIOD>" }`
+- Блоки: KMKKSB, MNS, CSM, AKMKKSB, SERVICEMEN, KMFACTORING, KMSB1, IMUB, RNUB, RSB1 (20 комбинаций при текущем конфиге).
+
+### 2A.3. Заказы (`ORDERS_GROUP_JOBS`, из `FILE_DL_ORDERS_BLOCKS_CONFIG`)
+
+- **POST** `…/orders/file-download`
+- **Payload:** `{ "businessBlock": "KMKKSB|MNS", "listType": "…" }` — 10 вариантов.
+
+**Последовательность пакета:** только отмеченные чекбоксы; режим и паузы — как § 2 (без кнопок групп «Все N»).
+
+**Подробности UI и конфигов:** [Docs/Скрипт_выгрузка_файлов_gamification_File_DB_Load_GP_v2.md](Скрипт_выгрузка_файлов_gamification_File_DB_Load_GP_v2.md).
+
+---
+
 ## 3. `AddressBook_export.js`
 
 **Назначение:** выгрузка данных адресной книги: **поиск** сотрудников и/или **карточка** по UUID.
@@ -209,6 +241,7 @@
 |--------|------------------------|------------------------|
 | `Profile_GP_LOAD_file.js` | POST JSON | `{ employeeNumber }` |
 | `File_DB_Load_GP.js` | POST JSON | `{}`, `{ dateFrom }`, `{ businessBlock, timePeriod }`, `{ businessBlock, listType }` |
+| `File_DB_Load_GP_v2.js` | POST JSON | как v1 + `{ }` для year-result; рейтинг — 10 блоков (конфиг) |
 | `AddressBook_export.js` | POST JSON + GET | search: `{ searchText, pageToken }`; empInfoFull: query `empId` |
 | `Parameters_Actual_Export.js` | POST JSON | `{ status }`, `{ objectIds }`, create body, update body |
 | `Tournament_LeadersForAdmin.js` | GET JSON | — |
@@ -240,5 +273,6 @@
 | **1.15** | `AddressBook_export`: сценарий **Search → empInfoFull** — сначала все POST search по списку, затем выгрузка JSON+CSV, затем GET **empInfoFull** только по **уникальным** UUID (один GET на id). |
 | **1.16** | Актуализирован § **6** (`UI_AutoTest.js` — проход по списку `MENU_HREFS`, ожидание загрузки). Добавлен § **7** (`UI_AutoTest_LinksCrawler.js`); сводная таблица дополнена строкой для краулера; введение и ссылка на [ROADMAP.md](../ROADMAP.md). |
 | **1.17** | Добавлен § **6** `News_Community_Export.js` (POST `/proxy/v1/news`, пагинация, чекбоксы `NEWS_STATUS_OPTIONS` / `NEWS_TAG_OPTIONS`); разделы UI-автотестов сдвинуты на § **7** и § **8**; сводная таблица и введение (восемь скриптов). |
+| **1.18** | Добавлен § **2A** `File_DB_Load_GP_v2.js` (year-result, конфиг рейтинга 10 блоков, только «Скачать выделенное»); строка в сводной таблице. |
 
 *Актуальность проверяйте по скриптам в `Script/`.*

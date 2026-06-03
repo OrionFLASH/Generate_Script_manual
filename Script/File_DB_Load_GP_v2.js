@@ -1,10 +1,12 @@
 // =============================================================================
-// File_DB_Load_GP.js — скачивание файлов через API gamification (консоль DevTools)
+// File_DB_Load_GP_v2.js — скачивание файлов gamification (v2: только «Скачать выделенное»)
 // =============================================================================
-// POST к эндпоинтам .../file-download — ответ: бинарный файл (скачивание в браузере).
-// Куки берутся из текущей сессии (credentials: "include"), на странице нужного стенда.
-// Панель: основные выгрузки, группы «Рейтинг» и «Заказы», чекбоксы и «Скачать выделенное» с паузой; подробный журнал — только в окне «Журнал работы», в консоли — кратко.
-// Табельные номера не используются.
+// Отличия от File_DB_Load_GP.js:
+// - нет одиночных кнопок «Скачать» и «Все N (рейтинг/заказы)»;
+// - выбор чекбоксами: основные, рейтинг и заказы (блок → сезоны/listType);
+// - конфиги FILE_DL_RATING_BLOCKS_CONFIG / FILE_DL_ORDERS_BLOCKS_CONFIG;
+// - добавлена выгрузка «Итоги года» (year-result/file-download).
+// POST …/file-download, credentials: "include". Журнал — на панели.
 // =============================================================================
 
 // Весь исполняемый код ниже — в IIFE: повторная вставка скрипта в консоль без перезагрузки вкладки
@@ -116,23 +118,181 @@ var fileDlPanelStaggerInput = null;
 /** Включён ли на панели чекбокс «скользящий старт» (обновляется из UI). */
 var FILE_DL_USE_STAGGER = true;
 
-/** id задач, снятых по умолчанию при открытии панели (остальные отмечены). */
-const FILE_DL_DEFAULT_UNCHECKED_JOB_IDS = ["orders_KMKKSB_ALLSEASONS", "orders_MNS_NONSEASON"];
+// Эндпоинт выгрузки рейтинга.
+const RATINGLIST_FILE_DOWNLOAD_PATH = "/bo/rmkib.gamification/proxy/v1/ratinglist/file-download";
+
+// Эндпоинт выгрузки заказов: body — businessBlock + listType.
+const ORDERS_FILE_DOWNLOAD_PATH = "/bo/rmkib.gamification/proxy/v1/orders/file-download";
+
+const YEAR_RESULT_FILE_DOWNLOAD_PATH = "/bo/rmkib.gamification/proxy/v1/year-result/file-download";
 
 /**
- * @param {{ id?: string }} job
+ * Конфиг рейтинга: businessBlock, сезоны (timePeriod), defaultChecked блока на панели.
+ * @type {Array<{ block: string, timePeriods: string[], defaultChecked?: boolean }>}
+ */
+const FILE_DL_RATING_BLOCKS_CONFIG = [
+  {
+    block: "KMKKSB",
+    timePeriods: ["ACTIVESEASON", "SEASON_2025_2", "SEASON_2025_1", "SEASON_2024", "ALLTHETIME"],
+    defaultChecked: true,
+  },
+  {
+    block: "MNS",
+    timePeriods: ["ACTIVESEASON", "SEASON_m_2025_2", "SEASON_m_2025_1", "SEASON_m_2024", "ALLTHETIME"],
+    defaultChecked: false,
+  },
+  {
+    block: "CSM",
+    timePeriods: ["ALLTHETIME", "ACTIVESEASON"],
+    defaultChecked: true,
+  },
+  {
+    block: "AKMKKSB",
+    timePeriods: ["ALLTHETIME", "ACTIVESEASON"],
+    defaultChecked: true,
+  },
+  { block: "SERVICEMEN", timePeriods: ["ALLTHETIME"], defaultChecked: false },
+  { block: "KMFACTORING", timePeriods: ["ALLTHETIME"], defaultChecked: false },
+  { block: "KMSB1", timePeriods: ["ALLTHETIME"], defaultChecked: false },
+  { block: "IMUB", timePeriods: ["ALLTHETIME"], defaultChecked: false },
+  { block: "RNUB", timePeriods: ["ALLTHETIME"], defaultChecked: false },
+  { block: "RSB1", timePeriods: ["ALLTHETIME"], defaultChecked: false },
+];
+
+/** Раскладка рейтинга на панели: две строки businessBlock (порядок слева направо). */
+const FILE_DL_RATING_UI_ROWS = [
+  ["KMKKSB", "AKMKKSB", "CSM", "MNS"],
+  ["SERVICEMEN", "KMFACTORING", "KMSB1", "IMUB", "RNUB", "RSB1"],
+];
+
+/** id задач рейтинга, снятых по умолчанию (поверх defaultChecked блока). */
+const FILE_DL_RATING_DEFAULT_UNCHECKED_JOB_IDS = [];
+
+/**
+ * Конфиг заказов: businessBlock, listType, defaultChecked блока.
+ * @type {Array<{ block: string, listTypes: string[], defaultChecked?: boolean }>}
+ */
+const FILE_DL_ORDERS_BLOCKS_CONFIG = [
+  {
+    block: "KMKKSB",
+    listTypes: ["NONSEASON", "SEASON_2025_2", "SEASON_2025_1", "SEASON_2024", "ALLSEASONS"],
+    defaultChecked: true,
+  },
+  {
+    block: "MNS",
+    listTypes: ["NONSEASON", "SEASON_m_2025_2", "SEASON_m_2025_1", "SEASON_m_2024", "ALLSEASONS"],
+    defaultChecked: true,
+  },
+];
+
+/** id задач заказов, снятых по умолчанию (пусто — все listType отмечены). */
+const FILE_DL_ORDERS_DEFAULT_UNCHECKED_JOB_IDS = [];
+
+/** id основных выгрузок, снятых по умолчанию. */
+const FILE_DL_MAIN_DEFAULT_UNCHECKED_JOB_IDS = [];
+
+/**
+ * @param {Array<{ block: string, timePeriods: string[], defaultChecked?: boolean }>} config
+ * @returns {object[]}
+ */
+function buildRatingGroupJobsFromConfig(config) {
+  var jobs = [];
+  for (var i = 0; i < config.length; i++) {
+    var row = config[i];
+    var block = row.block;
+    var periods = row.timePeriods || [];
+    var blockDefault = row.defaultChecked === true;
+    for (var j = 0; j < periods.length; j++) {
+      var period = periods[j];
+      var id = "rating_" + block + "_" + period;
+      jobs.push({
+        id: id,
+        label: "Рейтинг · " + block + " · " + period,
+        apiPath: RATINGLIST_FILE_DOWNLOAD_PATH,
+        body: { businessBlock: block, timePeriod: period },
+        refererPath: "/rating",
+        fileName: "gamification-ratingList_" + block + "_" + period + ".csv",
+        _blockDefaultChecked: blockDefault,
+      });
+    }
+  }
+  return jobs;
+}
+
+/**
+ * @param {string[]} blockNames
+ * @returns {number}
+ */
+function getMaxRatingSeasonCountInBlocks(blockNames) {
+  var max = 0;
+  for (var bi = 0; bi < blockNames.length; bi++) {
+    var name = blockNames[bi];
+    for (var ci = 0; ci < FILE_DL_RATING_BLOCKS_CONFIG.length; ci++) {
+      var cfg = FILE_DL_RATING_BLOCKS_CONFIG[ci];
+      if (cfg.block === name) {
+        var n = (cfg.timePeriods || []).length;
+        if (n > max) max = n;
+        break;
+      }
+    }
+  }
+  return max;
+}
+
+/**
+ * Минимальная высота строки рейтинга под столбик сезонов самого высокого блока в ряду.
+ * @param {string[]} blockNames
+ * @returns {number}
+ */
+function calcRatingRowMinHeightPx(blockNames) {
+  var maxSeasons = getMaxRatingSeasonCountInBlocks(blockNames);
+  if (maxSeasons < 1) maxSeasons = 1;
+  var headerPx = 20;
+  var seasonRowPx = 17;
+  var padPx = 12;
+  return headerPx + maxSeasons * seasonRowPx + padPx;
+}
+
+/**
+ * @param {Array<{ block: string, listTypes: string[], defaultChecked?: boolean }>} config
+ * @returns {object[]}
+ */
+function buildOrdersGroupJobsFromConfig(config) {
+  var jobs = [];
+  for (var i = 0; i < config.length; i++) {
+    var row = config[i];
+    var block = row.block;
+    var types = row.listTypes || [];
+    var blockDefault = row.defaultChecked === true;
+    for (var j = 0; j < types.length; j++) {
+      var listType = types[j];
+      var id = "orders_" + block + "_" + listType;
+      jobs.push({
+        id: id,
+        label: "Заказы · " + block + " · " + listType,
+        apiPath: ORDERS_FILE_DOWNLOAD_PATH,
+        body: { businessBlock: block, listType: listType },
+        refererPath: "/admin/orders",
+        fileName: "gamification-orderList_" + block + "_" + listType + ".csv",
+        _blockDefaultChecked: blockDefault,
+      });
+    }
+  }
+  return jobs;
+}
+
+/**
+ * @param {{ id?: string, _blockDefaultChecked?: boolean }} job
  * @returns {boolean}
  */
 function isFileDlJobCheckedByDefault(job) {
   var id = job && job.id ? String(job.id) : "";
-  return FILE_DL_DEFAULT_UNCHECKED_JOB_IDS.indexOf(id) < 0;
+  if (FILE_DL_MAIN_DEFAULT_UNCHECKED_JOB_IDS.indexOf(id) >= 0) return false;
+  if (FILE_DL_RATING_DEFAULT_UNCHECKED_JOB_IDS.indexOf(id) >= 0) return false;
+  if (FILE_DL_ORDERS_DEFAULT_UNCHECKED_JOB_IDS.indexOf(id) >= 0) return false;
+  if (job && job._blockDefaultChecked === false) return false;
+  return true;
 }
-
-// Эндпоинт выгрузки рейтинга (группа кнопок «Рейтинг»).
-const RATINGLIST_FILE_DOWNLOAD_PATH = "/bo/rmkib.gamification/proxy/v1/ratinglist/file-download";
-
-// Эндпоинт выгрузки заказов (группа кнопок «Заказы»): body — businessBlock + listType (не timePeriod).
-const ORDERS_FILE_DOWNLOAD_PATH = "/bo/rmkib.gamification/proxy/v1/orders/file-download";
 
 /**
  * Список запросов на скачивание.
@@ -167,185 +327,19 @@ const DOWNLOAD_JOBS = [
     body: {},
     refererPath: "/admin/statistic",
     fileName: null
+  },
+  {
+    id: "yearResultsCsv",
+    label: "Итоги года",
+    apiPath: YEAR_RESULT_FILE_DOWNLOAD_PATH,
+    body: {},
+    refererPath: "/salesheroes/profile",
+    fileName: "gamification-yearResults.csv"
   }
 ];
 
-/**
- * Группа «Рейтинг»: один URL, разные payload (businessBlock + timePeriod).
- * У каждой задачи задано уникальное fileName — иначе браузер перезапишет одинаковые gamification-ratingList.csv.
- * Лучше открыть вкладку на …/rating перед запуском.
- */
-const RATING_GROUP_JOBS = [
-  {
-    id: "rating_KMKKSB_ACTIVESEASON",
-    label: "Рейтинг · KMKKSB · ACTIVESEASON",
-    apiPath: RATINGLIST_FILE_DOWNLOAD_PATH,
-    body: { businessBlock: "KMKKSB", timePeriod: "ACTIVESEASON" },
-    refererPath: "/rating",
-    fileName: "gamification-ratingList_KMKKSB_ACTIVESEASON.csv"
-  },
-  {
-    id: "rating_KMKKSB_SEASON_2025_2",
-    label: "Рейтинг · KMKKSB · SEASON_2025_2",
-    apiPath: RATINGLIST_FILE_DOWNLOAD_PATH,
-    body: { businessBlock: "KMKKSB", timePeriod: "SEASON_2025_2" },
-    refererPath: "/rating",
-    fileName: "gamification-ratingList_KMKKSB_SEASON_2025_2.csv"
-  },
-  {
-    id: "rating_KMKKSB_SEASON_2025_1",
-    label: "Рейтинг · KMKKSB · SEASON_2025_1",
-    apiPath: RATINGLIST_FILE_DOWNLOAD_PATH,
-    body: { businessBlock: "KMKKSB", timePeriod: "SEASON_2025_1" },
-    refererPath: "/rating",
-    fileName: "gamification-ratingList_KMKKSB_SEASON_2025_1.csv"
-  },
-  {
-    id: "rating_KMKKSB_SEASON_2024",
-    label: "Рейтинг · KMKKSB · SEASON_2024",
-    apiPath: RATINGLIST_FILE_DOWNLOAD_PATH,
-    body: { businessBlock: "KMKKSB", timePeriod: "SEASON_2024" },
-    refererPath: "/rating",
-    fileName: "gamification-ratingList_KMKKSB_SEASON_2024.csv"
-  },
-  {
-    id: "rating_KMKKSB_ALLTHETIME",
-    label: "Рейтинг · KMKKSB · ALLTHETIME",
-    apiPath: RATINGLIST_FILE_DOWNLOAD_PATH,
-    body: { businessBlock: "KMKKSB", timePeriod: "ALLTHETIME" },
-    refererPath: "/rating",
-    fileName: "gamification-ratingList_KMKKSB_ALLTHETIME.csv"
-  },
-  {
-    id: "rating_MNS_ACTIVESEASON",
-    label: "Рейтинг · MNS · ACTIVESEASON",
-    apiPath: RATINGLIST_FILE_DOWNLOAD_PATH,
-    body: { businessBlock: "MNS", timePeriod: "ACTIVESEASON" },
-    refererPath: "/rating",
-    fileName: "gamification-ratingList_MNS_ACTIVESEASON.csv"
-  },
-  {
-    id: "rating_MNS_SEASON_m_2025_2",
-    label: "Рейтинг · MNS · SEASON_m_2025_2",
-    apiPath: RATINGLIST_FILE_DOWNLOAD_PATH,
-    body: { businessBlock: "MNS", timePeriod: "SEASON_m_2025_2" },
-    refererPath: "/rating",
-    fileName: "gamification-ratingList_MNS_SEASON_m_2025_2.csv"
-  },
-  {
-    id: "rating_MNS_SEASON_m_2025_1",
-    label: "Рейтинг · MNS · SEASON_m_2025_1",
-    apiPath: RATINGLIST_FILE_DOWNLOAD_PATH,
-    body: { businessBlock: "MNS", timePeriod: "SEASON_m_2025_1" },
-    refererPath: "/rating",
-    fileName: "gamification-ratingList_MNS_SEASON_m_2025_1.csv"
-  },
-  {
-    id: "rating_MNS_SEASON_m_2024",
-    label: "Рейтинг · MNS · SEASON_m_2024",
-    apiPath: RATINGLIST_FILE_DOWNLOAD_PATH,
-    body: { businessBlock: "MNS", timePeriod: "SEASON_m_2024" },
-    refererPath: "/rating",
-    fileName: "gamification-ratingList_MNS_SEASON_m_2024.csv"
-  },
-  {
-    id: "rating_MNS_ALLTHETIME",
-    label: "Рейтинг · MNS · ALLTHETIME",
-    apiPath: RATINGLIST_FILE_DOWNLOAD_PATH,
-    body: { businessBlock: "MNS", timePeriod: "ALLTHETIME" },
-    refererPath: "/rating",
-    fileName: "gamification-ratingList_MNS_ALLTHETIME.csv"
-  }
-];
-
-/**
- * Группа «Заказы»: POST …/orders/file-download, в теле listType (аналог периодов рейтинга).
- * Вместо двух запросов с ACTIVESEASON — два с NONSEASON (KMKKSB и MNS).
- * Сервер часто отдаёт одно имя gamification-orderList.csv — задаём уникальные fileName.
- * Лучше открыть вкладку на …/admin/orders перед запуском.
- */
-const ORDERS_GROUP_JOBS = [
-  {
-    id: "orders_KMKKSB_NONSEASON",
-    label: "Заказы · KMKKSB · NONSEASON",
-    apiPath: ORDERS_FILE_DOWNLOAD_PATH,
-    body: { businessBlock: "KMKKSB", listType: "NONSEASON" },
-    refererPath: "/admin/orders",
-    fileName: "gamification-orderList_KMKKSB_NONSEASON.csv"
-  },
-  {
-    id: "orders_KMKKSB_SEASON_2025_2",
-    label: "Заказы · KMKKSB · SEASON_2025_2",
-    apiPath: ORDERS_FILE_DOWNLOAD_PATH,
-    body: { businessBlock: "KMKKSB", listType: "SEASON_2025_2" },
-    refererPath: "/admin/orders",
-    fileName: "gamification-orderList_KMKKSB_SEASON_2025_2.csv"
-  },
-  {
-    id: "orders_KMKKSB_SEASON_2025_1",
-    label: "Заказы · KMKKSB · SEASON_2025_1",
-    apiPath: ORDERS_FILE_DOWNLOAD_PATH,
-    body: { businessBlock: "KMKKSB", listType: "SEASON_2025_1" },
-    refererPath: "/admin/orders",
-    fileName: "gamification-orderList_KMKKSB_SEASON_2025_1.csv"
-  },
-  {
-    id: "orders_KMKKSB_SEASON_2024",
-    label: "Заказы · KMKKSB · SEASON_2024",
-    apiPath: ORDERS_FILE_DOWNLOAD_PATH,
-    body: { businessBlock: "KMKKSB", listType: "SEASON_2024" },
-    refererPath: "/admin/orders",
-    fileName: "gamification-orderList_KMKKSB_SEASON_2024.csv"
-  },
-  {
-    id: "orders_KMKKSB_ALLSEASONS",
-    label: "Заказы · KMKKSB · ALLSEASONS",
-    apiPath: ORDERS_FILE_DOWNLOAD_PATH,
-    body: { businessBlock: "KMKKSB", listType: "ALLSEASONS" },
-    refererPath: "/admin/orders",
-    fileName: "gamification-orderList_KMKKSB_ALLSEASONS.csv"
-  },
-  {
-    id: "orders_MNS_NONSEASON",
-    label: "Заказы · MNS · NONSEASON",
-    apiPath: ORDERS_FILE_DOWNLOAD_PATH,
-    body: { businessBlock: "MNS", listType: "NONSEASON" },
-    refererPath: "/admin/orders",
-    fileName: "gamification-orderList_MNS_NONSEASON.csv"
-  },
-  {
-    id: "orders_MNS_SEASON_m_2025_2",
-    label: "Заказы · MNS · SEASON_m_2025_2",
-    apiPath: ORDERS_FILE_DOWNLOAD_PATH,
-    body: { businessBlock: "MNS", listType: "SEASON_m_2025_2" },
-    refererPath: "/admin/orders",
-    fileName: "gamification-orderList_MNS_SEASON_m_2025_2.csv"
-  },
-  {
-    id: "orders_MNS_SEASON_m_2025_1",
-    label: "Заказы · MNS · SEASON_m_2025_1",
-    apiPath: ORDERS_FILE_DOWNLOAD_PATH,
-    body: { businessBlock: "MNS", listType: "SEASON_m_2025_1" },
-    refererPath: "/admin/orders",
-    fileName: "gamification-orderList_MNS_SEASON_m_2025_1.csv"
-  },
-  {
-    id: "orders_MNS_SEASON_m_2024",
-    label: "Заказы · MNS · SEASON_m_2024",
-    apiPath: ORDERS_FILE_DOWNLOAD_PATH,
-    body: { businessBlock: "MNS", listType: "SEASON_m_2024" },
-    refererPath: "/admin/orders",
-    fileName: "gamification-orderList_MNS_SEASON_m_2024.csv"
-  },
-  {
-    id: "orders_MNS_ALLSEASONS",
-    label: "Заказы · MNS · ALLSEASONS",
-    apiPath: ORDERS_FILE_DOWNLOAD_PATH,
-    body: { businessBlock: "MNS", listType: "ALLSEASONS" },
-    refererPath: "/admin/orders",
-    fileName: "gamification-orderList_MNS_ALLSEASONS.csv"
-  }
-];
+const RATING_GROUP_JOBS = buildRatingGroupJobsFromConfig(FILE_DL_RATING_BLOCKS_CONFIG);
+const ORDERS_GROUP_JOBS = buildOrdersGroupJobsFromConfig(FILE_DL_ORDERS_BLOCKS_CONFIG);
 
 /** Все задачи подряд: основные + рейтинг + заказы (для «Скачать всё»). */
 function getAllDownloadJobs() {
@@ -363,6 +357,7 @@ function getGroupNameForJob(job) {
   if (p.indexOf("/ratinglist/file-download") !== -1) return "Рейтинг";
   if (p.indexOf("/employee-rewards/file-download") !== -1) return "Награды (сводка)";
   if (p.indexOf("/administration/statistic/file-download") !== -1) return "Статистика (админ)";
+  if (p.indexOf("/year-result/file-download") !== -1) return "Итоги года";
   if (p.indexOf("/tournaments/file-download") !== -1) return "Турниры";
   return "Прочее";
 }
@@ -457,11 +452,11 @@ function fileDlConsoleSingleJobSummary(ctx, result) {
   if (typeof ctx.index === "number" && typeof ctx.total === "number") return;
   var r = result || {};
   if (r.ok && r.fileName) {
-    console.log("[File_DB_Load_GP] Одиночная загрузка: OK | " + r.fileName);
+    console.log("[File_DB_Load_GP_v2] Одиночная загрузка: OK | " + r.fileName);
   } else {
     var tail = r.status != null ? " | HTTP " + r.status : "";
     var errS = r.error != null ? " | " + String(r.error).slice(0, 160) : "";
-    console.log("[File_DB_Load_GP] Одиночная загрузка: ошибка" + tail + errS);
+    console.log("[File_DB_Load_GP_v2] Одиночная загрузка: ошибка" + tail + errS);
   }
 }
 
@@ -704,7 +699,7 @@ async function downloadJobsSequentially(jobs, logLabel) {
   const pauseMs = fileDlDelayBetweenMs;
   const total = jobs.length;
   console.log(
-    "[File_DB_Load_GP] Пакет «" +
+    "[File_DB_Load_GP_v2] Пакет «" +
       logLabel +
       "» (последовательно), задач: " +
       total +
@@ -757,7 +752,7 @@ async function downloadJobsSequentially(jobs, logLabel) {
       errCount
   );
   console.log(
-    "[File_DB_Load_GP] Пакет «" +
+    "[File_DB_Load_GP_v2] Пакет «" +
       logLabel +
       "» завершён (последовательно). Задач: " +
       total +
@@ -779,7 +774,7 @@ async function downloadJobsStaggered(jobs, logLabel) {
   const pauseAfterOkMs = fileDlDelayBetweenMs;
   const total = jobs.length;
   console.log(
-    "[File_DB_Load_GP] Пакет «" +
+    "[File_DB_Load_GP_v2] Пакет «" +
       logLabel +
       "» (скользящий старт), задач: " +
       total +
@@ -840,7 +835,7 @@ async function downloadJobsStaggered(jobs, logLabel) {
       errCount
   );
   console.log(
-    "[File_DB_Load_GP] Пакет «" +
+    "[File_DB_Load_GP_v2] Пакет «" +
       logLabel +
       "» завершён (скользящий старт). Задач: " +
       total +
@@ -862,26 +857,7 @@ async function downloadJobsBatch(jobs, logLabel, useStagger) {
   else await downloadJobsSequentially(jobs, logLabel);
 }
 
-/** Основные выгрузки + рейтинг + заказы. */
-async function downloadAllJobs() {
-  syncFileDlDelaysFromPanel();
-  await downloadJobsSequentially(getAllDownloadJobs(), "«Скачать всё»");
-}
-
-/** Только группа «Рейтинг» (10 файлов). */
-async function downloadRatingGroupOnly() {
-  await downloadJobsBatch(RATING_GROUP_JOBS, "«Загрузить Рейтинг»", FILE_DL_USE_STAGGER);
-}
-
-/** Только группа «Заказы» (10 файлов). */
-async function downloadOrdersGroupOnly() {
-  await downloadJobsBatch(ORDERS_GROUP_JOBS, "«Загрузить Заказы»", FILE_DL_USE_STAGGER);
-}
-
-/**
- * Скачивание только тех задач, у которых на панели отмечен чекбокс.
- * @param {{ cb: HTMLInputElement, job: object }[]} entries — пары чекбокс + задача с панели.
- */
+/** Скачивание только отмеченных на панели задач. */
 async function downloadCheckedPanelJobs(entries) {
   const jobs = entries
     .filter(function (x) {
@@ -922,7 +898,7 @@ function fileDlDetachPanelAndResetRuntime() {
  * Стиль окна и кнопок — в одном ключе с AddressBook_export / Tournament_LeadersForAdmin; внизу «Журнал работы».
  */
 function startDownloadPanel() {
-  var prevRoot = document.getElementById("fileDlGamificationPanelRoot");
+  var prevRoot = document.getElementById("fileDlGamificationPanelRootV2");
   if (prevRoot) {
     prevRoot.remove();
     fileDlDetachPanelAndResetRuntime();
@@ -954,43 +930,113 @@ function startDownloadPanel() {
       ")";
   }
 
-  // Кнопки строк: текст по центру, чуть крупнее шрифт; высота умеренная.
-  const btnJobRowBase =
-    "flex:1;min-width:0;margin:0;min-height:30px;padding:5px 6px;font-size:10px;font-weight:600;cursor:pointer;" +
-    "border-radius:8px;border:none;color:#fff;box-sizing:border-box;display:flex;align-items:center;" +
-    "justify-content:center;line-height:1.2;text-align:center;white-space:normal;word-break:break-word;";
-  const panelBtnGroupRow = btnJobRowBase;
-
   /**
-   * Строка: чекбокс + кнопка скачивания одной задачи (учёт в «Скачать выделенное»).
+   * Чекбокс + подпись в одну строку (для горизонтальных рядов и сеток).
    * @param {HTMLElement} parent
    * @param {object} job
-   * @param {string} buttonCss — стили кнопки (в т.ч. background).
-   * @param {function(): void} onButtonClick
+   * @param {string} [labelOverride]
+   * @param {{ compact?: boolean, indented?: boolean, dense?: boolean }} [opts]
    */
-  function appendRowWithCheckbox(parent, job, buttonCss, onButtonClick) {
+  function appendCheckboxOnlyRow(parent, job, labelOverride, opts) {
+    opts = opts || {};
     const row = document.createElement("div");
-    row.style.cssText =
-      "display:flex;flex-direction:row;align-items:center;gap:4px;margin:2px 0;width:100%;box-sizing:border-box;";
+    row.style.cssText = opts.compact
+      ? "display:inline-flex;flex-direction:row;align-items:center;gap:5px;margin:0;box-sizing:border-box;white-space:nowrap;"
+      : opts.indented === false
+        ? "display:flex;flex-direction:row;align-items:center;gap:4px;margin:0;width:100%;box-sizing:border-box;min-width:0;"
+        : "display:flex;flex-direction:row;align-items:center;gap:6px;margin:2px 0 2px 12px;width:100%;box-sizing:border-box;";
     const cb = document.createElement("input");
     cb.type = "checkbox";
     cb.checked = isFileDlJobCheckedByDefault(job);
     cb.title = "Участвует в «Скачать выделенное»";
     cb.style.cssText =
-      "margin:0;flex-shrink:0;width:14px;height:14px;cursor:pointer;accent-color:#0369a1;";
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.textContent = job.label || job.id || "Скачать";
-    btn.style.cssText = buttonCss;
-    btn.addEventListener("click", onButtonClick);
+      "margin:0;flex-shrink:0;width:" +
+      (opts.dense ? "12px" : "14px") +
+      ";height:" +
+      (opts.dense ? "12px" : "14px") +
+      ";cursor:pointer;accent-color:#0369a1;";
+    const lab = document.createElement("span");
+    lab.textContent = labelOverride != null ? labelOverride : job.label || job.id || "—";
+    lab.style.cssText = opts.compact
+      ? "font-size:10px;color:#1e293b;line-height:1.2;"
+      : opts.dense
+        ? "font-size:9px;color:#1e293b;line-height:1.15;word-break:break-word;"
+        : "font-size:10px;color:#1e293b;line-height:1.25;word-break:break-word;";
     row.appendChild(cb);
-    row.appendChild(btn);
+    row.appendChild(lab);
     parent.appendChild(row);
     panelCheckboxJobs.push({ cb: cb, job: job });
     cb.addEventListener("change", refreshPanelSubSummary);
+    return cb;
+  }
+
+  /**
+   * Секция businessBlock: заголовок + сезоны/listType (без общего чекбокса блока).
+   * @param {HTMLElement} parent
+   * @param {string} blockName
+   * @param {object[]} jobs
+   * @param {function(object): string} [itemLabelFn]
+   * @param {{ flexCell?: boolean, cellMinWidth?: string, columns?: number, titleColor?: string, fillRowHeight?: boolean }} [opts]
+   */
+  function appendBlockGroupSection(parent, blockName, jobs, itemLabelFn, opts) {
+    opts = opts || {};
+    const wrap = document.createElement("div");
+    var cellCss =
+      "box-sizing:border-box;padding:4px 6px;background:rgba(255,255,255,.55);border-radius:8px;border:1px solid rgba(15,23,42,.08);";
+    if (opts.flexCell) {
+      cellCss += "flex:1 1 0;min-width:" + (opts.cellMinWidth || "0") + ";display:flex;flex-direction:column;";
+      if (opts.fillRowHeight) {
+        cellCss += "height:100%;align-self:stretch;";
+      }
+    } else {
+      cellCss += "margin:4px 0 6px;";
+    }
+    wrap.style.cssText = cellCss;
+
+    const blockLab = document.createElement("div");
+    blockLab.textContent = blockName;
+    blockLab.style.cssText =
+      "font-size:10px;font-weight:700;color:" +
+      (opts.titleColor || "#1e3a8a") +
+      ";text-align:center;margin:0 0 3px;line-height:1.2;letter-spacing:0.02em;";
+    wrap.appendChild(blockLab);
+
+    const colCount = opts.columns && opts.columns > 1 ? opts.columns : 1;
+    const itemsWrap = document.createElement("div");
+    itemsWrap.style.cssText =
+      colCount > 1
+        ? "display:grid;grid-template-columns:repeat(" +
+          colCount +
+          ",minmax(0,1fr));gap:1px 6px;width:100%;align-items:start;"
+        : "display:flex;flex-direction:column;align-items:stretch;width:100%;gap:1px;";
+    wrap.appendChild(itemsWrap);
+
+    for (var ji = 0; ji < jobs.length; ji++) {
+      var job = jobs[ji];
+      var itemLabel = itemLabelFn ? itemLabelFn(job) : job.label || job.id;
+      appendCheckboxOnlyRow(itemsWrap, job, itemLabel, { compact: false, indented: false, dense: colCount > 1 });
+    }
+    parent.appendChild(wrap);
+  }
+
+  /**
+   * Группирует задачи по businessBlock из body.
+   * @param {object[]} jobs
+   * @returns {Map<string, object[]>}
+   */
+  function groupJobsByBusinessBlock(jobs) {
+    var map = new Map();
+    for (var i = 0; i < jobs.length; i++) {
+      var job = jobs[i];
+      var bb = job.body && job.body.businessBlock ? String(job.body.businessBlock) : "?";
+      if (!map.has(bb)) map.set(bb, []);
+      map.get(bb).push(job);
+    }
+    return map;
   }
 
   const container = document.createElement("div");
+  container.id = "fileDlGamificationPanelRootV2";
   container.style.cssText =
     "position:fixed;top:8px;right:8px;z-index:999999;box-sizing:border-box;" +
     "width:min(960px,calc(100vw - 16px));max-width:calc(100vw - 16px);max-height:calc(100vh - 16px);overflow-y:auto;" +
@@ -1002,7 +1048,7 @@ function startDownloadPanel() {
   title.style.cssText =
     "font-size:15px;font-weight:700;color:#0f172a;margin:0 0 4px 0;letter-spacing:-0.02em;line-height:1.2;";
   function syncFileDlTitle() {
-    title.textContent = "Скачивание (gamification) · " + FILE_DL_ACTIVE_STAND + "/" + FILE_DL_ACTIVE_CONTOUR;
+    title.textContent = "Скачивание v2 · " + FILE_DL_ACTIVE_STAND + "/" + FILE_DL_ACTIVE_CONTOUR;
   }
   syncFileDlTitle();
   container.appendChild(title);
@@ -1076,6 +1122,87 @@ function startDownloadPanel() {
   rowStand.appendChild(labContour);
   rowStand.appendChild(selContour);
 
+  // «Отметить всё» / «Снять отметки» / «По умолчанию» — сразу после выбора контура.
+  const rowMarkBtns = document.createElement("div");
+  rowMarkBtns.style.cssText =
+    "display:flex;flex-direction:row;flex-wrap:wrap;align-items:center;gap:6px;flex-shrink:0;";
+
+  /**
+   * Кнопка массовой отметки с иконкой.
+   * @param {string} label
+   * @param {string} icon
+   * @param {string} iconColor
+   * @param {string} title
+   * @param {function(): void} onClick
+   * @returns {HTMLButtonElement}
+   */
+  function mkMarkActionBtn(label, icon, iconColor, title, onClick) {
+    const btnMarkBase =
+      "min-height:28px;padding:4px 10px;font-size:10px;font-weight:600;cursor:pointer;border-radius:8px;box-sizing:border-box;" +
+      "border:1px solid #cbd5e1;background:#f1f5f9;color:#334155;display:inline-flex;align-items:center;gap:5px;";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.title = title;
+    btn.style.cssText = btnMarkBase;
+    const ic = document.createElement("span");
+    ic.textContent = icon;
+    ic.setAttribute("aria-hidden", "true");
+    ic.style.cssText =
+      "font-size:14px;line-height:1;font-weight:700;color:" + iconColor + ";flex-shrink:0;";
+    const tx = document.createElement("span");
+    tx.textContent = label;
+    btn.appendChild(ic);
+    btn.appendChild(tx);
+    btn.addEventListener("click", onClick);
+    return btn;
+  }
+
+  function resetPanelCheckboxesToDefault() {
+    panelCheckboxJobs.forEach(function (x) {
+      x.cb.checked = isFileDlJobCheckedByDefault(x.job);
+    });
+    refreshPanelSubSummary();
+  }
+
+  rowMarkBtns.appendChild(
+    mkMarkActionBtn(
+      "Отметить всё",
+      "✓",
+      "#16a34a",
+      "Отметить все чекбоксы на панели",
+      function () {
+        panelCheckboxJobs.forEach(function (x) {
+          x.cb.checked = true;
+        });
+        refreshPanelSubSummary();
+      }
+    )
+  );
+  rowMarkBtns.appendChild(
+    mkMarkActionBtn(
+      "Снять отметки",
+      "⛔",
+      "#dc2626",
+      "Снять все отметки",
+      function () {
+        panelCheckboxJobs.forEach(function (x) {
+          x.cb.checked = false;
+        });
+        refreshPanelSubSummary();
+      }
+    )
+  );
+  rowMarkBtns.appendChild(
+    mkMarkActionBtn(
+      "По умолчанию",
+      "↺",
+      "#0369a1",
+      "Вернуть отметки как при открытии панели (по конфигу скрипта)",
+      resetPanelCheckboxesToDefault
+    )
+  );
+  rowStand.appendChild(rowMarkBtns);
+
   const envInfo = document.createElement("div");
   envInfo.style.cssText =
     "display:flex;align-items:center;margin-left:auto;font-size:11px;color:#334155;white-space:nowrap;max-width:100%;" +
@@ -1091,37 +1218,6 @@ function startDownloadPanel() {
   selContour.addEventListener("change", refreshFileDlEnvInfo);
   refreshFileDlEnvInfo();
   rowStand.appendChild(envInfo);
-
-  // «Отметить всё» / «Снять отметки» — справа в строке стенда (освобождает место по вертикали под лог).
-  const rowMarkBtns = document.createElement("div");
-  rowMarkBtns.style.cssText =
-    "display:flex;flex-direction:row;flex-wrap:wrap;align-items:center;gap:6px;flex-shrink:0;";
-  const btnMarkBase =
-    "min-height:28px;padding:4px 10px;font-size:10px;font-weight:600;cursor:pointer;border-radius:8px;box-sizing:border-box;" +
-    "border:1px solid #cbd5e1;background:#f1f5f9;color:#334155;";
-  const btnMarkAll = document.createElement("button");
-  btnMarkAll.type = "button";
-  btnMarkAll.textContent = "Отметить всё";
-  btnMarkAll.style.cssText = btnMarkBase;
-  btnMarkAll.addEventListener("click", function () {
-    panelCheckboxJobs.forEach(function (x) {
-      x.cb.checked = true;
-    });
-    refreshPanelSubSummary();
-  });
-  rowMarkBtns.appendChild(btnMarkAll);
-  const btnClearAll = document.createElement("button");
-  btnClearAll.type = "button";
-  btnClearAll.textContent = "Снять отметки";
-  btnClearAll.style.cssText = btnMarkBase;
-  btnClearAll.addEventListener("click", function () {
-    panelCheckboxJobs.forEach(function (x) {
-      x.cb.checked = false;
-    });
-    refreshPanelSubSummary();
-  });
-  rowMarkBtns.appendChild(btnClearAll);
-  rowStand.appendChild(rowMarkBtns);
 
   container.appendChild(rowStand);
 
@@ -1268,137 +1364,104 @@ function startDownloadPanel() {
   syncFileDlDelaysFromPanel();
   syncFileDlRewardsDateFromPanel();
 
-  // Основные выгрузки: одна строка из трёх кнопок + чекбоксы, карточка в стиле колонок ниже.
+  // Основные выгрузки: один горизонтальный ряд по центру, все отмечены по умолчанию.
   const secMain = document.createElement("div");
   secMain.style.cssText =
-    "margin:0 0 6px;padding:6px 8px;background:linear-gradient(180deg,#f0f9ff 0%,#e0f2fe 100%);" +
-    "border:1px solid #7dd3fc;border-radius:8px;box-sizing:border-box;";
+    "margin:0 0 6px;padding:8px 10px;background:linear-gradient(180deg,#f0f9ff 0%,#e0f2fe 100%);" +
+    "border:1px solid #7dd3fc;border-radius:8px;box-sizing:border-box;width:100%;";
   const labMain = document.createElement("div");
   labMain.style.cssText =
-    "font-size:10px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#0369a1;margin:0 0 4px;";
+    "font-size:10px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#0369a1;margin:0 0 6px;text-align:center;";
   labMain.textContent = "Основные выгрузки";
   secMain.appendChild(labMain);
 
-  const mainGrid = document.createElement("div");
-  mainGrid.style.cssText =
-    "display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;width:100%;box-sizing:border-box;align-items:stretch;";
-
-  const mainBtnCss =
-    btnJobRowBase +
-    "background:linear-gradient(180deg,#0284c7,#0369a1);box-shadow:0 2px 6px rgba(3,105,161,.3);";
-
+  const mainRow = document.createElement("div");
+  mainRow.style.cssText =
+    "display:flex;flex-direction:row;flex-wrap:wrap;justify-content:center;align-items:center;gap:8px 20px;width:100%;box-sizing:border-box;";
   DOWNLOAD_JOBS.forEach(function (job) {
-    const cell = document.createElement("div");
-    cell.style.cssText =
-      "display:flex;flex-direction:row;align-items:center;gap:4px;min-width:0;box-sizing:border-box;";
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.checked = isFileDlJobCheckedByDefault(job);
-    cb.title = "Участвует в «Скачать выделенное»";
-    cb.style.cssText =
-      "margin:0;flex-shrink:0;width:14px;height:14px;cursor:pointer;accent-color:#0369a1;";
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.textContent = job.label || job.id || "Скачать";
-    btn.style.cssText = mainBtnCss;
-    btn.addEventListener("click", function () {
-      downloadOneJob(job, {
-        groupName: getGroupNameForJob(job),
-        batchName: "ручной клик (одна задача) | секция «Основные выгрузки»"
-      });
-    });
-    cell.appendChild(cb);
-    cell.appendChild(btn);
-    mainGrid.appendChild(cell);
-    panelCheckboxJobs.push({ cb: cb, job: job });
-    cb.addEventListener("change", refreshPanelSubSummary);
+    appendCheckboxOnlyRow(mainRow, job, job.label || job.id, { compact: true });
   });
-  secMain.appendChild(mainGrid);
+  secMain.appendChild(mainRow);
   container.appendChild(secMain);
 
-  const rowRatingOrders = document.createElement("div");
-  rowRatingOrders.style.cssText =
-    "display:flex;flex-direction:row;gap:8px;align-items:flex-start;margin:0 0 6px;width:100%;box-sizing:border-box;";
-
-  const secRating = document.createElement("div");
-  secRating.style.cssText =
-    "flex:1;min-width:0;box-sizing:border-box;margin:0;padding:6px 8px;background:linear-gradient(180deg,#eff6ff 0%,#dbeafe 100%);" +
-    "border:1px solid #93c5fd;border-radius:8px;";
-  const labRating = document.createElement("div");
-  labRating.style.cssText = "font-size:10px;font-weight:700;color:#1e3a8a;margin:0 0 4px;line-height:1.2;";
-  labRating.textContent = "Рейтинг (" + RATING_GROUP_JOBS.length + ")";
-  secRating.appendChild(labRating);
-
-  RATING_GROUP_JOBS.forEach(function (job) {
-    appendRowWithCheckbox(
-      secRating,
-      job,
-      panelBtnGroupRow +
-        "background:linear-gradient(180deg,#4f6fc4,#3b5ca8);box-shadow:0 2px 5px rgba(59,92,168,.25);",
-      function () {
-        downloadOneJob(job, {
-          groupName: "Рейтинг",
-          batchName: "ручной клик (одна задача) | секция «Рейтинг»"
-        });
-      }
-    );
-  });
-
-  const btnRatingAll = document.createElement("button");
-  btnRatingAll.type = "button";
-  btnRatingAll.textContent = "Все " + RATING_GROUP_JOBS.length + " (рейтинг)";
-  btnRatingAll.style.cssText =
-    "display:block;margin:4px 0 0;width:100%;box-sizing:border-box;min-height:30px;padding:5px 8px;" +
-    "font-size:10px;font-weight:600;cursor:pointer;border-radius:8px;border:none;color:#fff;" +
-    "background:linear-gradient(180deg,#7c3aed,#6d28d9);box-shadow:0 2px 6px rgba(124,58,237,.35);";
-  btnRatingAll.addEventListener("click", function () {
-    downloadRatingGroupOnly();
-  });
-  secRating.appendChild(btnRatingAll);
-  rowRatingOrders.appendChild(secRating);
-
+  // Заказы: компактный блок; listType в 2 колонки; только подпись businessBlock.
   const secOrders = document.createElement("div");
   secOrders.style.cssText =
-    "flex:1;min-width:0;box-sizing:border-box;margin:0;padding:6px 8px;background:linear-gradient(180deg,#ecfdf5 0%,#d1fae5 100%);" +
-    "border:1px solid #6ee7b7;border-radius:8px;";
+    "margin:0 0 6px;padding:5px 8px;background:linear-gradient(180deg,#ecfdf5 0%,#d1fae5 100%);" +
+    "border:1px solid #6ee7b7;border-radius:8px;box-sizing:border-box;width:100%;";
   const labOrders = document.createElement("div");
-  labOrders.style.cssText = "font-size:10px;font-weight:700;color:#14532d;margin:0 0 4px;line-height:1.2;";
-  labOrders.textContent = "Заказы (" + ORDERS_GROUP_JOBS.length + ")";
+  labOrders.style.cssText =
+    "font-size:10px;font-weight:700;color:#14532d;margin:0 0 4px;line-height:1.2;text-align:center;letter-spacing:0.04em;text-transform:uppercase;";
+  labOrders.textContent = "Заказы";
   secOrders.appendChild(labOrders);
 
-  ORDERS_GROUP_JOBS.forEach(function (job) {
-    appendRowWithCheckbox(
-      secOrders,
-      job,
-      panelBtnGroupRow +
-        "background:linear-gradient(180deg,#199f63,#15803d);box-shadow:0 2px 5px rgba(21,128,61,.25);",
-      function () {
-        downloadOneJob(job, {
-          groupName: "Заказы",
-          batchName: "ручной клик (одна задача) | секция «Заказы»"
-        });
-      }
+  const ordersRow = document.createElement("div");
+  ordersRow.style.cssText =
+    "display:flex;flex-direction:row;flex-wrap:nowrap;justify-content:stretch;align-items:stretch;gap:8px;width:100%;box-sizing:border-box;";
+  const ordersByBlock = groupJobsByBusinessBlock(ORDERS_GROUP_JOBS);
+  FILE_DL_ORDERS_BLOCKS_CONFIG.forEach(function (row) {
+    var blockJobs = ordersByBlock.get(row.block);
+    if (!blockJobs || blockJobs.length === 0) return;
+    appendBlockGroupSection(
+      ordersRow,
+      row.block,
+      blockJobs,
+      function (job) {
+        return job.body && job.body.listType ? String(job.body.listType) : job.label;
+      },
+      { flexCell: true, cellMinWidth: "120px", columns: 2, titleColor: "#14532d" }
     );
   });
+  secOrders.appendChild(ordersRow);
+  container.appendChild(secOrders);
 
-  const btnOrdersAll = document.createElement("button");
-  btnOrdersAll.type = "button";
-  btnOrdersAll.textContent = "Все " + ORDERS_GROUP_JOBS.length + " (заказы)";
-  btnOrdersAll.style.cssText =
-    "display:block;margin:4px 0 0;width:100%;box-sizing:border-box;min-height:30px;padding:5px 8px;" +
-    "font-size:10px;font-weight:600;cursor:pointer;border-radius:8px;border:none;color:#fff;" +
-    "background:linear-gradient(180deg,#059669,#047857);box-shadow:0 2px 6px rgba(5,150,105,.35);";
-  btnOrdersAll.addEventListener("click", function () {
-    downloadOrdersGroupOnly();
+  // Рейтинг: 2 строки businessBlock; высота строки — под столбик сезонов самого «высокого» блока.
+  const secRating = document.createElement("div");
+  secRating.style.cssText =
+    "margin:0 0 6px;padding:5px 8px;background:linear-gradient(180deg,#eff6ff 0%,#dbeafe 100%);" +
+    "border:1px solid #93c5fd;border-radius:8px;box-sizing:border-box;width:100%;";
+  const labRating = document.createElement("div");
+  labRating.style.cssText =
+    "font-size:10px;font-weight:700;color:#1e3a8a;margin:0 0 4px;line-height:1.2;text-align:center;letter-spacing:0.04em;text-transform:uppercase;";
+  labRating.textContent = "Рейтинг";
+  secRating.appendChild(labRating);
+
+  const ratingByBlock = groupJobsByBusinessBlock(RATING_GROUP_JOBS);
+  FILE_DL_RATING_UI_ROWS.forEach(function (blockNames, rowIndex) {
+    const ratingRow = document.createElement("div");
+    var rowMinH = calcRatingRowMinHeightPx(blockNames);
+    ratingRow.style.cssText =
+      "display:flex;flex-direction:row;flex-wrap:nowrap;justify-content:space-evenly;align-items:stretch;gap:8px;" +
+      "width:100%;box-sizing:border-box;min-height:" +
+      rowMinH +
+      "px;" +
+      (rowIndex < FILE_DL_RATING_UI_ROWS.length - 1 ? "margin-bottom:6px;" : "");
+    blockNames.forEach(function (blockName) {
+      var blockJobs = ratingByBlock.get(blockName);
+      if (!blockJobs || blockJobs.length === 0) return;
+      appendBlockGroupSection(
+        ratingRow,
+        blockName,
+        blockJobs,
+        function (job) {
+          return job.body && job.body.timePeriod ? String(job.body.timePeriod) : job.label;
+        },
+        {
+          flexCell: true,
+          cellMinWidth: "0",
+          columns: 1,
+          titleColor: "#1e3a8a",
+          fillRowHeight: true,
+        }
+      );
+    });
+    secRating.appendChild(ratingRow);
   });
-  secOrders.appendChild(btnOrdersAll);
-  rowRatingOrders.appendChild(secOrders);
-
-  container.appendChild(rowRatingOrders);
+  container.appendChild(secRating);
 
   const btnSelected = document.createElement("button");
   btnSelected.type = "button";
-  btnSelected.textContent = "Скачать выделенное (по чекбоксам)";
+  btnSelected.textContent = "Скачать выделенное";
   btnSelected.style.cssText =
     "display:block;margin:0 0 6px;width:100%;box-sizing:border-box;min-height:32px;padding:6px 10px;" +
     "font-size:11px;font-weight:600;cursor:pointer;border-radius:8px;border:none;color:#fff;" +
@@ -1444,7 +1507,7 @@ function startDownloadPanel() {
   refreshPanelSubSummary();
   document.body.appendChild(container);
   console.log(
-    "[File_DB_Load_GP] Панель открыта. Подробный журнал — в окне «Журнал работы» на панели."
+    "[File_DB_Load_GP_v2] Панель открыта. Подробный журнал — в окне «Журнал работы» на панели."
   );
 }
 
