@@ -1,81 +1,175 @@
 #!/usr/bin/env bash
-# Локальная синхронизация каталога POST/: рабочие Script/*.js (без автотестов),
-# config.json (если есть), файл «Куда_класть_файлы.txt».
+# Локальная синхронизация каталога POST/ для пересылки в корп. сегмент почты:
+# - все Script/*.js → POST/<имя>.js.txt (закодировано, без сырого JS в теле);
+# - post_mail_codec.py, инструкции, ЗАДАНИЕ;
+# - config.json (если есть), карта «Куда_класть_файлы.txt».
 # Каталог POST/ в .gitignore и не попадает в git.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 POST="$ROOT/POST"
+SCRIPT_DIR="$ROOT/Script"
+CODEC="$ROOT/post_mail_codec.py"
 mkdir -p "$POST"
 
-# Скрипты для работы (UI_AutoTest* — тесты, не копируем)
-PROD_SCRIPTS=(
-  AddressBook_export.js
-  File_DB_Load_GP.js
-  File_DB_Load_GP_v2.js
-  News_Community_Export.js
-  Parameters_Actual_Export.js
-  Profile_GP_LOAD_file.js
-  Tournament_LeadersForAdmin.js
-)
-for name in "${PROD_SCRIPTS[@]}"; do
-  src="$ROOT/Script/$name"
-  if [ -f "$src" ]; then
-    cp "$src" "$POST/${name}.txt"
-  fi
-done
-
-if [ -f "$ROOT/config.json" ]; then
-  cp "$ROOT/config.json" "$POST/config.json.txt"
+if [ ! -f "$CODEC" ]; then
+  echo "Ошибка: не найден post_mail_codec.py в $ROOT" >&2
+  exit 1
 fi
 
-# Карта размещения (перезаписывается при каждой сборке)
+# Все скрипты из Script/*.js (включая автотесты)
+SCRIPT_COUNT=0
+SCRIPT_LIST=()
+while IFS= read -r -d '' f; do
+  name="$(basename "$f")"
+  SCRIPT_LIST+=("$name")
+  python3 "$CODEC" encode --in "$f" --out "$POST/${name}.txt" --original "$name"
+  SCRIPT_COUNT=$((SCRIPT_COUNT + 1))
+done < <(find "$SCRIPT_DIR" -maxdepth 1 -name '*.js' -type f -print0 | sort -z)
+
+DECODE_IDE="$ROOT/post_mail_decode_ide.py"
+
+if [ ! -f "$DECODE_IDE" ]; then
+  echo "Ошибка: не найден post_mail_decode_ide.py в $ROOT" >&2
+  exit 1
+fi
+
+# Обновить FILES_TO_DECODE в post_mail_decode_ide.py по фактическому списку Script/*.js
+python3 - "$DECODE_IDE" "${SCRIPT_LIST[@]}" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+target = Path(sys.argv[1])
+names = sys.argv[2:]
+lines = [
+    "FILES_TO_DECODE: list[tuple[str, str]] = [",
+]
+for name in names:
+    lines.append(f'    ("{name}.txt", "{name}"),')
+lines.append("]")
+block = "\n".join(lines)
+text = target.read_text(encoding="utf-8")
+new_text, n = re.subn(
+    r"FILES_TO_DECODE: list\[tuple\[str, str\]\] = \[[\s\S]*?\]",
+    block,
+    text,
+    count=1,
+)
+if n != 1:
+    raise SystemExit("Не удалось обновить FILES_TO_DECODE в post_mail_decode_ide.py")
+target.write_text(new_text, encoding="utf-8")
+PY
+
+cp "$DECODE_IDE" "$POST/post_mail_decode_ide.py.txt"
+cp "$CODEC" "$POST/post_mail_codec.py.txt"
+
+if [ -f "$ROOT/config.json" ]; then
+  python3 "$CODEC" encode --in "$ROOT/config.json" --out "$POST/config.json.txt" --original "config.json"
+fi
+
 BUILD_DATE="$(date +%Y-%m-%d)"
-cat > "$POST/Куда_класть_файлы.txt" <<EOF
-Каталог POST/ — перенос на другой ПК (без git)
-================================================
-Дата сборки: ${BUILD_DATE}
 
-Как пользоваться
-----------------
-1. Скопируйте нужные файлы из POST/ на целевой ПК.
-2. У каждого файла в POST/ к имени добавлен суффикс .txt — при размещении
-   в проекте УБЕРИТЕ только этот суффикс .txt в конце (см. таблицу «Куда»).
-3. Структура каталогов на целевом ПК должна совпадать с репозиторием
-   Generate_Script_manual (корень проекта — папка с README.md).
+# Задание пользователя (для повторной постановки задачи ассистенту)
+cat > "$POST/ЗАДАНИЕ_шифрование_POST.txt" <<'TASK_EOF'
+в каталог POST надо скопировать все файлы скриптов поменяв расширение на txt
+но это надо для пересылки в корп сегмент почты а на входе почты идет автоматическая проверка и она когда видит внутри файлов JS автоматически удаляет файлы поэтому кроме расширения надо еще "зашифровать обратимо" содержимое так чтобы во 1 алгоритм не распознал там скрипты а во вторых на целевой системе после получения по почте я мог бы без проблем вернуть содержимое к исходному виду
+я думал что можно например добавлять через каждый символ комбинацию доп знаков при автозамене которых в редакторе на пустое получался бы исходный
+либо можно написать небольшой шифровальщик на питоне скрипт который тут шифрует коротко одним файлом а на выходе там на той стороне такой же скрипт расшифрует
+придумай что-то сам зашифруй положи в post и туда же положи если будет скрипт и инструкцию по его работе или по иному способу расшифорвки
 
-Скрипты для работы (в POST/ → в проект)
---------------------------------------
-| Файл в POST/                         | Куда положить в проекте              | Назначение |
-|--------------------------------------|--------------------------------------|------------|
-| AddressBook_export.js.txt            | Script/AddressBook_export.js         | Адресная книга: search → empInfoFull |
-| File_DB_Load_GP.js.txt               | Script/File_DB_Load_GP.js            | Выгрузка файлов gamification (v1, кнопки + чекбоксы) |
-| File_DB_Load_GP_v2.js.txt            | Script/File_DB_Load_GP_v2.js         | Выгрузка gamification v2: только «Скачать выделенное», конфиг блоков |
-| News_Community_Export.js.txt         | Script/News_Community_Export.js      | Новости community: JSON/CSV |
-| Parameters_Actual_Export.js.txt      | Script/Parameters_Actual_Export.js   | Параметры: выгрузка, create, update |
-| Profile_GP_LOAD_file.js.txt          | Script/Profile_GP_LOAD_file.js       | Загрузка профиля «Герои» |
-| Tournament_LeadersForAdmin.js.txt     | Script/Tournament_LeadersForAdmin.js | Турниры: leadersForAdmin |
+положи эту инстркцию (ЗАДАНИЕ ЧТО Я СЕЙЧАС НАПИСАЛ) также в POST что б в будушем тебе же его давать заново при необходимости
+TASK_EOF
 
-Конфигурация
-------------
-| Файл в POST/      | Куда положить | Примечание |
-|-------------------|---------------|------------|
-| config.json.txt   | config.json   | В корень проекта (копируется только если config.json существует в корне). |
+# Инструкция по пересылке и восстановлению
+cat > "$POST/ИНСТРУКЦИЯ_пересылка_скриптов_почтой.txt" <<EOF
+Пересылка Script/*.js через корпоративную почту
+==============================================
+Дата сборки POST/: ${BUILD_DATE}
 
-НЕ копировать из POST/ (тесты, в эту сборку не входят)
--------------------------------------------------------
-| Исключено из POST/              | Где оригинал              |
-|---------------------------------|---------------------------|
-| UI_AutoTest.js                  | Script/UI_AutoTest.js     |
-| UI_AutoTest_LinksCrawler.js     | Script/UI_AutoTest_LinksCrawler.js |
+Зачем
+-----
+Почтовый фильтр удаляет вложения, внутри которых распознаёт JavaScript.
+Файлы в POST/*.js.txt — это НЕ исходный код: текст сжат (zlib), XOR и записан
+как hex-строки (формат POST-MAIL-BUNDLE fmt=1). Сигнатур function/fetch/const
+в теле нет.
 
-Запуск скриптов
----------------
-Открыть нужный стенд в браузере → DevTools → Console → вставить полное содержимое
-соответствующего файла из Script/*.js (или скопировать текст из POST/*.js.txt).
+Что лежит в POST/
+-----------------
+- <имя>.js.txt     — закодированный скрипт (все файлы из Script/*.js)
+- post_mail_decode_ide.py.txt — расшифровщик для GigaCode IDE (IN/ → OUT/, без CLI)
+- post_mail_codec.py.txt — утилита decode/encode через командную строку (опционально)
+- ИНСТРУКЦИЯ_пересылка_скриптов_почтой.txt — этот файл
+- ЗАДАНИЕ_шифрование_POST.txt — исходная постановка задачи
+- Куда_класть_файлы.txt — таблица путей после decode
 
-Пересборка POST/ на исходном ПК
--------------------------------
-Из корня репозитория: ./post_txt_sync.sh
+Отправка (исходный ПК, уже сделано post_txt_sync.sh)
+----------------------------------------------------
+1. ./post_txt_sync.sh из корня репозитория
+2. Прикрепить к письму нужные файлы из POST/ (расширение .txt)
+
+Приём (целевой ПК) — GigaCode IDE (рекомендуется)
+-------------------------------------------------
+1. Создать рабочую папку, например post_unpack/
+2. post_mail_decode_ide.py.txt → post_mail_decode_ide.py (убрать .txt)
+3. Рядом создать каталог IN/
+4. Сохранить вложения из почты (*.js.txt) в IN/
+5. В GigaCode открыть post_mail_decode_ide.py и нажать Run (▶)
+6. Расшифрованные .js появятся в OUT/ (имена заданы в FILES_TO_DECODE внутри скрипта)
+7. Скопировать нужные файлы из OUT/ в Script/ проекта
+
+Приём (целевой ПК) — командная строка (альтернатива)
+----------------------------------------------------
+1. Сохранить вложения из почты в любую папку
+2. post_mail_codec.py.txt → post_mail_codec.py
+3. python3 post_mail_codec.py decode \\
+     --in ~/Downloads/post_in/File_DB_Load_GP_v2.js.txt \\
+     --out /path/to/project/Script/File_DB_Load_GP_v2.js
+
+4. Проверка после decode: файл должен начинаться с // или (function и содержать
+   читаемый JS. Открыть в редакторе и вставить в DevTools как обычно.
+
+Повторная сборка POST/ на исходном ПК
+-------------------------------------
+./post_txt_sync.sh
+
+Проверка кодека (опционально)
+-----------------------------
+python3 post_mail_codec.py verify --in Script/File_DB_Load_GP_v2.js
+
+Алгоритм (кратко)
+-----------------
+UTF-8 → zlib.compress → XOR(key) → hex → строки «D <hex>» между PAYLOAD/ENDPAYLOAD
+Decode — обратный порядок. Ключ в post_mail_codec.py (XOR_KEY), не для секретности,
+а чтобы антивирус не видел текст скрипта.
 EOF
 
-echo "Готово: $POST/ (${#PROD_SCRIPTS[@]} скриптов, без тестов)"
+# Карта размещения после decode
+{
+  echo "Каталог POST/ — перенос на другой ПК (без git)"
+  echo "================================================"
+  echo "Дата сборки: ${BUILD_DATE}"
+  echo ""
+  echo "ВАЖНО: файлы *.js.txt в POST/ — ЗАКОДИРОВАНЫ (не копировать напрямую в Script/)."
+  echo "Сначала decode — см. ИНСТРУКЦИЯ_пересылка_скриптов_почтой.txt"
+  echo ""
+  echo "Скрипты (после decode → Script/)"
+  echo "--------------------------------"
+  printf "| %-36s | %-36s |\n" "Файл в POST/" "Куда положить"
+  printf "|%-38s|%-38s|\n" "--------------------------------------" "--------------------------------------"
+  for name in "${SCRIPT_LIST[@]}"; do
+    printf "| %-36s | Script/%-28s |\n" "${name}.txt" "$name"
+  done
+  echo ""
+  echo "Утилиты"
+  echo "-------"
+  echo "post_mail_decode_ide.py.txt → post_mail_decode_ide.py; IN/*.js.txt → Run → OUT/*.js"
+  echo "post_mail_codec.py.txt → post_mail_codec.py (CLI, опционально)"
+  echo ""
+  if [ -f "$ROOT/config.json" ]; then
+    echo "config.json.txt → config.json (корень проекта, после decode)"
+    echo ""
+  fi
+  echo "Пересборка: ./post_txt_sync.sh"
+} > "$POST/Куда_класть_файлы.txt"
+
+echo "Готово: $POST/ ($SCRIPT_COUNT скриптов, формат POST-MAIL-BUNDLE)"
