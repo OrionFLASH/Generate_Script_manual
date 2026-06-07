@@ -129,6 +129,33 @@
 
 ---
 
+## 3A. `AddressBook_export_OE.js`
+
+**Назначение:** расширение § 3 — полная копия v1 плюс сценарий **Search → empInfoFull → OE** (оргструктура по `deptTree`).
+
+**Origin и базовый путь:** как § 3 (`/api/home`).
+
+### 3A.1. GET `departments/{id}`
+
+**URL:** `origin + /api/home/departments/<deptId>`  
+**Тело:** нет (GET).  
+**Источник id:** элементы массива `deptTree` из ответа **empInfoFull**. Кэш на время прогона — один GET на уникальный id; ошибка HTTP не прерывает остальные запросы.
+
+### 3A.2. Сценарий OE
+
+| Фаза | Последовательность |
+|------|-------------------|
+| 1 Search | Как § 3.3 — POST search по каждому вводу (пагинация). |
+| 2 empInfoFull | Пауза «после Search» → GET empInfoFull по **уникальным** UUID. |
+| 3 departments | Пауза «после empInfoFull» → для каждого emp — GET departments по id из `deptTree` (с кэшем). |
+
+**Файлы** (общий timestamp `YYYYMMDD_HHMM`, префикс `PROM_ALPHA_`):  
+`AB_Search`, `AB_empInfoFull`, `AB_deptTree_id` (`byId` + `byEmployeeLinks`), `AB_full`; при включённом тоггле «Структура форматированная» — `AB_profile.json` + `AB_profile.csv` (одна строка на employeeId, UTF-8 BOM).
+
+**Подробности:** [Docs/Скрипт_AddressBook_export_OE.md](Скрипт_AddressBook_export_OE.md).
+
+---
+
 ## 4. `Parameters_Actual_Export.js`
 
 **Назначение:** работа с параметрами gamification: **список/детали**, **создание**, **обновление**.
@@ -243,6 +270,7 @@
 | `File_DB_Load_GP.js` | POST JSON | `{}`, `{ dateFrom }`, `{ businessBlock, timePeriod }`, `{ businessBlock, listType }` |
 | `File_DB_Load_GP_v2.js` | POST JSON | как v1 + `{ }` для year-result; рейтинг — 10 блоков (конфиг) |
 | `AddressBook_export.js` | POST JSON + GET | search: `{ searchText, pageToken }`; empInfoFull: query `empId` |
+| `AddressBook_export_OE.js` | POST JSON + GET | как v1 + departments: GET `/departments/{id}` |
 | `Parameters_Actual_Export.js` | POST JSON | `{ status }`, `{ objectIds }`, create body, update body |
 | `Tournament_LeadersForAdmin.js` | GET JSON | — |
 | `News_Community_Export.js` | POST JSON | `{ newsStatus, newsTagList[], pageNum }` |
@@ -274,5 +302,6 @@
 | **1.16** | Актуализирован § **6** (`UI_AutoTest.js` — проход по списку `MENU_HREFS`, ожидание загрузки). Добавлен § **7** (`UI_AutoTest_LinksCrawler.js`); сводная таблица дополнена строкой для краулера; введение и ссылка на [ROADMAP.md](../ROADMAP.md). |
 | **1.17** | Добавлен § **6** `News_Community_Export.js` (POST `/proxy/v1/news`, пагинация, чекбоксы `NEWS_STATUS_OPTIONS` / `NEWS_TAG_OPTIONS`); разделы UI-автотестов сдвинуты на § **7** и § **8**; сводная таблица и введение (восемь скриптов). |
 | **1.18** | Добавлен § **2A** `File_DB_Load_GP_v2.js` (year-result, конфиг рейтинга 10 блоков, только «Скачать выделенное»); строка в сводной таблице. |
+| **1.19** | Добавлен § **3A** `AddressBook_export_OE.js` (Search → empInfoFull → GET departments, файлы `PROM_ALPHA_AB_*`); строка в сводной таблице. |
 
 *Актуальность проверяйте по скриптам в `Script/`.*

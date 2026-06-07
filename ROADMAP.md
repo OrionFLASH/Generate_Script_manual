@@ -204,6 +204,33 @@
 
 ---
 
+## 3A. `Script/AddressBook_export_OE.js`
+
+**Сопутствующий файл документации:** [Docs/Скрипт_AddressBook_export_OE.md](Docs/Скрипт_AddressBook_export_OE.md)
+
+Расширение § 3: полная копия v1 + сценарий OE. Панель `addressBookExportOePanelRoot`.
+
+### 3A.1 GET `/departments/{id}`
+
+- `[v]` `fetchDepartmentById`, кэш `Map` на прогон, ошибки не прерывают пайплайн.
+
+### 3A.2 Сценарий «Search → empInfoFull → OE»
+
+- `[v]` Три фазы: Search → empInfoFull (уникальные UUID) → departments по `deptTree`.
+- `[v]` Три паузы: между запросами, после Search, после empInfoFull.
+- `[v]` Файлы `PROM_ALPHA_AB_*_YYYYMMDD_HHMM`: Search, empInfoFull, deptTree_id (`byId` + `byEmployeeLinks`), full.
+- `[v]` Тоггл «Структура форматированная» (по умолчанию вкл.) → `AB_profile.json` + `AB_profile.csv` (1 строка / employeeId).
+
+### 3A.3 UI OE
+
+- `[v]` Второй ряд кнопок: поле и файл «Search → empInfoFull → OE», чекбокс форматирования.
+
+### 3A.4 POST-сборка
+
+- `[v]` `post_txt_sync.sh` — `AddressBook_export_OE.js` в `PROD_SCRIPTS`.
+
+---
+
 ## 4. `Script/Parameters_Actual_Export.js`
 
 **Сопутствующий файл документации:** [Docs/Скрипт_выгрузка_актуальных_параметров_Parameters_Actual_Export.md](Docs/Скрипт_выгрузка_актуальных_параметров_Parameters_Actual_Export.md)
@@ -371,6 +398,7 @@
 | `File_DB_Load_GP.js` | Скрипт_выгрузка_файлов_gamification_File_DB_Load_GP.md | § 2 |
 | `File_DB_Load_GP_v2.js` | Скрипт_выгрузка_файлов_gamification_File_DB_Load_GP_v2.md | § 2A |
 | `AddressBook_export.js` | Скрипт_AddressBook_export.md | § 3 |
+| `AddressBook_export_OE.js` | Скрипт_AddressBook_export_OE.md | § 3A |
 | `Parameters_Actual_Export.js` | Скрипт_выгрузка_актуальных_параметров_Parameters_Actual_Export.md | § 4 |
 | `Tournament_LeadersForAdmin.js` | Скрипт_турниры_leadersForAdmin.md | § 5 |
 | `News_Community_Export.js` | Скрипт_новости_community_News_Community_Export.md | § 6 |

@@ -25,6 +25,7 @@ OUT_DIR: str = "OUT"
 # Список синхронизируется с Script/*.js при ./post_txt_sync.sh
 FILES_TO_DECODE: list[tuple[str, str]] = [
     ("AddressBook_export.js.txt", "AddressBook_export.js"),
+    ("AddressBook_export_OE.js.txt", "AddressBook_export_OE.js"),
     ("File_DB_Load_GP.js.txt", "File_DB_Load_GP.js"),
     ("File_DB_Load_GP_v2.js.txt", "File_DB_Load_GP_v2.js"),
     ("News_Community_Export.js.txt", "News_Community_Export.js"),
