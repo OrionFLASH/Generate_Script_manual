@@ -174,17 +174,105 @@ function uniqueEmployeeIdsFirstOccurrence(flatOrdered) {
   return out;
 }
 
+/** Разделитель колонок в CSV OE-сценария. */
+const AB_OE_CSV_DELIMITER = ";";
+
+/** Значение для полей, не найденных в Search. */
+const AB_OE_NOT_FOUND = "не найдено";
+
 /**
- * Экранирование поля для CSV.
+ * Экранирование поля для CSV (разделитель «;»).
  * @param {string|number|null|undefined} s
  * @returns {string}
  */
 function escapeCsvField(s) {
   var t = String(s == null ? "" : s);
-  if (/[\r\n",]/.test(t)) {
+  if (/[\r\n";]/.test(t)) {
     return '"' + t.replace(/"/g, '""') + '"';
   }
   return t;
+}
+
+/**
+ * TN_8: tabNum до 8 знаков с ведущими нулями; если >8 — без изменений.
+ * @param {string|number|null|undefined} tabNum
+ * @returns {string}
+ */
+function formatTabNumTn8(tabNum) {
+  if (tabNum == null || tabNum === "") return "";
+  var digits = String(tabNum).replace(/\D/g, "");
+  if (!digits) return String(tabNum);
+  if (digits.length <= 8) return digits.padStart(8, "0");
+  return digits;
+}
+
+/**
+ * TN_8 из искомого значения (для строк «не найдено»).
+ * @param {string} searchedInput
+ * @returns {string}
+ */
+function tn8FromSearchedInput(searchedInput) {
+  var digits = String(searchedInput || "").replace(/\D/g, "");
+  if (!digits) return AB_OE_NOT_FOUND;
+  if (digits.length <= 8) return digits.padStart(8, "0");
+  return digits;
+}
+
+/**
+ * Заглушка hit Search при отсутствии результатов.
+ * @param {string} searchedInput
+ * @returns {object}
+ */
+function buildNotFoundSearchHitFormatted(searchedInput) {
+  return {
+    employeeId: AB_OE_NOT_FOUND,
+    fullName: AB_OE_NOT_FOUND,
+    departmentName: AB_OE_NOT_FOUND,
+    positionName: AB_OE_NOT_FOUND,
+    phoneNumber: AB_OE_NOT_FOUND,
+    contactPhone: { id: AB_OE_NOT_FOUND, phoneNumber: AB_OE_NOT_FOUND },
+    email: AB_OE_NOT_FOUND,
+    photo: AB_OE_NOT_FOUND,
+    isAbsent: AB_OE_NOT_FOUND,
+    absenceInfo: { typeName: AB_OE_NOT_FOUND },
+    birthDate: AB_OE_NOT_FOUND,
+    roleName: AB_OE_NOT_FOUND,
+    searchedInput: searchedInput
+  };
+}
+
+/**
+ * Заглушка empInfoFull при отсутствии карточки.
+ * @returns {object}
+ */
+function buildNotFoundEmpInfoFormatted() {
+  return {
+    birthday: AB_OE_NOT_FOUND,
+    deptTree: [],
+    dir: AB_OE_NOT_FOUND,
+    emails: [],
+    empName: AB_OE_NOT_FOUND,
+    empFamilyName: AB_OE_NOT_FOUND,
+    empPatronymic: AB_OE_NOT_FOUND,
+    oldFamilyName: AB_OE_NOT_FOUND,
+    phones: [],
+    jobTitle: AB_OE_NOT_FOUND,
+    logins: [],
+    tabNum: AB_OE_NOT_FOUND,
+    empTBname: AB_OE_NOT_FOUND,
+    absences: {
+      isLong: AB_OE_NOT_FOUND,
+      info: {
+        isAbsent: AB_OE_NOT_FOUND,
+        isLong: AB_OE_NOT_FOUND,
+        startDate: AB_OE_NOT_FOUND,
+        endDate: AB_OE_NOT_FOUND,
+        typeId: AB_OE_NOT_FOUND,
+        typeName: AB_OE_NOT_FOUND,
+        daysRemains: AB_OE_NOT_FOUND
+      }
+    }
+  };
 }
 
 /**
@@ -319,6 +407,35 @@ const AB_OE_FILE_ENV_PREFIX = "PROM_ALPHA_";
  */
 function pad2Export(n) {
   return n < 10 ? "0" + n : String(n);
+}
+
+/**
+ * Колонки с суффиксами (01)(02): сначала все поля (01), затем (02)…
+ * @param {string[]} allKeys
+ * @param {string} prefix
+ * @param {string[]} fields
+ * @returns {string[]}
+ */
+function orderIndexedColumns(allKeys, prefix, fields) {
+  var prefixNeedle = prefix + " - ";
+  var matched = allKeys.filter(function (k) {
+    return k.indexOf(prefixNeedle) === 0;
+  });
+  if (matched.length === 0) return [];
+  var maxIdx = 0;
+  for (var mi = 0; mi < matched.length; mi++) {
+    var m = matched[mi].match(/\((\d+)\)\s*$/);
+    if (m) maxIdx = Math.max(maxIdx, parseInt(m[1], 10));
+  }
+  var ordered = [];
+  for (var idx = 1; idx <= maxIdx; idx++) {
+    var idxStr = pad2Export(idx);
+    for (var fi = 0; fi < fields.length; fi++) {
+      var col = prefixNeedle + fields[fi] + " (" + idxStr + ")";
+      if (matched.indexOf(col) >= 0) ordered.push(col);
+    }
+  }
+  return ordered;
 }
 
 /**
@@ -568,7 +685,7 @@ function csvRowFromOrderedKeys(row, orderedKeys) {
   for (var i = 0; i < orderedKeys.length; i++) {
     cells.push(escapeCsvField(row[orderedKeys[i]] != null ? row[orderedKeys[i]] : ""));
   }
-  return cells.join(",");
+  return cells.join(AB_OE_CSV_DELIMITER);
 }
 
 /**
@@ -714,7 +831,7 @@ function startAddressBookPanel() {
   bLoadTnOe.type = "button";
   bLoadTnOe.textContent = "Файл: Search → empInfoFull → OE";
   bLoadTnOe.title =
-    "Search, empInfoFull, затем GET departments по deptTree. Имена PROM_ALPHA_AB_*; профиль/CSV — по тогглу ниже.";
+    "Search, empInfoFull, затем GET departments по deptTree. Имена PROM_ALPHA_AB_*; какие файлы сохранять — чекбоксы ниже.";
   bLoadTnOe.style.cssText =
     fileBtnCss + "background:linear-gradient(180deg,#ea580c,#c2410c);box-shadow:0 2px 6px rgba(194,65,12,.35);";
 
@@ -730,21 +847,60 @@ function startAddressBookPanel() {
 
   const rowOeToggle = document.createElement("div");
   rowOeToggle.style.cssText =
-    "display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 14px 0;padding:8px 10px;" +
-    "background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;";
-  const chkFormatted = document.createElement("input");
-  chkFormatted.type = "checkbox";
-  chkFormatted.id = "addrBookOeFormatted";
-  chkFormatted.checked = true;
-  chkFormatted.style.cssText = "margin:0;cursor:pointer;accent-color:#ea580c;";
-  const labFormatted = document.createElement("label");
-  labFormatted.setAttribute("for", "addrBookOeFormatted");
-  labFormatted.style.cssText = "font-size:11px;color:#9a3412;cursor:pointer;font-weight:600;";
-  labFormatted.textContent =
-    "Структура форматированная (AB_profile.json + CSV; если выкл — только сырые + AB_full)";
-  labFormatted.prepend(chkFormatted);
-  rowOeToggle.appendChild(labFormatted);
+    "margin:0 0 14px 0;padding:8px 10px;background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;";
+  const rowOeToggleTitle = document.createElement("div");
+  rowOeToggleTitle.style.cssText = "font-size:11px;font-weight:700;color:#9a3412;margin:0 0 8px 0;";
+  rowOeToggleTitle.textContent = "Сохранять файлы OE (снять — файл не выгружается):";
+  rowOeToggle.appendChild(rowOeToggleTitle);
+  const rowOeToggleGrid = document.createElement("div");
+  rowOeToggleGrid.style.cssText =
+    "display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 10px;";
+  /** @type {Record<string, HTMLInputElement>} */
+  var oeSaveChk = {};
+  var oeSaveFileDefs = [
+    { key: "AB_Search", label: "AB_Search.json" },
+    { key: "AB_empInfoFull", label: "AB_empInfoFull.json" },
+    { key: "AB_deptTree_id", label: "AB_deptTree_id.json" },
+    { key: "AB_full", label: "AB_full.json" },
+    { key: "AB_profile_json", label: "AB_profile.json" },
+    { key: "AB_profile_csv", label: "AB_profile.csv" }
+  ];
+  for (var oi = 0; oi < oeSaveFileDefs.length; oi++) {
+    var def = oeSaveFileDefs[oi];
+    var chkId = "addrBookOeSave_" + def.key;
+    var lab = document.createElement("label");
+    lab.setAttribute("for", chkId);
+    lab.style.cssText =
+      "display:flex;align-items:center;gap:6px;font-size:10px;color:#9a3412;cursor:pointer;font-weight:600;";
+    var chk = document.createElement("input");
+    chk.type = "checkbox";
+    chk.id = chkId;
+    chk.checked = true;
+    chk.style.cssText = "margin:0;cursor:pointer;accent-color:#ea580c;flex:0 0 auto;";
+    var sp = document.createElement("span");
+    sp.textContent = def.label;
+    lab.appendChild(chk);
+    lab.appendChild(sp);
+    rowOeToggleGrid.appendChild(lab);
+    oeSaveChk[def.key] = chk;
+  }
+  rowOeToggle.appendChild(rowOeToggleGrid);
   box.appendChild(rowOeToggle);
+
+  /**
+   * Какие файлы OE сохранять при прогоне.
+   * @returns {{AB_Search: boolean, AB_empInfoFull: boolean, AB_deptTree_id: boolean, AB_full: boolean, AB_profile_json: boolean, AB_profile_csv: boolean}}
+   */
+  function getOeSaveFilesFromPanel() {
+    return {
+      AB_Search: oeSaveChk.AB_Search.checked,
+      AB_empInfoFull: oeSaveChk.AB_empInfoFull.checked,
+      AB_deptTree_id: oeSaveChk.AB_deptTree_id.checked,
+      AB_full: oeSaveChk.AB_full.checked,
+      AB_profile_json: oeSaveChk.AB_profile_json.checked,
+      AB_profile_csv: oeSaveChk.AB_profile_csv.checked
+    };
+  }
 
   const inpPauseBetween = fieldBetween.inp;
   const inpPauseAfterSearch = fieldAfterSearch.inp;
@@ -906,7 +1062,9 @@ function startAddressBookPanel() {
     inpPauseBetween.disabled = busy;
     inpPauseAfterSearch.disabled = busy;
     inpPauseAfterEmp.disabled = busy;
-    chkFormatted.disabled = busy;
+    for (var sk = 0; sk < oeSaveFileDefs.length; sk++) {
+      oeSaveChk[oeSaveFileDefs[sk].key].disabled = busy;
+    }
     modeTabNum.disabled = busy;
     modeSearchValues.disabled = busy;
   }
@@ -1059,7 +1217,7 @@ function startAddressBookPanel() {
    * @param {number} pauseBetweenMs
    * @param {number} pauseAfterSearchMs
    * @param {number} pauseAfterEmpMs
-   * @param {boolean} formattedStructure
+   * @param {{AB_Search: boolean, AB_empInfoFull: boolean, AB_deptTree_id: boolean, AB_full: boolean, AB_profile_json: boolean, AB_profile_csv: boolean}} saveFiles
    * @param {string} [sourceTag]
    */
   async function runSearchEmpInfoFullOeExport(
@@ -1067,19 +1225,26 @@ function startAddressBookPanel() {
     pauseBetweenMs,
     pauseAfterSearchMs,
     pauseAfterEmpMs,
-    formattedStructure,
+    saveFiles,
     sourceTag
   ) {
     var prefix = sourceTag ? sourceTag + " — " : "";
     var envKey = getAddressBookEnvKey();
     var tsStamp = formatExportTimestampLocal(new Date());
     var standOrigin = getAddressBookStandAndOrigin();
+    var saveList = [];
+    if (saveFiles.AB_Search) saveList.push("AB_Search");
+    if (saveFiles.AB_empInfoFull) saveList.push("AB_empInfoFull");
+    if (saveFiles.AB_deptTree_id) saveList.push("AB_deptTree_id");
+    if (saveFiles.AB_full) saveList.push("AB_full");
+    if (saveFiles.AB_profile_json) saveList.push("AB_profile.json");
+    if (saveFiles.AB_profile_csv) saveList.push("AB_profile.csv");
 
     console.log(
       "[Адресная книга OE] Search → empInfoFull → OE. Значений: " +
         items.length +
-        ". Форматирование: " +
-        (formattedStructure ? "да" : "нет")
+        ". Файлы: " +
+        (saveList.length ? saveList.join(", ") : "—")
     );
     appendLog(
       prefix +
@@ -1089,8 +1254,8 @@ function startAddressBookPanel() {
         envKey +
         ", ts: " +
         tsStamp +
-        ", форматирование: " +
-        (formattedStructure ? "да" : "нет")
+        ", сохранение: " +
+        (saveList.length ? saveList.join(", ") : "ничего не выбрано")
     );
 
     var searchPhaseItems = [];
@@ -1119,12 +1284,14 @@ function startAddressBookPanel() {
           flatHitEmpOrder.push(eid);
           if (!firstHitByEmpId.has(eid)) firstHitByEmpId.set(eid, h);
         }
+        var notFound = hits.length === 0;
         searchPhaseItems.push({
           input: item.input,
           searchText: item.searchText,
           asNumber: item.asNumber,
           searchPages: searchBundle.pages,
           hits: hits,
+          notFound: notFound,
           searchStats: {
             totalPages: searchBundle.totalPages,
             totalHits: searchBundle.totalHits,
@@ -1133,10 +1300,10 @@ function startAddressBookPanel() {
           }
         });
         appendLog(
-          "    → Search: hits=" +
+          (notFound ? "    → Search: не найдено" : "    → Search: hits=" +
             searchBundle.totalHits +
             ", уникальных employeeId=" +
-            searchBundle.employeeIds.length
+            searchBundle.employeeIds.length)
         );
       } catch (e) {
         searchPhaseItems.push({
@@ -1153,16 +1320,18 @@ function startAddressBookPanel() {
     var allUniqueEmpIds = uniqueEmployeeIdsFirstOccurrence(flatHitEmpOrder);
 
     var fnameSearch = buildOeExportFileName("AB_Search", tsStamp);
-    downloadJson(fnameSearch, {
-      exportedAt: new Date().toISOString(),
-      scenario: "search_empInfoFull_oe_search",
-      sourceTag: sourceTag || null,
-      stand: envKey,
-      origin: standOrigin.origin,
-      timestamp: tsStamp,
-      items: searchPhaseItems
-    });
-    appendLog("Файл: " + fnameSearch);
+    if (saveFiles.AB_Search) {
+      downloadJson(fnameSearch, {
+        exportedAt: new Date().toISOString(),
+        scenario: "search_empInfoFull_oe_search",
+        sourceTag: sourceTag || null,
+        stand: envKey,
+        origin: standOrigin.origin,
+        timestamp: tsStamp,
+        items: searchPhaseItems
+      });
+      appendLog("Файл: " + fnameSearch);
+    }
 
     if (pauseAfterSearchMs > 0 && allUniqueEmpIds.length > 0) await delay(pauseAfterSearchMs);
 
@@ -1183,25 +1352,63 @@ function startAddressBookPanel() {
     }
 
     var fnameEmp = buildOeExportFileName("AB_empInfoFull", tsStamp);
-    var empList = [];
-    empInfoById.forEach(function (val, key) {
-      empList.push({ employeeId: key, empInfoFull: val });
-    });
-    downloadJson(fnameEmp, {
-      exportedAt: new Date().toISOString(),
-      scenario: "search_empInfoFull_oe_empInfoFull",
-      timestamp: tsStamp,
-      stand: envKey,
-      results: empList
-    });
-    appendLog("Файл: " + fnameEmp);
+    if (saveFiles.AB_empInfoFull) {
+      var empList = [];
+      empInfoById.forEach(function (val, key) {
+        empList.push({ employeeId: key, empInfoFull: val });
+      });
+      downloadJson(fnameEmp, {
+        exportedAt: new Date().toISOString(),
+        scenario: "search_empInfoFull_oe_empInfoFull",
+        timestamp: tsStamp,
+        stand: envKey,
+        results: empList
+      });
+      appendLog("Файл: " + fnameEmp);
+    }
 
     if (pauseAfterEmpMs > 0 && allUniqueEmpIds.length > 0) await delay(pauseAfterEmpMs);
 
     var deptCache = new Map();
     var deptLinks = [];
-    appendLog("Фаза departments (OE) …");
-
+    var uniqueDeptIdsOrdered = [];
+    var deptIdSeenCollect = {};
+    for (let k2a = 0; k2a < allUniqueEmpIds.length; k2a++) {
+      var empWrapA = empInfoById.get(allUniqueEmpIds[k2a]);
+      var empBodyA = empWrapA && empWrapA.data ? empWrapA.data : null;
+      var nodesA = extractDeptTreeNodes(empBodyA);
+      for (var dna = 0; dna < nodesA.length; dna++) {
+        var deptIdA = nodesA[dna].id;
+        if (!deptIdSeenCollect[deptIdA]) {
+          deptIdSeenCollect[deptIdA] = true;
+          uniqueDeptIdsOrdered.push(deptIdA);
+        }
+      }
+    }
+    appendLog(
+      "Фаза departments (OE): уникальных dept id=" +
+        uniqueDeptIdsOrdered.length +
+        " (1 GET на id)"
+    );
+    for (let di = 0; di < uniqueDeptIdsOrdered.length; di++) {
+      var deptIdFetch = uniqueDeptIdsOrdered[di];
+      appendLog("  GET departments/" + deptIdFetch + " …");
+      try {
+        var deptRes = await fetchDepartmentById(deptIdFetch);
+        deptCache.set(deptIdFetch, deptRes);
+        appendLog("    → HTTP " + deptRes.status + (deptRes.ok ? " OK" : " ошибка"));
+      } catch (e2) {
+        deptCache.set(deptIdFetch, {
+          deptId: deptIdFetch,
+          ok: false,
+          status: 0,
+          data: null,
+          error: String(e2)
+        });
+        appendLog("    → исключение: " + e2);
+      }
+      if (di < uniqueDeptIdsOrdered.length - 1 && pauseBetweenMs > 0) await delay(pauseBetweenMs);
+    }
     for (let k2 = 0; k2 < allUniqueEmpIds.length; k2++) {
       var empId2 = allUniqueEmpIds[k2];
       var empWrap = empInfoById.get(empId2);
@@ -1209,28 +1416,10 @@ function startAddressBookPanel() {
       var nodes = extractDeptTreeNodes(empBody);
       for (var dn = 0; dn < nodes.length; dn++) {
         var deptId = nodes[dn].id;
-        if (!deptCache.has(deptId)) {
-          appendLog("  GET departments/" + deptId + " …");
-          try {
-            var deptRes = await fetchDepartmentById(deptId);
-            deptCache.set(deptId, deptRes);
-            appendLog("    → HTTP " + deptRes.status + (deptRes.ok ? " OK" : " ошибка"));
-          } catch (e2) {
-            deptCache.set(deptId, {
-              deptId: deptId,
-              ok: false,
-              status: 0,
-              data: null,
-              error: String(e2)
-            });
-            appendLog("    → исключение: " + e2);
-          }
-          if (pauseBetweenMs > 0) await delay(pauseBetweenMs);
-        }
         deptLinks.push({
           deptId: deptId,
           employeeId: empId2,
-          department: deptCache.get(deptId)
+          department: deptCache.get(deptId) || null
         });
       }
     }
@@ -1240,14 +1429,16 @@ function startAddressBookPanel() {
       deptByIdObj[key] = val;
     });
     var fnameDept = buildOeExportFileName("AB_deptTree_id", tsStamp);
-    downloadJson(fnameDept, {
-      exportedAt: new Date().toISOString(),
-      scenario: "search_empInfoFull_oe_departments",
-      timestamp: tsStamp,
-      byId: deptByIdObj,
-      byEmployeeLinks: deptLinks
-    });
-    appendLog("Файл: " + fnameDept);
+    if (saveFiles.AB_deptTree_id) {
+      downloadJson(fnameDept, {
+        exportedAt: new Date().toISOString(),
+        scenario: "search_empInfoFull_oe_departments",
+        timestamp: tsStamp,
+        byId: deptByIdObj,
+        byEmployeeLinks: deptLinks
+      });
+      appendLog("Файл: " + fnameDept);
+    }
 
     var fullTreeSearches = [];
     for (var si = 0; si < searchPhaseItems.length; si++) {
@@ -1258,6 +1449,26 @@ function startAddressBookPanel() {
       }
       var empNodes = [];
       var hitsArr = sp.hits || [];
+      if (sp.notFound) {
+        empNodes.push({
+          notFound: true,
+          searchedInput: sp.input,
+          employeeId: AB_OE_NOT_FOUND,
+          searchHit: buildNotFoundSearchHitFormatted(sp.input),
+          empInfoFull: null,
+          departments: []
+        });
+        fullTreeSearches.push({
+          input: sp.input,
+          searchText: sp.searchText,
+          asNumber: sp.asNumber,
+          searchPages: sp.searchPages,
+          searchStats: sp.searchStats,
+          notFound: true,
+          employees: empNodes
+        });
+        continue;
+      }
       for (var hj = 0; hj < hitsArr.length; hj++) {
         var hit = hitsArr[hj];
         var eidHit = hit && hit.employeeId ? String(hit.employeeId).trim() : "";
@@ -1291,16 +1502,18 @@ function startAddressBookPanel() {
     }
 
     var fnameFull = buildOeExportFileName("AB_full", tsStamp);
-    downloadJson(fnameFull, {
-      exportedAt: new Date().toISOString(),
-      scenario: "search_empInfoFull_oe_full_tree",
-      timestamp: tsStamp,
-      stand: envKey,
-      searches: fullTreeSearches
-    });
-    appendLog("Файл: " + fnameFull);
+    if (saveFiles.AB_full) {
+      downloadJson(fnameFull, {
+        exportedAt: new Date().toISOString(),
+        scenario: "search_empInfoFull_oe_full_tree",
+        timestamp: tsStamp,
+        stand: envKey,
+        searches: fullTreeSearches
+      });
+      appendLog("Файл: " + fnameFull);
+    }
 
-    if (formattedStructure) {
+    if (saveFiles.AB_profile_json || saveFiles.AB_profile_csv) {
       var profileEmployees = [];
       for (var ui = 0; ui < allUniqueEmpIds.length; ui++) {
         var uid = allUniqueEmpIds[ui];
@@ -1327,15 +1540,29 @@ function startAddressBookPanel() {
           deptTreeWithOrgUnit: deptProfile
         });
       }
+      for (var nfi = 0; nfi < searchPhaseItems.length; nfi++) {
+        var spNf = searchPhaseItems[nfi];
+        if (!spNf || !spNf.notFound) continue;
+        profileEmployees.push({
+          employeeId: AB_OE_NOT_FOUND,
+          notFound: true,
+          searchedInput: spNf.input,
+          search: buildNotFoundSearchHitFormatted(spNf.input),
+          empInfoFull: buildNotFoundEmpInfoFormatted(),
+          deptTreeWithOrgUnit: []
+        });
+      }
 
       var fnameProfile = buildOeExportFileName("AB_profile", tsStamp);
-      downloadJson(fnameProfile, {
-        exportedAt: new Date().toISOString(),
-        scenario: "search_empInfoFull_oe_profile",
-        timestamp: tsStamp,
-        employees: profileEmployees
-      });
-      appendLog("Файл: " + fnameProfile);
+      if (saveFiles.AB_profile_json) {
+        downloadJson(fnameProfile, {
+          exportedAt: new Date().toISOString(),
+          scenario: "search_empInfoFull_oe_profile",
+          timestamp: tsStamp,
+          employees: profileEmployees
+        });
+        appendLog("Файл: " + fnameProfile);
+      }
 
       var csvRows = [];
       var allColKeys = [];
@@ -1355,6 +1582,7 @@ function startAddressBookPanel() {
         "employeeId",
         "tabNum",
         "fullName",
+        "TN_8",
         "empFamilyName",
         "empName",
         "empPatronymic",
@@ -1368,6 +1596,11 @@ function startAddressBookPanel() {
         row.employeeId = pe.employeeId || "";
         row.tabNum = pe.empInfoFull && pe.empInfoFull.tabNum != null ? String(pe.empInfoFull.tabNum) : "";
         row.fullName = pe.search && pe.search.fullName != null ? String(pe.search.fullName) : "";
+        if (pe.notFound) {
+          row.TN_8 = tn8FromSearchedInput(pe.searchedInput || "");
+        } else {
+          row.TN_8 = formatTabNumTn8(pe.empInfoFull ? pe.empInfoFull.tabNum : "");
+        }
         row.empFamilyName =
           pe.empInfoFull && pe.empInfoFull.empFamilyName != null ? String(pe.empInfoFull.empFamilyName) : "";
         row.empName = pe.empInfoFull && pe.empInfoFull.empName != null ? String(pe.empInfoFull.empName) : "";
@@ -1446,16 +1679,10 @@ function startAddressBookPanel() {
       }
 
       var orderedCols = fixedFirst.slice();
-      var emailCols = allColKeys
-        .filter(function (k) {
-          return k.indexOf("emails -") === 0;
-        })
-        .sort();
-      var deptCols = allColKeys
-        .filter(function (k) {
-          return k.indexOf("deptTree -") === 0;
-        })
-        .sort();
+      var emailCols = orderIndexedColumns(allColKeys, "emails", ["address", "domain"]);
+      var deptCols = orderIndexedColumns(allColKeys, "deptTree", ["id", "name", "id - orgUnit"]);
+      var phoneCols = orderIndexedColumns(allColKeys, "phones", ["type", "phoneNumber"]);
+      var loginCols = orderIndexedColumns(allColKeys, "logins", ["domain", "accountName"]);
       var restCols = allColKeys
         .filter(function (k) {
           return (
@@ -1467,46 +1694,26 @@ function startAddressBookPanel() {
           );
         })
         .sort();
-      var phoneCols = allColKeys
-        .filter(function (k) {
-          return k.indexOf("phones -") === 0;
-        })
-        .sort();
-      var loginCols = allColKeys
-        .filter(function (k) {
-          return k.indexOf("logins -") === 0;
-        })
-        .sort();
       orderedCols = orderedCols.concat(emailCols).concat(deptCols).concat(restCols).concat(phoneCols).concat(loginCols);
 
-      var csvHeader = orderedCols
-        .map(function (c) {
-          return escapeCsvField(c);
-        })
-        .join(",");
-      var csvBody = csvRows
-        .map(function (r) {
-          return csvRowFromOrderedKeys(r, orderedCols);
-        })
-        .join("\r\n");
-      var fnameCsvProfile = buildOeExportFileName("AB_profile", tsStamp, ".csv");
-      downloadText(fnameCsvProfile, "\uFEFF" + csvHeader + "\r\n" + csvBody, "text/csv;charset=utf-8");
-      appendLog("Файл: " + fnameCsvProfile);
+      if (saveFiles.AB_profile_csv) {
+        var csvHeader = orderedCols
+          .map(function (c) {
+            return escapeCsvField(c);
+          })
+          .join(AB_OE_CSV_DELIMITER);
+        var csvBody = csvRows
+          .map(function (r) {
+            return csvRowFromOrderedKeys(r, orderedCols);
+          })
+          .join("\r\n");
+        var fnameCsvProfile = buildOeExportFileName("AB_profile", tsStamp, ".csv");
+        downloadText(fnameCsvProfile, "\uFEFF" + csvHeader + "\r\n" + csvBody, "text/csv;charset=utf-8");
+        appendLog("Файл: " + fnameCsvProfile);
+      }
     }
 
-    appendLog(
-      "OE готово. ts=" +
-        tsStamp +
-        ": " +
-        fnameSearch +
-        ", " +
-        fnameEmp +
-        ", " +
-        fnameDept +
-        ", " +
-        fnameFull +
-        (formattedStructure ? ", AB_profile" : "")
-    );
+    appendLog("OE готово. ts=" + tsStamp + (saveList.length ? ": " + saveList.join(", ") : " (файлы не сохранялись)"));
     console.log("[Адресная книга OE] Готово, ts=" + tsStamp);
   }
 
@@ -1841,7 +2048,7 @@ function startAddressBookPanel() {
               pb,
               pa,
               pe,
-              chkFormatted.checked,
+              getOeSaveFilesFromPanel(),
               "Из файла"
             );
           } else {
@@ -1898,7 +2105,7 @@ function startAddressBookPanel() {
     var pe = readPauseMsFromInput(inpPauseAfterEmp, REQUEST_PAUSE_MS);
     setBusy(true);
     try {
-      await runSearchEmpInfoFullOeExport(items, pb, pa, pe, chkFormatted.checked, "Из поля");
+      await runSearchEmpInfoFullOeExport(items, pb, pa, pe, getOeSaveFilesFromPanel(), "Из поля");
     } catch (err) {
       appendLog("Сбой сценария OE: " + err);
     } finally {
