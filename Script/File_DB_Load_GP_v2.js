@@ -4,7 +4,8 @@
 // Отличия от File_DB_Load_GP.js:
 // - нет одиночных кнопок «Скачать» и «Все N (рейтинг/заказы)»;
 // - выбор чекбоксами: основные, рейтинг и заказы (блок → сезоны/listType);
-// - конфиги FILE_DL_RATING_BLOCKS_CONFIG / FILE_DL_ORDERS_BLOCKS_CONFIG;
+// - конфиги FILE_DL_RATING_BLOCKS_CONFIG / FILE_DL_ORDERS_BLOCKS_CONFIG (defaultChecked на каждый элемент);
+// - индикатор статуса и таймер мин:сек:мс у каждой задачи на панели.
 // - добавлена выгрузка «Итоги года» (year-result/file-download).
 // POST …/file-download, credentials: "include". Журнал — на панели.
 // =============================================================================
@@ -127,36 +128,50 @@ const ORDERS_FILE_DOWNLOAD_PATH = "/bo/rmkib.gamification/proxy/v1/orders/file-d
 const YEAR_RESULT_FILE_DOWNLOAD_PATH = "/bo/rmkib.gamification/proxy/v1/year-result/file-download";
 
 /**
- * Конфиг рейтинга: businessBlock, сезоны (timePeriod), defaultChecked блока на панели.
- * @type {Array<{ block: string, timePeriods: string[], defaultChecked?: boolean }>}
+ * Конфиг рейтинга: businessBlock + элементы timePeriod с defaultChecked каждого.
+ * @type {Array<{ block: string, timePeriods: Array<string|{ period: string, defaultChecked?: boolean }> }>}
  */
 const FILE_DL_RATING_BLOCKS_CONFIG = [
   {
     block: "KMKKSB",
-    timePeriods: ["ACTIVESEASON", "SEASON_2025_2", "SEASON_2025_1", "SEASON_2024", "ALLTHETIME"],
-    defaultChecked: true,
+    timePeriods: [
+      { period: "ACTIVESEASON", defaultChecked: true },
+      { period: "SEASON_2025_2", defaultChecked: true },
+      { period: "SEASON_2025_1", defaultChecked: true },
+      { period: "SEASON_2024", defaultChecked: true },
+      { period: "ALLTHETIME", defaultChecked: true },
+    ],
   },
   {
     block: "MNS",
-    timePeriods: ["ACTIVESEASON", "SEASON_m_2025_2", "SEASON_m_2025_1", "SEASON_m_2024", "ALLTHETIME"],
-    defaultChecked: false,
+    timePeriods: [
+      { period: "ACTIVESEASON", defaultChecked: false },
+      { period: "SEASON_m_2025_2", defaultChecked: false },
+      { period: "SEASON_m_2025_1", defaultChecked: false },
+      { period: "SEASON_m_2024", defaultChecked: false },
+      { period: "ALLTHETIME", defaultChecked: false },
+    ],
   },
   {
     block: "CSM",
-    timePeriods: ["ALLTHETIME", "ACTIVESEASON"],
-    defaultChecked: true,
+    timePeriods: [
+      { period: "ALLTHETIME", defaultChecked: true },
+      { period: "ACTIVESEASON", defaultChecked: true },
+    ],
   },
   {
     block: "AKMKKSB",
-    timePeriods: ["ALLTHETIME", "ACTIVESEASON"],
-    defaultChecked: true,
+    timePeriods: [
+      { period: "ALLTHETIME", defaultChecked: true },
+      { period: "ACTIVESEASON", defaultChecked: true },
+    ],
   },
-  { block: "SERVICEMEN", timePeriods: ["ALLTHETIME"], defaultChecked: false },
-  { block: "KMFACTORING", timePeriods: ["ALLTHETIME"], defaultChecked: false },
-  { block: "KMSB1", timePeriods: ["ALLTHETIME"], defaultChecked: false },
-  { block: "IMUB", timePeriods: ["ALLTHETIME"], defaultChecked: false },
-  { block: "RNUB", timePeriods: ["ALLTHETIME"], defaultChecked: false },
-  { block: "RSB1", timePeriods: ["ALLTHETIME"], defaultChecked: false },
+  { block: "SERVICEMEN", timePeriods: [{ period: "ALLTHETIME", defaultChecked: false }] },
+  { block: "KMFACTORING", timePeriods: [{ period: "ALLTHETIME", defaultChecked: false }] },
+  { block: "KMSB1", timePeriods: [{ period: "ALLTHETIME", defaultChecked: false }] },
+  { block: "IMUB", timePeriods: [{ period: "ALLTHETIME", defaultChecked: false }] },
+  { block: "RNUB", timePeriods: [{ period: "ALLTHETIME", defaultChecked: false }] },
+  { block: "RSB1", timePeriods: [{ period: "ALLTHETIME", defaultChecked: false }] },
 ];
 
 /** Раскладка рейтинга на панели: две строки businessBlock (порядок слева направо). */
@@ -165,34 +180,61 @@ const FILE_DL_RATING_UI_ROWS = [
   ["SERVICEMEN", "KMFACTORING", "KMSB1", "IMUB", "RNUB", "RSB1"],
 ];
 
-/** id задач рейтинга, снятых по умолчанию (поверх defaultChecked блока). */
+/** id задач рейтинга, снятых по умолчанию (поверх defaultChecked элемента). */
 const FILE_DL_RATING_DEFAULT_UNCHECKED_JOB_IDS = [];
 
 /**
- * Конфиг заказов: businessBlock, listType, defaultChecked блока.
- * @type {Array<{ block: string, listTypes: string[], defaultChecked?: boolean }>}
+ * Конфиг заказов: businessBlock + listType с defaultChecked каждого элемента.
+ * @type {Array<{ block: string, listTypes: Array<string|{ listType: string, defaultChecked?: boolean }> }>}
  */
 const FILE_DL_ORDERS_BLOCKS_CONFIG = [
   {
     block: "KMKKSB",
-    listTypes: ["NONSEASON", "SEASON_2025_2", "SEASON_2025_1", "SEASON_2024", "ALLSEASONS"],
-    defaultChecked: true,
+    listTypes: [
+      { listType: "NONSEASON", defaultChecked: true },
+      { listType: "SEASON_2025_2", defaultChecked: true },
+      { listType: "SEASON_2025_1", defaultChecked: true },
+      { listType: "SEASON_2024", defaultChecked: true },
+      { listType: "ALLSEASONS", defaultChecked: true },
+    ],
   },
   {
     block: "MNS",
-    listTypes: ["NONSEASON", "SEASON_m_2025_2", "SEASON_m_2025_1", "SEASON_m_2024", "ALLSEASONS"],
-    defaultChecked: true,
+    listTypes: [
+      { listType: "NONSEASON", defaultChecked: true },
+      { listType: "SEASON_m_2025_2", defaultChecked: true },
+      { listType: "SEASON_m_2025_1", defaultChecked: true },
+      { listType: "SEASON_m_2024", defaultChecked: true },
+      { listType: "ALLSEASONS", defaultChecked: true },
+    ],
   },
 ];
 
 /** id задач заказов, снятых по умолчанию (пусто — все listType отмечены). */
 const FILE_DL_ORDERS_DEFAULT_UNCHECKED_JOB_IDS = [];
 
-/** id основных выгрузок, снятых по умолчанию. */
+/** id основных выгрузок, снятых по умолчанию (поверх defaultChecked задачи). */
 const FILE_DL_MAIN_DEFAULT_UNCHECKED_JOB_IDS = [];
 
 /**
- * @param {Array<{ block: string, timePeriods: string[], defaultChecked?: boolean }>} config
+ * Разбор элемента конфига (строка или объект с defaultChecked).
+ * @param {string|{ period?: string, listType?: string, timePeriod?: string, defaultChecked?: boolean }} item
+ * @param {boolean} [fallbackChecked]
+ * @returns {{ value: string, defaultChecked: boolean }}
+ */
+function parseFileDlConfigItem(item, fallbackChecked) {
+  if (typeof item === "string") {
+    return { value: item, defaultChecked: fallbackChecked !== false };
+  }
+  if (item && typeof item === "object") {
+    var v = item.period || item.listType || item.timePeriod || "";
+    return { value: String(v), defaultChecked: item.defaultChecked !== false };
+  }
+  return { value: "", defaultChecked: fallbackChecked !== false };
+}
+
+/**
+ * @param {Array<{ block: string, timePeriods: Array<string|object> }>} config
  * @returns {object[]}
  */
 function buildRatingGroupJobsFromConfig(config) {
@@ -201,9 +243,10 @@ function buildRatingGroupJobsFromConfig(config) {
     var row = config[i];
     var block = row.block;
     var periods = row.timePeriods || [];
-    var blockDefault = row.defaultChecked === true;
     for (var j = 0; j < periods.length; j++) {
-      var period = periods[j];
+      var parsed = parseFileDlConfigItem(periods[j], true);
+      if (!parsed.value) continue;
+      var period = parsed.value;
       var id = "rating_" + block + "_" + period;
       jobs.push({
         id: id,
@@ -212,7 +255,7 @@ function buildRatingGroupJobsFromConfig(config) {
         body: { businessBlock: block, timePeriod: period },
         refererPath: "/rating",
         fileName: "gamification-ratingList_" + block + "_" + period + ".csv",
-        _blockDefaultChecked: blockDefault,
+        _defaultChecked: parsed.defaultChecked,
       });
     }
   }
@@ -254,7 +297,7 @@ function calcRatingRowMinHeightPx(blockNames) {
 }
 
 /**
- * @param {Array<{ block: string, listTypes: string[], defaultChecked?: boolean }>} config
+ * @param {Array<{ block: string, listTypes: Array<string|object> }>} config
  * @returns {object[]}
  */
 function buildOrdersGroupJobsFromConfig(config) {
@@ -263,9 +306,10 @@ function buildOrdersGroupJobsFromConfig(config) {
     var row = config[i];
     var block = row.block;
     var types = row.listTypes || [];
-    var blockDefault = row.defaultChecked === true;
     for (var j = 0; j < types.length; j++) {
-      var listType = types[j];
+      var parsed = parseFileDlConfigItem(types[j], true);
+      if (!parsed.value) continue;
+      var listType = parsed.value;
       var id = "orders_" + block + "_" + listType;
       jobs.push({
         id: id,
@@ -274,7 +318,7 @@ function buildOrdersGroupJobsFromConfig(config) {
         body: { businessBlock: block, listType: listType },
         refererPath: "/admin/orders",
         fileName: "gamification-orderList_" + block + "_" + listType + ".csv",
-        _blockDefaultChecked: blockDefault,
+        _defaultChecked: parsed.defaultChecked,
       });
     }
   }
@@ -282,7 +326,7 @@ function buildOrdersGroupJobsFromConfig(config) {
 }
 
 /**
- * @param {{ id?: string, _blockDefaultChecked?: boolean }} job
+ * @param {{ id?: string, _defaultChecked?: boolean }} job
  * @returns {boolean}
  */
 function isFileDlJobCheckedByDefault(job) {
@@ -290,7 +334,8 @@ function isFileDlJobCheckedByDefault(job) {
   if (FILE_DL_MAIN_DEFAULT_UNCHECKED_JOB_IDS.indexOf(id) >= 0) return false;
   if (FILE_DL_RATING_DEFAULT_UNCHECKED_JOB_IDS.indexOf(id) >= 0) return false;
   if (FILE_DL_ORDERS_DEFAULT_UNCHECKED_JOB_IDS.indexOf(id) >= 0) return false;
-  if (job && job._blockDefaultChecked === false) return false;
+  if (job && job._defaultChecked === false) return false;
+  if (job && job.defaultChecked === false) return false;
   return true;
 }
 
@@ -306,36 +351,39 @@ const DOWNLOAD_JOBS = [
   {
     id: "tournamentListCsv",
     label: "Список турниров (CSV)",
+    defaultChecked: true,
     apiPath: DEFAULT_FILE_DOWNLOAD_PATH,
     body: {},
     refererPath: "/tournaments/list",
-    fileName: null
+    fileName: null,
   },
   {
     id: "employeeRewardsSummary",
     label: "Награды: (LIST REWARD)",
+    defaultChecked: true,
     apiPath: "/bo/rmkib.gamification/proxy/v1/employee-rewards/file-download",
-    // dateFrom подставляется в downloadOneJob из панели (`fileDlEmployeeRewardsDateFrom`).
     body: {},
     refererPath: "/awards/list",
-    fileName: null
+    fileName: null,
   },
   {
     id: "administrationStatisticCsv",
     label: "Посещения",
+    defaultChecked: true,
     apiPath: "/bo/rmkib.gamification/proxy/v1/administration/statistic/file-download",
     body: {},
     refererPath: "/admin/statistic",
-    fileName: null
+    fileName: null,
   },
   {
     id: "yearResultsCsv",
     label: "Итоги года",
+    defaultChecked: true,
     apiPath: YEAR_RESULT_FILE_DOWNLOAD_PATH,
     body: {},
     refererPath: "/salesheroes/profile",
-    fileName: "gamification-yearResults.csv"
-  }
+    fileName: "gamification-yearResults.csv",
+  },
 ];
 
 const RATING_GROUP_JOBS = buildRatingGroupJobsFromConfig(FILE_DL_RATING_BLOCKS_CONFIG);
@@ -460,6 +508,123 @@ function fileDlConsoleSingleJobSummary(ctx, result) {
   }
 }
 
+/** Цвета индикатора статуса задачи на панели. */
+var FILE_DL_JOB_STATUS_COLOR = {
+  idle: "#cbd5e1",
+  pending: "#94a3b8",
+  sent: "#2563eb",
+  ok: "#eab308",
+  error: "#dc2626",
+  saved: "#16a34a",
+};
+
+/** Подсказки индикатора статуса. */
+var FILE_DL_JOB_STATUS_TITLE = {
+  idle: "Не в текущем пакете",
+  pending: "Ожидает отправки",
+  sent: "Запрос отправлен",
+  ok: "Положительный ответ",
+  error: "Ошибка или отрицательный ответ",
+  saved: "Файл сохранён",
+};
+
+/**
+ * UI задач на панели: индикатор и таймер по job.id.
+ * @type {Map<string, { dot: HTMLElement, timerEl: HTMLElement, timerHandle: number|null, startMs: number|null }>}
+ */
+var fileDlJobUiById = new Map();
+
+/**
+ * Формат длительности для таймера: мин:сек:мс.
+ * @param {number} ms
+ * @returns {string}
+ */
+function formatFileDlElapsedMs(ms) {
+  var total = Math.max(0, Math.floor(ms));
+  var m = Math.floor(total / 60000);
+  var s = Math.floor((total % 60000) / 1000);
+  var msPart = total % 1000;
+  return m + ":" + String(s).padStart(2, "0") + ":" + String(msPart).padStart(3, "0");
+}
+
+/**
+ * @param {string} jobId
+ * @param {HTMLElement} dot
+ * @param {HTMLElement} timerEl
+ */
+function fileDlRegisterJobUi(jobId, dot, timerEl) {
+  if (!jobId) return;
+  fileDlJobUiById.set(jobId, {
+    dot: dot,
+    timerEl: timerEl,
+    timerHandle: null,
+    startMs: null,
+  });
+}
+
+/**
+ * @param {string} jobId
+ * @param {"idle"|"pending"|"sent"|"ok"|"error"|"saved"} status
+ */
+function fileDlSetJobStatus(jobId, status) {
+  var ui = fileDlJobUiById.get(jobId);
+  if (!ui || !ui.dot) return;
+  ui.dot.style.backgroundColor = FILE_DL_JOB_STATUS_COLOR[status] || FILE_DL_JOB_STATUS_COLOR.idle;
+  ui.dot.title = FILE_DL_JOB_STATUS_TITLE[status] || status;
+}
+
+/**
+ * @param {string} jobId
+ */
+function fileDlStartJobTimer(jobId) {
+  var ui = fileDlJobUiById.get(jobId);
+  if (!ui || !ui.timerEl) return;
+  fileDlStopJobTimer(jobId, false);
+  ui.startMs = Date.now();
+  ui.timerEl.textContent = formatFileDlElapsedMs(0);
+  ui.timerHandle = window.setInterval(function () {
+    if (ui.startMs == null) return;
+    ui.timerEl.textContent = formatFileDlElapsedMs(Date.now() - ui.startMs);
+  }, 50);
+}
+
+/**
+ * @param {string} jobId
+ * @param {boolean} [showFinal]
+ */
+function fileDlStopJobTimer(jobId, showFinal) {
+  var ui = fileDlJobUiById.get(jobId);
+  if (!ui) return;
+  if (ui.timerHandle != null) {
+    clearInterval(ui.timerHandle);
+    ui.timerHandle = null;
+  }
+  if (showFinal !== false && ui.startMs != null && ui.timerEl) {
+    ui.timerEl.textContent = formatFileDlElapsedMs(Date.now() - ui.startMs);
+  }
+  ui.startMs = null;
+}
+
+/**
+ * Перед пакетом: отмеченные задачи — «ожидает», остальные — idle.
+ * @param {string[]} batchJobIds
+ */
+function fileDlPrepareBatchJobStatuses(batchJobIds) {
+  var batchSet = {};
+  for (var i = 0; i < batchJobIds.length; i++) batchSet[batchJobIds[i]] = true;
+  fileDlJobUiById.forEach(function (ui, jobId) {
+    if (batchSet[jobId]) {
+      fileDlSetJobStatus(jobId, "pending");
+      if (ui.timerEl) ui.timerEl.textContent = "—";
+      fileDlStopJobTimer(jobId, false);
+    } else {
+      fileDlSetJobStatus(jobId, "idle");
+      if (ui.timerEl) ui.timerEl.textContent = "—";
+      fileDlStopJobTimer(jobId, false);
+    }
+  });
+}
+
 /**
  * Извлекает имя файла из заголовка Content-Disposition (RFC 5987 / простой вариант).
  * @param {string|null} header
@@ -514,7 +679,11 @@ function formatPostBodyForLog(bodyObj) {
 async function downloadOneJob(job, ctx) {
   ctx = ctx || {};
   var _dlExit = null;
+  var jobIdStr = job && job.id ? String(job.id) : "";
   try {
+  fileDlSetJobStatus(jobIdStr, "sent");
+  fileDlStartJobTimer(jobIdStr);
+
   const env = getFileDlOriginByEnv();
   const standKey = env.stand;
   const contourKey = env.contour;
@@ -572,13 +741,16 @@ async function downloadOneJob(job, ctx) {
       body: JSON.stringify(bodyObj)
     });
   } catch (e) {
-    // id задачи уже в предыдущем логе «СТАРТ загрузки» — не дублируем.
+    fileDlSetJobStatus(jobIdStr, "error");
+    fileDlStopJobTimer(jobIdStr, true);
     fileDlPanelEcho("error", "ОШИБКА (сеть / исключение)\n" + String(e));
     _dlExit = { ok: false, error: String(e) };
     return _dlExit;
   }
 
   if (!res.ok) {
+    fileDlSetJobStatus(jobIdStr, "error");
+    fileDlStopJobTimer(jobIdStr, true);
     fileDlPanelEcho(
       "warn",
       "ОШИБКА HTTP\nСтатус: " + res.status + " " + (res.statusText || "")
@@ -595,6 +767,8 @@ async function downloadOneJob(job, ctx) {
     try {
       data = JSON.parse(textBody);
     } catch (parseErr) {
+      fileDlSetJobStatus(jobIdStr, "error");
+      fileDlStopJobTimer(jobIdStr, true);
       fileDlPanelEcho(
         "warn",
         "ОШИБКА: ответ помечен как JSON, разбор не удался\n" + String(parseErr)
@@ -604,6 +778,8 @@ async function downloadOneJob(job, ctx) {
     }
     if (data && data.success === false && data.error) {
       const err = data.error;
+      fileDlSetJobStatus(jobIdStr, "error");
+      fileDlStopJobTimer(jobIdStr, true);
       fileDlPanelEcho(
         "warn",
         "ОШИБКА API (HTTP 200, JSON)\nСтенд: " +
@@ -624,6 +800,8 @@ async function downloadOneJob(job, ctx) {
       return _dlExit;
     }
     if (data && data.success === true) {
+      fileDlSetJobStatus(jobIdStr, "error");
+      fileDlStopJobTimer(jobIdStr, true);
       fileDlPanelEcho(
         "warn",
         "Ответ JSON с success:true — не файл выгрузки, скачивание отменено"
@@ -631,6 +809,8 @@ async function downloadOneJob(job, ctx) {
       _dlExit = { ok: false, error: "unexpected_json_success" };
       return _dlExit;
     }
+    fileDlSetJobStatus(jobIdStr, "error");
+    fileDlStopJobTimer(jobIdStr, true);
     fileDlPanelEcho(
       "warn",
       "Ответ application/json непохож на файл выгрузки — скачивание отменено"
@@ -638,6 +818,8 @@ async function downloadOneJob(job, ctx) {
     _dlExit = { ok: false, error: "unexpected_json_shape" };
     return _dlExit;
   }
+
+  fileDlSetJobStatus(jobIdStr, "ok");
 
   const blob = await res.blob();
   const sizeBytes = blob.size;
@@ -661,7 +843,9 @@ async function downloadOneJob(job, ctx) {
     URL.revokeObjectURL(objectUrl);
   }, 0);
 
-  // При параллельном (скользящем) старте подробности по каждому файлу — в «Журнал работы».
+  fileDlSetJobStatus(jobIdStr, "saved");
+  fileDlStopJobTimer(jobIdStr, true);
+
   fileDlPanelEcho(
     "log",
     "ЗАВЕРШЕНО: файл скачан\n" +
@@ -873,6 +1057,13 @@ async function downloadCheckedPanelJobs(entries) {
     );
     return;
   }
+  fileDlPrepareBatchJobStatuses(
+    jobs
+      .map(function (j) {
+        return j.id ? String(j.id) : "";
+      })
+      .filter(Boolean)
+  );
   await downloadJobsBatch(jobs, "«Скачать выделенное»", FILE_DL_USE_STAGGER);
 }
 
@@ -891,6 +1082,10 @@ function fileDlDetachPanelAndResetRuntime() {
   fileDlDelayBetweenMs = DOWNLOAD_ALL_DELAY_MS;
   fileDlStaggerMinMs = DOWNLOAD_STAGGER_MS;
   FILE_DL_USE_STAGGER = true;
+  fileDlJobUiById.forEach(function (ui) {
+    if (ui.timerHandle != null) clearInterval(ui.timerHandle);
+  });
+  fileDlJobUiById.clear();
 }
 
 /**
@@ -941,10 +1136,25 @@ function startDownloadPanel() {
     opts = opts || {};
     const row = document.createElement("div");
     row.style.cssText = opts.compact
-      ? "display:inline-flex;flex-direction:row;align-items:center;gap:5px;margin:0;box-sizing:border-box;white-space:nowrap;"
+      ? "display:inline-flex;flex-direction:row;align-items:center;gap:4px;margin:0;box-sizing:border-box;white-space:nowrap;"
       : opts.indented === false
         ? "display:flex;flex-direction:row;align-items:center;gap:4px;margin:0;width:100%;box-sizing:border-box;min-width:0;"
         : "display:flex;flex-direction:row;align-items:center;gap:6px;margin:2px 0 2px 12px;width:100%;box-sizing:border-box;";
+    const statusDot = document.createElement("span");
+    statusDot.style.cssText =
+      "width:8px;height:8px;border-radius:50%;background:" +
+      FILE_DL_JOB_STATUS_COLOR.idle +
+      ";flex-shrink:0;box-sizing:border-box;border:1px solid rgba(15,23,42,.1);";
+    statusDot.title = FILE_DL_JOB_STATUS_TITLE.idle;
+    const timerEl = document.createElement("span");
+    timerEl.textContent = "—";
+    timerEl.style.cssText =
+      "font-size:" +
+      (opts.dense ? "8px" : "9px") +
+      ";color:#64748b;font-family:ui-monospace,monospace;min-width:" +
+      (opts.compact ? "4.6em" : "5em") +
+      ";flex-shrink:0;line-height:1;";
+    timerEl.title = "Время выполнения запроса (мин:сек:мс)";
     const cb = document.createElement("input");
     cb.type = "checkbox";
     cb.checked = isFileDlJobCheckedByDefault(job);
@@ -962,10 +1172,13 @@ function startDownloadPanel() {
       : opts.dense
         ? "font-size:9px;color:#1e293b;line-height:1.15;word-break:break-word;"
         : "font-size:10px;color:#1e293b;line-height:1.25;word-break:break-word;";
+    row.appendChild(statusDot);
+    row.appendChild(timerEl);
     row.appendChild(cb);
     row.appendChild(lab);
     parent.appendChild(row);
-    panelCheckboxJobs.push({ cb: cb, job: job });
+    panelCheckboxJobs.push({ cb: cb, job: job, statusDot: statusDot, timerEl: timerEl });
+    if (job.id) fileDlRegisterJobUi(String(job.id), statusDot, timerEl);
     cb.addEventListener("change", refreshPanelSubSummary);
     return cb;
   }
@@ -1222,6 +1435,13 @@ function startDownloadPanel() {
   container.appendChild(rowStand);
 
   container.appendChild(sub);
+
+  const statusLegend = document.createElement("div");
+  statusLegend.style.cssText =
+    "font-size:9px;color:#64748b;margin:0 0 8px;line-height:1.35;word-break:break-word;";
+  statusLegend.textContent =
+    "Индикатор: серый — ожидает · синий — отправлен · жёлтый — ответ OK · красный — ошибка · зелёный — файл сохранён. Таймер — мин:сек:мс.";
+  container.appendChild(statusLegend);
 
   // Паузы пакета + перекрытие запросов + дата наград — одна строка (при нехватке ширины перенос подписей).
   const secDelays = document.createElement("div");
