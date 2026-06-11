@@ -1,6 +1,6 @@
 # Справочник: скрипты каталога `Script/` — HTTP-запросы, payload и порядок выполнения
 
-Документ описывает **все восемь скриптов** из `Script/`: какие обращения к сети выполняются, **тело запроса (payload)** где применимо, и **логическая последовательность** шагов. Аутентификация везде опирается на **куки текущей вкладки** (`credentials: "include"`); URL-ы стендов приведены как в коде (без реальных секретов).
+Документ описывает **все скрипты** из `Script/` (сейчас **10** файлов `.js`): какие обращения к сети выполняются, **тело запроса (payload)** где применимо, и **логическая последовательность** шагов. Аутентификация везде опирается на **куки текущей вкладки** (`credentials: "include"`); URL-ы стендов приведены как в коде (без реальных секретов).
 
 Подробные ТЗ по отдельным скриптам остаются в профильных файлах `Docs/*.md`; здесь — **единая сводка для быстрого поиска**. Маршрутный план по модулям и подпунктам — в корневом [ROADMAP.md](../ROADMAP.md).
 
@@ -262,6 +262,29 @@
 **Подробности:** [Docs/Скрипт_UI_AutoTest_LinksCrawler.md](Скрипт_UI_AutoTest_LinksCrawler.md).
 
 ---
+
+## 10. `SUP_Config_Update.js`
+
+**Назначение:** обновление параметров СУП (UFS Config Manager) — аналог «Сохранить» в UI.
+
+**Origin:** auto-detect с вкладки (`/ufs-config-manager/`) + ручной ввод.  
+**Prefix:** `…/ufs-config-manager/pacman/rest/`
+
+| Шаг | Метод | Path | Payload |
+|-----|--------|------|---------|
+| 0 | **GET** | `tenantCodes` | — |
+| 1 | **POST** | `parameter/list` | `{ page, filter: { name, tenantCodes, scopes } }` → `parameters[0].id` |
+| 2 | **POST** | `parameter/data/export` | `{ tenantCodes, name, scopes }` → массив export |
+| 3 | **POST** | `parameter/bundle/list` | `{ filter: { parameterId, … }, page }` → diff / bundle info |
+| 4 | **POST** | `parameter/value/add` | `{ parameterId, bundle: { path: [{code,value}], values: [] } }` |
+
+**Заголовки:** `cfg-rn` = tenant; `x-cfga-location` = `""`; `credentials: include`.
+
+**Последовательность batch:** для каждого отмеченного bundle — resolve id (если нет) → optional diff → add (или dry-run); пауза между POST; при ошибке — confirm continue.
+
+**Подробности:** [Docs/Скрипт_SUP_Config_Update.md](Скрипт_SUP_Config_Update.md).
+
+---
 ## Сводная таблица по типам операций
 
 | Скрипт | Основной тип запросов | Типичный контент-тело |
@@ -276,6 +299,7 @@
 | `News_Community_Export.js` | POST JSON | `{ newsStatus, newsTagList[], pageNum }` |
 | `UI_AutoTest.js` | — | — (клики по меню, без `fetch`) |
 | `UI_AutoTest_LinksCrawler.js` | — | — (клики по ссылкам этапов, без `fetch`) |
+| `SUP_Config_Update.js` | POST JSON + GET | list/export/bundle/add; `cfg-rn`, `x-cfga-location` |
 
 ---
 
@@ -303,5 +327,6 @@
 | **1.17** | Добавлен § **6** `News_Community_Export.js` (POST `/proxy/v1/news`, пагинация, чекбоксы `NEWS_STATUS_OPTIONS` / `NEWS_TAG_OPTIONS`); разделы UI-автотестов сдвинуты на § **7** и § **8**; сводная таблица и введение (восемь скриптов). |
 | **1.18** | Добавлен § **2A** `File_DB_Load_GP_v2.js` (year-result, конфиг рейтинга 10 блоков, только «Скачать выделенное»); строка в сводной таблице. |
 | **1.19** | Добавлен § **3A** `AddressBook_export_OE.js` (Search → empInfoFull → GET departments, файлы `PROM_ALPHA_AB_*`); строка в сводной таблице. |
+| **1.20** | Добавлен § **10** `SUP_Config_Update.js` (UFS Config Manager: list/export/bundle/add, dry-run, import/export); строка в сводной таблице. |
 
 *Актуальность проверяйте по скриптам в `Script/`.*

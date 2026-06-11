@@ -24,7 +24,7 @@
 ### 0.1 Корень проекта
 
 - `[v]` **README.md** — описание структуры, ссылка на [Docs/Справочник_скрипты_HTTP_запросы_и_последовательность.md](Docs/Справочник_скрипты_HTTP_запросы_и_последовательность.md), перечень скриптов, история версий репозитория.
-  - `[ ]` Периодическая сверка списка скриптов в README с фактическим содержимым `Script/*.js` (сейчас **9** файлов, включая `File_DB_Load_GP_v2.js`).
+  - `[v]` Периодическая сверка списка скриптов в README с фактическим содержимым `Script/*.js` (сейчас **10** файлов, включая `SUP_Config_Update.js`).
   - `[ ]` При появлении нового скрипта — добавить строку в README, строку в справочник, подраздел в этом ROADMAP.
 
 - `[v]` **ROADMAP.md** (этот файл) — декомпозиция по модулям и внутренним слоям скриптов.
@@ -390,6 +390,37 @@
 
 ---
 
+## 10. `Script/SUP_Config_Update.js`
+
+**Сопутствующий файл документации:** [Docs/Скрипт_SUP_Config_Update.md](Docs/Скрипт_SUP_Config_Update.md)
+
+Обновление параметров СУП (UFS Config Manager) через pacman REST. Панель `sup-config-update-panel`.
+
+### 10.1 Окружение и API
+
+- `[v]` Auto-detect origin / API prefix / referer с вкладки ufs-config-manager + ручной ввод.
+- `[v]` Заголовки: `cfg-rn` = tenant, `x-cfga-location` = `""`.
+- `[v]` GET `tenantCodes`, POST `parameter/list`, `parameter/data/export`, `parameter/bundle/list`, `parameter/value/add`.
+
+### 10.2 Вкладки и форматы
+
+- `[v]` Payload — ручной JSON, lookup parameterId, values из `.txt`.
+- `[v]` Файл export — EXPORT[] / ADD_READY / JOB; чекбоксы bundle; name→code в path.
+- `[v]` Скачать с сервера — export API, preview, сохранение JSON.
+
+### 10.3 Безопасность и очередь
+
+- `[v]` Dry-run по умолчанию; пауза 500 ms; кнопка «Стоп».
+- `[v]` Diff с активным bundle; UI-блок id/active/createDate.
+- `[v]` Откат из сохранённого export; диалог continue/stop при ошибке batch.
+- `[v]` Предупреждение о полной замене values.
+
+### 10.4 POST-сборка
+
+- `[v]` `post_txt_sync.sh` — автоматически все `Script/*.js`.
+
+---
+
 ## 9. Сводная таблица «скрипт ↔ документ ↔ раздел ROADMAP»
 
 | Файл `Script/` | Основной документ `Docs/` | Раздел ROADMAP |
@@ -404,6 +435,7 @@
 | `News_Community_Export.js` | Скрипт_новости_community_News_Community_Export.md | § 6 |
 | `UI_AutoTest.js` | — (справочник) | § 7 |
 | `UI_AutoTest_LinksCrawler.js` | Скрипт_UI_AutoTest_LinksCrawler.md | § 8 |
+| `SUP_Config_Update.js` | Скрипт_SUP_Config_Update.md | § 10 |
 
 **Общий HTTP-справочник:** [Docs/Справочник_скрипты_HTTP_запросы_и_последовательность.md](Docs/Справочник_скрипты_HTTP_запросы_и_последовательность.md)
 
