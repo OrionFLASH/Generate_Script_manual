@@ -273,12 +273,15 @@
 | Шаг | Метод | Path | Payload |
 |-----|--------|------|---------|
 | 0 | **GET** | `tenantCodes` | — |
-| 1 | **POST** | `parameter/list` | `{ page, filter: { name, tenantCodes, scopes } }` → `parameters[0].id` |
+| 1a | **POST** | `parameter/list` | `{ page, filter: { tenantCodes, roles, scopes } }` — **каталог** tenant (pageSize 100, все страницы) |
+| 1b | **POST** | `parameter/list` | `{ page, filter: { name, tenantCodes, scopes } }` → `parameters[0].id` (resolve по имени) |
 | 2 | **POST** | `parameter/data/export` | `{ tenantCodes, name, scopes }` → массив export |
 | 3 | **POST** | `parameter/bundle/list` | `{ filter: { parameterId, … }, page }` → diff / bundle info |
 | 4 | **POST** | `parameter/value/add` | `{ parameterId, bundle: { path: [{code,value}], values: [] } }` |
 
 **Заголовки:** `cfg-rn` = tenant; `x-cfga-location` = `""`; `credentials: include`.
+
+**UI (без отдельного API):** каталог — шаг 1a + клиентский фильтр по части имени; вкладка «Файл export» — просмотр values из разобранного JSON, id через 1b.
 
 **Последовательность batch:** для каждого отмеченного bundle — resolve id (если нет) → optional diff → add (или dry-run); пауза между POST; при ошибке — confirm continue.
 
@@ -328,5 +331,6 @@
 | **1.18** | Добавлен § **2A** `File_DB_Load_GP_v2.js` (year-result, конфиг рейтинга 10 блоков, только «Скачать выделенное»); строка в сводной таблице. |
 | **1.19** | Добавлен § **3A** `AddressBook_export_OE.js` (Search → empInfoFull → GET departments, файлы `PROM_ALPHA_AB_*`); строка в сводной таблице. |
 | **1.20** | Добавлен § **10** `SUP_Config_Update.js` (UFS Config Manager: list/export/bundle/add, dry-run, import/export); строка в сводной таблице. |
+| **1.21** | § **10** `SUP_Config_Update.js`: каталог `parameter/list` (полный tenant), resolve по имени; UI поиск/выбор параметра; просмотр id/values на вкладке export. |
 
 *Актуальность проверяйте по скриптам в `Script/`.*
