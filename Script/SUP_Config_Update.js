@@ -273,7 +273,7 @@
    * @returns {{ rows: ImportRow[]; format: string }}
    */
   function parseImportJson(json) {
-    /** @typedef {{ key: string; parameterName: string; tenant: string; parameterId: number|null; bundle: { path: object[]; values: string[] }; pathLabel: string; checked: boolean; metaDescription?: string; metaDataType?: string; metaScope?: string; metaLocation?: string; metaRoles?: string[]; valuesFileHint?: string }} ImportRow */
+    /** @typedef {{ key: string; parameterName: string; tenant: string; parameterId: number|null; bundle: { path: object[]; values: string[] }; pathLabel: string; checked: boolean; entryIndex?: number; bundleIndex?: number; metaDescription?: string; metaDataType?: string; metaScope?: string; metaLocation?: string; metaRoles?: string[]; valuesFileHint?: string }} ImportRow */
     /** @type {ImportRow[]} */
     const rows = [];
 
@@ -301,6 +301,8 @@
             metaScope: keyMeta.scope != null ? String(keyMeta.scope) : "",
             metaLocation: keyMeta.location != null ? String(keyMeta.location) : "",
             metaRoles: Array.isArray(param.roles) ? param.roles.map(String) : [],
+            entryIndex: ei,
+            bundleIndex: bi,
           });
         });
       });
@@ -644,8 +646,8 @@
   const fileJsonTa = document.createElement("textarea");
   fileJsonTa.placeholder = "Вставьте JSON export / ADD_READY / JOB…";
   fileJsonTa.style.cssText = payloadTa.style.cssText;
-  fileJsonTa.style.minHeight = "72px";
-  fileJsonTa.style.flex = "0 0 72px";
+  fileJsonTa.style.minHeight = "100px";
+  fileJsonTa.style.flex = "0 0 min(120px,22%)";
   const importListEl = document.createElement("div");
   importListEl.style.cssText =
     "flex:0 0 min(160px,28%);overflow:auto;border:1px solid #374151;border-radius:6px;padding:4px;font-size:10px;min-height:72px;";
@@ -653,12 +655,18 @@
   let importRows = [];
   /** @type {string | null} */
   let selectedImportKey = null;
+  /** @type {unknown} */
+  let lastImportJson = null;
+  /** @type {string} */
+  let lastImportFormat = "";
   const parseFileBtn = mkBtn("Разобрать JSON", "#2563eb");
   const resolveAllIdsBtn = mkBtn("Подтянуть id для отмеченных", "#374151");
+  const applyValuesBtn = mkBtn("Применить values в JSON", "#374151");
   const fileBtnRow = document.createElement("div");
   fileBtnRow.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;flex-shrink:0;";
   fileBtnRow.appendChild(parseFileBtn);
   fileBtnRow.appendChild(resolveAllIdsBtn);
+  fileBtnRow.appendChild(applyValuesBtn);
   const importDetailSplit = document.createElement("div");
   importDetailSplit.style.cssText = "flex:1;min-height:0;display:flex;gap:6px;";
   const importMetaWrap = document.createElement("div");
@@ -680,8 +688,8 @@
   importValuesLbl.textContent = "Values";
   importValuesLbl.style.cssText = "font-size:10px;color:#94a3b8;flex-shrink:0;";
   const importValuesTa = document.createElement("textarea");
-  importValuesTa.readOnly = true;
-  importValuesTa.placeholder = "Values выбранного bundle…";
+  importValuesTa.readOnly = false;
+  importValuesTa.placeholder = "Values выбранного bundle (можно править → «Применить values в JSON»)…";
   importValuesTa.style.cssText = payloadTa.style.cssText;
   importValuesTa.style.flex = "1";
   importValuesTa.style.minHeight = "60px";
@@ -704,15 +712,19 @@
   const exportNameInput = mkInput("text", "rmkib.enigma.gamification.badgesimagemapping", "100%");
   exportNameInput.placeholder = "Имя параметра (ввод вручную или выбор из списка)";
   const paramFilterInput = mkInput("text", "", "100%");
-  paramFilterInput.placeholder = "Поиск по части имени в загруженном списке";
+  paramFilterInput.placeholder = "Поиск по имени или описанию в списке";
   const loadParamsListBtn = mkBtn("Загрузить список параметров", "#374151");
   const downloadBtn = mkBtn("Скачать с сервера", "#2563eb");
+  const downloadSelectedBtn = mkBtn("Скачать отмеченные", "#2563eb");
   const downloadJsonBtn = mkBtn("Сохранить JSON", "#374151");
+  const openInFileTabBtn = mkBtn("Просмотр и выбор →", "#374151");
   const paramListEl = document.createElement("div");
   paramListEl.style.cssText =
-    "flex:0 0 min(140px,26%);overflow:auto;border:1px solid #374151;border-radius:6px;padding:2px;font-size:10px;min-height:64px;";
+    "flex:0 0 min(180px,32%);overflow:auto;border:1px solid #374151;border-radius:6px;padding:2px;font-size:10px;min-height:88px;";
   /** @type {{ id: number; name: string; description?: string; type?: string }[]} */
   let serverParamCatalog = [];
+  /** @type {Set<string>} */
+  const catalogCheckedNames = new Set();
   const exportPreview = document.createElement("textarea");
   exportPreview.style.cssText = payloadTa.style.cssText;
   exportPreview.style.flex = "1";
@@ -727,7 +739,9 @@
   const exBtnRow = document.createElement("div");
   exBtnRow.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;";
   exBtnRow.appendChild(downloadBtn);
+  exBtnRow.appendChild(downloadSelectedBtn);
   exBtnRow.appendChild(downloadJsonBtn);
+  exBtnRow.appendChild(openInFileTabBtn);
   tabExport.appendChild(exBtnRow);
   tabExport.appendChild(exportPreview);
   tabPanels.push(tabExport);
@@ -839,6 +853,59 @@
     };
     reader.readAsText(f, "UTF-8");
   });
+
+  /**
+   * @param {ReturnType<typeof parseImportJson>["rows"][number]} row
+   * @returns {string}
+   */
+  function rowIdentity(row) {
+    return row.parameterName + "\0" + row.pathLabel;
+  }
+
+  /**
+   * @param {unknown} json
+   * @param {string} source
+   */
+  function syncJsonToImportState(json, source) {
+    lastImportJson = json;
+    const parsed = parseImportJson(json);
+    lastImportFormat = parsed.format;
+    importRows = parsed.rows;
+    applyCachedIdsToRows(importRows);
+    rollbackSnapshot = { entries: json, source };
+    selectedImportKey = null;
+    renderImportList();
+  }
+
+  /**
+   * @param {unknown} json
+   * @param {ReturnType<typeof parseImportJson>["rows"]} prevRows
+   * @returns {Promise<{ parameterId: number; parameterName: string; tenant: string; bundle: object }[]>}
+   */
+  async function buildJobsFromExportJson(json, prevRows) {
+    const env = getApiEnv(originInput, prefixInput, refererInput);
+    const tenant = tenantSel.value;
+    const parsed = parseImportJson(json);
+    const checkById = new Map(prevRows.map((r) => [rowIdentity(r), r.checked]));
+    /** @type {{ parameterId: number; parameterName: string; tenant: string; bundle: object }[]} */
+    const jobs = [];
+    for (const row of parsed.rows) {
+      const id = rowIdentity(row);
+      if (prevRows.length > 0 && checkById.has(id) && !checkById.get(id)) continue;
+      const t = row.tenant || tenant;
+      let pid = row.parameterId;
+      if (!pid || pid <= 0) {
+        pid = await resolveParameterId(row.parameterName, t, env);
+      }
+      jobs.push({
+        parameterId: pid,
+        parameterName: row.parameterName,
+        tenant: t,
+        bundle: row.bundle,
+      });
+    }
+    return jobs;
+  }
 
   /**
    * @param {ReturnType<typeof parseImportJson>["rows"][number]} row
@@ -965,10 +1032,39 @@
       const row = document.createElement("div");
       const picked = curName === p.name;
       row.style.cssText =
-        "padding:3px 5px;margin-bottom:1px;border-radius:4px;cursor:pointer;word-break:break-all;" +
+        "display:flex;gap:6px;align-items:flex-start;padding:4px 6px;margin-bottom:2px;border-radius:4px;cursor:pointer;" +
         (picked ? "background:#1e3a5f;border:1px solid #2563eb;" : "border:1px solid transparent;");
-      row.textContent = p.id + " | " + p.name;
-      row.title = (p.description || p.name) + (p.type ? " [" + p.type + "]" : "");
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = catalogCheckedNames.has(p.name);
+      cb.style.marginTop = "3px";
+      cb.addEventListener("click", (ev) => ev.stopPropagation());
+      cb.addEventListener("change", () => {
+        if (cb.checked) catalogCheckedNames.add(p.name);
+        else catalogCheckedNames.delete(p.name);
+      });
+      const body = document.createElement("div");
+      body.style.cssText = "flex:1;min-width:0;";
+      const head = document.createElement("div");
+      head.style.cssText = "word-break:break-all;line-height:1.35;";
+      const idSpan = document.createElement("span");
+      idSpan.style.cssText = "font-family:ui-monospace,monospace;color:#93c5fd;margin-right:4px;";
+      idSpan.textContent = String(p.id);
+      const nameSpan = document.createElement("span");
+      nameSpan.textContent = p.name;
+      head.appendChild(idSpan);
+      head.appendChild(nameSpan);
+      body.appendChild(head);
+      const descText = (p.description || "").trim();
+      if (descText) {
+        const desc = document.createElement("div");
+        desc.style.cssText = "color:#94a3b8;font-size:9px;margin-top:2px;line-height:1.35;word-break:break-word;";
+        desc.textContent = descText;
+        body.appendChild(desc);
+      }
+      row.appendChild(cb);
+      row.appendChild(body);
+      if (p.type) row.title = p.type;
       row.addEventListener("click", () => {
         exportNameInput.value = p.name;
         paramNameInput.value = p.name;
@@ -997,13 +1093,56 @@
       const raw = fileJsonTa.value.trim();
       if (!raw) throw new Error("Пустой JSON");
       const json = JSON.parse(raw);
-      const parsed = parseImportJson(json);
-      importRows = parsed.rows;
-      applyCachedIdsToRows(importRows);
-      selectedImportKey = null;
-      rollbackSnapshot = { entries: Array.isArray(json) ? json : parsed.rows, source: parsed.format };
-      renderImportList();
-      panelLog("Разобрано " + importRows.length + " bundle (" + parsed.format + ")", "ok");
+      syncJsonToImportState(json, "file");
+      panelLog("Разобрано " + importRows.length + " bundle (" + lastImportFormat + ")", "ok");
+    } catch (e) {
+      panelLog(String(e && e.message ? e.message : e), "err");
+    }
+  });
+
+  applyValuesBtn.addEventListener("click", () => {
+    try {
+      if (!selectedImportKey) throw new Error("Выберите bundle в списке");
+      const row = importRows.find((r) => r.key === selectedImportKey);
+      if (!row) throw new Error("Строка не найдена");
+      row.bundle.values = parseValuesFromText(importValuesTa.value);
+      if (Array.isArray(lastImportJson) && row.entryIndex != null && row.bundleIndex != null) {
+        const entry = lastImportJson[row.entryIndex];
+        const bundles = entry && entry.parameter && entry.parameter.bundles;
+        if (Array.isArray(bundles) && bundles[row.bundleIndex]) {
+          bundles[row.bundleIndex].values = row.bundle.values.slice();
+        }
+      } else if (lastImportFormat !== "EXPORT") {
+        throw new Error("Применение values в JSON поддержано для формата EXPORT[]");
+      }
+      if (lastImportJson) {
+        const text = JSON.stringify(lastImportJson, null, 2);
+        fileJsonTa.value = text;
+        exportPreview.value = text;
+      }
+      showImportRowDetail(row);
+      panelLog("Values применены к JSON (" + row.bundle.values.length + " строк)", "ok");
+    } catch (e) {
+      panelLog(String(e && e.message ? e.message : e), "err");
+    }
+  });
+
+  function openImportInFileTab() {
+    const text = exportPreview.value.trim() || fileJsonTa.value.trim();
+    if (!text) {
+      panelLog("Нет JSON для просмотра — скачайте или вставьте файл", "warn");
+      return;
+    }
+    fileJsonTa.value = text;
+    const json = JSON.parse(text);
+    syncJsonToImportState(json, "preview");
+    showTab(1);
+    panelLog("JSON на вкладке «Файл export» — проверьте values и галочки", "ok");
+  }
+
+  openInFileTabBtn.addEventListener("click", () => {
+    try {
+      openImportInFileTab();
     } catch (e) {
       panelLog(String(e && e.message ? e.message : e), "err");
     }
@@ -1046,7 +1185,13 @@
     const reader = new FileReader();
     reader.onload = () => {
       fileJsonTa.value = String(reader.result || "");
-      parseFileBtn.click();
+      try {
+        const json = JSON.parse(fileJsonTa.value.trim());
+        syncJsonToImportState(json, "file");
+        panelLog("Файл загружен: " + importRows.length + " bundle (" + lastImportFormat + ")", "ok");
+      } catch (e) {
+        panelLog("Файл прочитан — нажмите «Разобрать JSON»: " + e, "warn");
+      }
     };
     reader.readAsText(f, "UTF-8");
   });
@@ -1073,45 +1218,87 @@
 
   tenantSel.addEventListener("change", () => {
     serverParamCatalog = [];
+    catalogCheckedNames.clear();
     paramListEl.textContent = "Tenant изменён — загрузите список заново.";
   });
 
-  downloadBtn.addEventListener("click", async () => {
-    try {
-      const env = getApiEnv(originInput, prefixInput, refererInput);
-      const tenant = tenantSel.value;
-      const name = exportNameInput.value.trim();
-      if (!name) throw new Error("Укажите имя параметра");
-      panelLog("export: " + name + "…");
+  /**
+   * @param {string[]} names
+   * @param {string} tenant
+   * @param {{ origin: string; apiPrefix: string; referer: string }} env
+   * @returns {Promise<object[]>}
+   */
+  async function downloadExportBodies(names, tenant, env) {
+    /** @type {object[]} */
+    let merged = [];
+    for (let i = 0; i < names.length; i++) {
+      const name = names[i];
+      panelLog("export (" + (i + 1) + "/" + names.length + "): " + name + "…");
       const body = await exportParameterFromServer(name, tenant, env);
-      exportPreview.value = JSON.stringify(body, null, 2);
-      rollbackSnapshot = { entries: body, source: "server-export" };
-      const parsed = parseImportJson(body);
-      importRows = parsed.rows;
-      applyCachedIdsToRows(importRows);
+      if (Array.isArray(body)) merged = merged.concat(body);
+      if (i < names.length - 1) await delay(Number(pauseInput.value) || DEFAULT_PAUSE_MS);
+    }
+    return merged;
+  }
+
+  /**
+   * @param {object[]} body
+   * @param {string} tenant
+   */
+  function applyDownloadResult(body, tenant) {
+    const text = JSON.stringify(body, null, 2);
+    exportPreview.value = text;
+    syncJsonToImportState(body, "server-export");
+    body.forEach((entry) => {
+      const name = entry && entry.parameter && entry.parameter.name;
+      if (!name) return;
       const picked = serverParamCatalog.find((p) => p.name === name);
       if (picked) {
         importRows.forEach((r) => {
           if (r.parameterName === name) r.parameterId = picked.id;
         });
-        paramIdInput.value = String(picked.id);
-      } else {
-        try {
-          const id = await resolveParameterId(name, tenant, env);
-          paramIdInput.value = String(id);
-          importRows.forEach((r) => {
-            if (r.parameterName === name) r.parameterId = id;
-          });
-        } catch (_e) {
-          /* id подтянется при отправке */
-        }
       }
-      selectedImportKey = null;
-      renderImportList();
-      paramNameInput.value = name;
-      panelLog("export OK, записей: " + body.length, "ok");
+    });
+    renderImportList();
+    const firstName =
+      (body[0] && body[0].parameter && body[0].parameter.name) || exportNameInput.value.trim();
+    if (firstName) {
+      paramNameInput.value = firstName;
+      const row = importRows.find((r) => r.parameterName === firstName);
+      if (row && row.parameterId) paramIdInput.value = String(row.parameterId);
+    }
+    panelLog("export OK, записей в JSON: " + body.length + ", bundle: " + importRows.length, "ok");
+  }
+
+  downloadBtn.addEventListener("click", async () => {
+    downloadBtn.disabled = true;
+    try {
+      const env = getApiEnv(originInput, prefixInput, refererInput);
+      const tenant = tenantSel.value;
+      const name = exportNameInput.value.trim();
+      if (!name) throw new Error("Укажите имя параметра");
+      const body = await downloadExportBodies([name], tenant, env);
+      applyDownloadResult(body, tenant);
     } catch (e) {
       panelLog(String(e && e.message ? e.message : e), "err");
+    } finally {
+      downloadBtn.disabled = false;
+    }
+  });
+
+  downloadSelectedBtn.addEventListener("click", async () => {
+    downloadSelectedBtn.disabled = true;
+    try {
+      const env = getApiEnv(originInput, prefixInput, refererInput);
+      const tenant = tenantSel.value;
+      const names = Array.from(catalogCheckedNames);
+      if (names.length === 0) throw new Error("Отметьте галочками параметры в списке каталога");
+      const body = await downloadExportBodies(names, tenant, env);
+      applyDownloadResult(body, tenant);
+    } catch (e) {
+      panelLog(String(e && e.message ? e.message : e), "err");
+    } finally {
+      downloadSelectedBtn.disabled = false;
     }
   });
 
@@ -1184,48 +1371,22 @@
    * @returns {Promise<{ parameterId: number; parameterName: string; tenant: string; bundle: object }[]>}
    */
   async function collectJobsFromUi() {
-    const env = getApiEnv(originInput, prefixInput, refererInput);
     const tenant = tenantSel.value;
-    /** @type {{ parameterId: number; parameterName: string; tenant: string; bundle: object }[]} */
-    const jobs = [];
-
     const activeTab = tabPanels.findIndex((p) => p.style.display !== "none");
-    if (activeTab === 1 && importRows.length > 0) {
-      for (const row of importRows) {
-        if (!row.checked) continue;
-        const t = row.tenant || tenant;
-        let pid = row.parameterId;
-        if (!pid || pid <= 0) {
-          pid = await resolveParameterId(row.parameterName, t, env);
-        }
-        jobs.push({
-          parameterId: pid,
-          parameterName: row.parameterName,
-          tenant: t,
-          bundle: row.bundle,
-        });
-      }
-      return jobs;
+
+    if (activeTab === 1 && fileJsonTa.value.trim()) {
+      const json = JSON.parse(fileJsonTa.value.trim());
+      return buildJobsFromExportJson(json, importRows);
     }
 
     if (activeTab === 2 && exportPreview.value.trim()) {
-      const body = JSON.parse(exportPreview.value.trim());
-      const parsed = parseImportJson(body);
-      for (const row of parsed.rows) {
-        const t = row.tenant || tenant;
-        let pid = row.parameterId;
-        if (!pid || pid <= 0) {
-          pid = await resolveParameterId(row.parameterName, t, env);
-        }
-        jobs.push({
-          parameterId: pid,
-          parameterName: row.parameterName,
-          tenant: t,
-          bundle: row.bundle,
-        });
-      }
-      return jobs;
+      const json = JSON.parse(exportPreview.value.trim());
+      return buildJobsFromExportJson(json, importRows);
     }
+
+    const env = getApiEnv(originInput, prefixInput, refererInput);
+    /** @type {{ parameterId: number; parameterName: string; tenant: string; bundle: object }[]} */
+    const jobs = [];
 
     const obj = JSON.parse(payloadTa.value.trim() || "{}");
     let bundle = obj.bundle;
@@ -1309,8 +1470,10 @@
     }
     if (!window.confirm("Откат: отправить values из сохранённого export на сервер?\n(полная замена bundle)")) return;
     try {
-      const parsed = parseImportJson(rollbackSnapshot.entries);
-      importRows = parsed.rows.map((r) => ({ ...r, checked: true }));
+      const entries = rollbackSnapshot.entries;
+      syncJsonToImportState(entries, "rollback");
+      importRows = importRows.map((r) => ({ ...r, checked: true }));
+      fileJsonTa.value = JSON.stringify(entries, null, 2);
       renderImportList();
       showTab(1);
       dryRunCb.checked = false;
