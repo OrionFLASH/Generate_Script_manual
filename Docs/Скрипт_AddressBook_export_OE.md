@@ -42,7 +42,11 @@
 
 На панели — **отдельный чекбокс на каждый файл** (по умолчанию все включены). Снятый чекбокс — файл не сохраняется.
 
-**CSV `AB_profile.csv`:** разделитель **`;`**, колонка **`TN_8`** после `fullName` (tabNum до 8 знаков с ведущими нулями; если >8 — без изменений). Вложенные массивы: порядок полей по индексу `(01)`, `(02)`… — `address (01)`, `domain (01)`, `address (02)`…; для `deptTree` — `id`, `name`, `orgUnit` на каждый индекс.
+**CSV `AB_profile.csv`:** разделитель **`;`**, колонка **`TN_8`** после `fullName` (tabNum до 8 знаков с ведущими нулями; если >8 — без изменений). Вложенные массивы: порядок полей по индексу `(01)`, `(02)`… — `emails`: `address`, `domain`, `isMain`; `phones`: `type`, `phoneNumber`, `main`; `deptTree` — `id`, `name`, `orgUnit` на каждый индекс.
+
+Дополнительные скалярные колонки (актуальная схема API Search / empInfoFull): `organizationName`, `regionalBankName`, `searchIsAgile`, `searchIsFos`, `search absenceInfo - *`, `contactEmail`, `empAddress`, `empPlace`, `empRoom`, `profileLink`, `isAgile`, `isFos`, `isRemote`, `innerPhoneState`, `absences - typeId` и др.
+
+CSV фазы Search (не OE): `addressbook_search_employeeId_map_*.csv` — разделитель **`,`**, колонки `что искали`, `employeeId` (по каждой строке hit).
 
 Искомые значения **без hit** в Search сохраняются в структуре с полями **`не найдено`**.
 
@@ -74,3 +78,4 @@
 |--------|------|-----------|
 | 1.0 | 2026-05-22 | Первая версия OE-сценария |
 | 1.1 | 2026-05-22 | CSV `;`, колонка TN_8, порядок вложенных полей, чекбоксы по файлам, «не найдено», дедуп запросов |
+| 1.2 | 2026-07-01 | Поля Search/empInfoFull под актуальный API: organizationName, absenceInfo, contactEmail, absences.commonAbsence, isMain/main в массивах |
