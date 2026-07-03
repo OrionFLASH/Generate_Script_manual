@@ -38,13 +38,13 @@
 9. **Закрыть панель** — `remove()` корня панели (см. п. «Запуск»).
 
 Имена файлов (суффикс стенда **ALPHA**; для `Search → empInfoFull` у трёх файлов **одинаковый** `<timestamp>`):
-- `addressbook_search_ALPHA_<timestamp>.json` — ответы **всех** POST search (фаза 1),
+- `addressbook_search_ALPHA_<timestamp>.json` — ответы **всех** POST search (фаза 1); в каждом `items[]` — **`hits[]`** и **`notFound`**,
 - `addressbook_search_employeeId_map_ALPHA_<timestamp>.csv` — столбцы **`что искали`**, **`employeeId`**: по одной строке на каждую запись в `hits` (если по одному запросу несколько строк — несколько строк CSV); UTF-8 с BOM для Excel,
-- `addressbook_empInfoFull_ALPHA_<timestamp>.json` — результаты GET **empInfoFull** по каждому **уникальному** `employeeId` (порядок первого появления по всем поискам подряд); в корне объекта — ссылки на два файла фазы Search.
+- `addressbook_empInfoFull_ALPHA_<timestamp>.json` — результаты GET **empInfoFull** по каждому **уникальному** `employeeId` (порядок первого появления по всем поискам подряд); в корне объекта — ссылки на два файла фазы Search. В **`results[]`**: **`employeeId`** — UUID из ответа; при запросе по таб. номеру — **`requestedEmpId`**.
 
-Сценарии **только Search** / **только empInfoFull** — по-прежнему по одному JSON на выгрузку:
-- `addressbook_search_only_ALPHA_<timestamp>.json` — сценарий `Только Search`,
-- `addressbook_empInfoFull_only_ALPHA_<timestamp>.json` — сценарий `Только empInfoFull`.
+Сценарии **только Search** / **только empInfoFull** — объект с метаданными (в OE-скрипте `AddressBook_export_OE.js`, v1 без изменений):
+- `addressbook_search_only_ALPHA_<timestamp>.json` — `{ exportedAt, scenario: "search_only", stand, items[] }` (в item: `hits[]`, `notFound`),
+- `addressbook_empInfoFull_only_ALPHA_<timestamp>.json` — `{ exportedAt, scenario: "empInfoFull_only", stand, results[] }`.
 
 **Сценарий `Search → empInfoFull`:** сначала выполняются **все** поиски по списку входа; затем сохраняются JSON с полными страницами search и CSV соответствия; после этого — последовательные GET `empInfoFull` (один запрос на UUID, без дубликатов). Структура `addressbook_empInfoFull_…json`: объект с полями `results` (массив `{ employeeId, empInfoFull }` или `error`), `totalUniqueEmployeeIds`, `searchFiles`, метаданные экспорта.
 
@@ -102,5 +102,6 @@
 | 1.17 | Актуализирована документация и описания по текущему состоянию скрипта; изменений бизнес-логики нет. |
 | 1.18 | Сценарий **Search → empInfoFull**: фаза 1 — все POST search; сохранение `addressbook_search_…json` и CSV **`что искали`, `employeeId`** (строка на каждый hit); фаза 2 — GET empInfoFull по уникальным UUID (`addressbook_empInfoFull_…json`); общий `<timestamp>` у трёх файлов; пауза «после Search» — после всех поисков перед первым GET. |
 | 1.19 | В корне репозитория добавлен [ROADMAP.md](../ROADMAP.md) (§ 3 — план работ и декомпозиция по этому скрипту). |
+| 1.20 | Форматы выгрузок в **AddressBook_export_OE.js** (базовые сценарии v1): `hits[]` в `addressbook_search_*`; обёртка `search_only` / `empInfoFull_only`; UUID в `employeeId`. |
 
-*Актуальность проверяйте по `Script/AddressBook_export.js`.*
+*Актуальность проверяйте по `Script/AddressBook_export.js` и `Script/AddressBook_export_OE.js` (базовые сценарии — в OE).*

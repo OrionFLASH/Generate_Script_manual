@@ -597,6 +597,74 @@ async function fetchEmpInfoFull(empId) {
 }
 
 /**
+ * 32 hex-символа без дефисов → UUID.
+ * @param {string} raw32
+ * @returns {string}
+ */
+function formatUuidFrom32Hex(raw32) {
+  if (!raw32 || raw32.length !== 32) return "";
+  var s = raw32.toLowerCase();
+  return (
+    s.slice(0, 8) +
+    "-" +
+    s.slice(8, 12) +
+    "-" +
+    s.slice(12, 16) +
+    "-" +
+    s.slice(16, 20) +
+    "-" +
+    s.slice(20)
+  );
+}
+
+/**
+ * UUID employeeId из ответа empInfoFull (profileLink, photo или поле employeeId).
+ * @param {{ data?: object|null }} fullWrap
+ * @param {string} requestedId — значение, переданное в GET
+ * @returns {string}
+ */
+function resolveEmployeeIdFromEmpInfoFull(fullWrap, requestedId) {
+  var data = fullWrap && fullWrap.data;
+  if (data && typeof data.employeeId === "string") {
+    var fromField = data.employeeId.trim();
+    if (fromField) return fromField;
+  }
+  var link = data && data.profileLink;
+  if (typeof link === "string") {
+    var mLink = link.match(/profile\/([0-9a-f]{32})(?:\/|$|\?|#)/i);
+    if (mLink) return formatUuidFrom32Hex(mLink[1]);
+  }
+  var photo = data && data.photo;
+  if (typeof photo === "string") {
+    var mPhoto = photo.match(
+      /photos\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i
+    );
+    if (mPhoto) return mPhoto[1].toLowerCase();
+  }
+  var req = requestedId != null ? String(requestedId).trim() : "";
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req)) return req;
+  return req;
+}
+
+/**
+ * Строка журнала и resolved UUID после GET empInfoFull.
+ * @param {string} requestedId
+ * @param {{ ok?: boolean, status?: number, data?: object|null }} fullWrap
+ * @returns {{ resolvedId: string, logLine: string }}
+ */
+function describeEmpInfoFullResponse(requestedId, fullWrap) {
+  var resolvedId = resolveEmployeeIdFromEmpInfoFull(fullWrap, requestedId);
+  var statusPart = "HTTP " + (fullWrap && fullWrap.status != null ? fullWrap.status : "?");
+  statusPart += fullWrap && fullWrap.ok ? " OK" : " ошибка";
+  var logLine = "    → " + statusPart;
+  var reqStr = requestedId != null ? String(requestedId).trim() : "";
+  if (fullWrap && fullWrap.ok && resolvedId && resolvedId !== reqStr) {
+    logLine += " (запрос «" + requestedId + "» → UUID " + resolvedId + ")";
+  }
+  return { resolvedId: resolvedId, logLine: logLine };
+}
+
+/**
  * POST …/api/home/employees/search
  * @param {string|number} searchText — число ТН или строка ФИО
  * @param {boolean} asNumber — true: в теле число без кавычек в JSON
@@ -1225,6 +1293,12 @@ function startAddressBookPanel() {
     oeSaveChk[def.key] = chk;
   }
   rowOeToggle.appendChild(rowOeToggleGrid);
+  const rowOeProfileHint = document.createElement("div");
+  rowOeProfileHint.style.cssText =
+    "font-size:10px;color:#c2410c;margin:8px 0 0 0;line-height:1.45;font-weight:600;";
+  rowOeProfileHint.textContent =
+    "AB_profile.json / AB_profile.csv — только кнопка «Search → empInfoFull → OE» (синяя «Search → empInfoFull» их не создаёт).";
+  rowOeToggle.appendChild(rowOeProfileHint);
   box.appendChild(rowOeToggle);
 
   /**
@@ -1685,7 +1759,8 @@ function startAddressBookPanel() {
       try {
         var full = await fetchEmpInfoFull(empUuid);
         empInfoById.set(empUuid, full);
-        appendLog("    → HTTP " + full.status + (full.ok ? " OK" : " ошибка"));
+        var empDescOe = describeEmpInfoFullResponse(empUuid, full);
+        appendLog(empDescOe.logLine.replace("    → ", "    → empInfoFull "));
       } catch (e) {
         empInfoById.set(empUuid, { empId: empUuid, ok: false, status: 0, data: null, error: String(e) });
         appendLog("    → исключение: " + e);
@@ -2132,12 +2207,15 @@ function startAddressBookPanel() {
       try {
         const searchBundle = await fetchAllSearchPages(item);
         const idsPerHit = collectEmployeeIdsFromSearchPagesInHitOrder(searchBundle.pages);
+        const hitsBasic = collectSearchHitsFromPages(searchBundle.pages);
         perItemHitOrderedIds.push(idsPerHit);
         searchPhasePayload.push({
           input: item.input,
           searchText: item.searchText,
           asNumber: item.asNumber,
           searchPages: searchBundle.pages,
+          hits: hitsBasic,
+          notFound: hitsBasic.length === 0,
           searchStats: {
             totalPages: searchBundle.totalPages,
             totalHits: searchBundle.totalHits,
@@ -2225,8 +2303,13 @@ function startAddressBookPanel() {
       try {
         const full = await fetchEmpInfoFull(empUuid);
         totalEmpInfoFullCalls++;
-        empResults.push({ employeeId: empUuid, empInfoFull: full });
-        appendLog("    → empInfoFull HTTP " + full.status + (full.ok ? " OK" : " ошибка"));
+        var empDescBasic = describeEmpInfoFullResponse(empUuid, full);
+        var rowBasic = { employeeId: empDescBasic.resolvedId, empInfoFull: full };
+        if (empDescBasic.resolvedId !== String(empUuid).trim()) {
+          rowBasic.requestedEmpId = empUuid;
+        }
+        empResults.push(rowBasic);
+        appendLog(empDescBasic.logLine.replace("    → ", "    → empInfoFull "));
       } catch (e) {
         empResults.push({ employeeId: empUuid, error: String(e) });
         appendLog("    → исключение: " + e);
@@ -2285,12 +2368,15 @@ function startAddressBookPanel() {
       try {
         const bundle = await fetchAllSearchPages(item);
         const r = bundle.pages.length > 0 ? bundle.pages[0] : null;
+        const hitsOnly = collectSearchHitsFromPages(bundle.pages);
         results.push({
           input: item.input,
           searchText: item.searchText,
           asNumber: item.asNumber,
           search: r,
           searchPages: bundle.pages,
+          hits: hitsOnly,
+          notFound: hitsOnly.length === 0,
           searchStats: {
             totalPages: bundle.totalPages,
             totalHits: bundle.totalHits,
@@ -2318,7 +2404,12 @@ function startAddressBookPanel() {
       if (i < items.length - 1 && pauseBetweenMs > 0) await delay(pauseBetweenMs);
     }
     const fname = "addressbook_search_only_" + getAddressBookEnvKey() + "_" + Date.now() + ".json";
-    downloadJson(fname, results);
+    downloadJson(fname, {
+      exportedAt: new Date().toISOString(),
+      scenario: "search_only",
+      stand: getAddressBookEnvKey(),
+      items: results
+    });
     appendLog("Готово. Файл: " + fname);
     console.log("[Адресная книга] Только search завершён. Файл: " + fname + " | значений: " + items.length);
   }
@@ -2350,8 +2441,13 @@ function startAddressBookPanel() {
       );
       try {
         const full = await fetchEmpInfoFull(empId);
-        results.push({ employeeId: empId, empInfoFull: full });
-        appendLog("    → HTTP " + full.status + (full.ok ? " OK" : " — ошибка"));
+        var empDescOnly = describeEmpInfoFullResponse(empId, full);
+        var rowOnly = { employeeId: empDescOnly.resolvedId, empInfoFull: full };
+        if (empDescOnly.resolvedId !== String(empId).trim()) {
+          rowOnly.requestedEmpId = empId;
+        }
+        results.push(rowOnly);
+        appendLog(empDescOnly.logLine);
       } catch (e) {
         results.push({ employeeId: empId, error: String(e) });
         appendLog("    → исключение: " + e);
@@ -2359,7 +2455,12 @@ function startAddressBookPanel() {
       if (i < empIds.length - 1 && pauseBetweenMs > 0) await delay(pauseBetweenMs);
     }
     const fname = "addressbook_empInfoFull_only_" + getAddressBookEnvKey() + "_" + Date.now() + ".json";
-    downloadJson(fname, results);
+    downloadJson(fname, {
+      exportedAt: new Date().toISOString(),
+      scenario: "empInfoFull_only",
+      stand: getAddressBookEnvKey(),
+      results: results
+    });
     appendLog("Готово. Файл: " + fname);
     console.log("[Адресная книга] Только empInfoFull завершён. Файл: " + fname + " | employeeId: " + empIds.length);
   }
@@ -2548,6 +2649,12 @@ function startAddressBookPanel() {
     "font-size:11px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#64748b;margin:16px 0 8px 0;";
   logLab.textContent = "Журнал работы";
   devTrace.mountToggleRow(box, logLab);
+  const traceHint = document.createElement("div");
+  traceHint.style.cssText =
+    "font-size:10px;color:#64748b;margin:0 0 8px 0;line-height:1.35;font-style:italic;";
+  traceHint.textContent =
+    "Trace: включите в начале сессии и сохраните один .log в конце (повторное сохранение — новый файл с теми же событиями).";
+  box.insertBefore(traceHint, logLab);
   box.appendChild(logLab);
   box.appendChild(logEl);
 
