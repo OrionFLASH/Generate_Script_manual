@@ -24,7 +24,7 @@
 ### 0.1 Корень проекта
 
 - `[v]` **README.md** — описание структуры, ссылка на [Docs/Справочник_скрипты_HTTP_запросы_и_последовательность.md](Docs/Справочник_скрипты_HTTP_запросы_и_последовательность.md), перечень скриптов, история версий репозитория.
-  - `[v]` Периодическая сверка списка скриптов в README с фактическим содержимым `Script/*.js` (сейчас **11** файлов + `Script/lib/DevToolsTrace.js`).
+  - `[v]` Периодическая сверка списка скриптов в README с фактическим содержимым `Script/*.js` (сейчас **12** файлов + `Script/lib/DevToolsTrace.js`).
   - `[ ]` При появлении нового скрипта — добавить строку в README, строку в справочник, подраздел в этом ROADMAP.
 
 - `[v]` **ROADMAP.md** (этот файл) — декомпозиция по модулям и внутренним слоям скриптов.
@@ -51,7 +51,7 @@
 ### 0.3 DevToolsTrace (диагностика в браузере)
 
 - `[v]` **Script/lib/DevToolsTrace.js** — модуль trace (HTTP, журнал, UI → `.log`).
-- `[v]` Встроен во все **11** скриптов `Script/*.js` (маркер `DevToolsTrace v1`).
+- `[v]` Встроен во все **12** скриптов `Script/*.js` (маркер `DevToolsTrace v1`).
 - `[v]` **Docs/DevToolsTrace.md** — инструкция пользователя.
 - `[v]` **tools/inject_devtools_trace.js** — повторная вставка модуля в скрипты при обновлении lib.
 
@@ -434,6 +434,41 @@
 
 ---
 
+## 11. `Script/Pulse_export_OE.js` — выгрузка из Пульс (hr.ca.sbrf.ru)
+
+**Сопутствующий файл документации:** [Docs/Скрипт_Pulse_export_OE.md](Docs/Скрипт_Pulse_export_OE.md)  
+**Источник ТЗ / HAR:** `ToDo/Пульс/` (`ToDo пульс.txt`, `hr.ca.sbrf.ru.har`).
+
+### 11.1 Анализ HAR и контракт API
+
+- `[v]` Подтверждено по HAR: поиск — `GET …/api-web/globalsearch/api/v3/multiSearch`.
+  - `[v]` Для полного списка PERSONS UI шлёт `category=PERSONS` и **`size=20`** (не длина query; параллельно UI делает size=8/5 с несколькими category — для экспорта не нужны).
+  - `[v]` Пагинация: `page=0…N` по `totalPages` / `last` в `data.PERSONS.data`.
+  - `[v]` Карточка: `GET …/api-mobile/smart-profile/web/widgets/data?widgets=mainInfo_v1&userId={personUuid}`.
+  - `[v]` ID из поиска: `personUuid` в `content[]`.
+
+### 11.2 Сетевой слой и устойчивость
+
+- `[v]` Origin вкладки (`credentials: include`), fallback `https://hr.ca.sbrf.ru`.
+- `[v]` Retry: до **3** попыток на запрос с удлиняющейся паузой; HTTP-ошибки и `success: false` / PERSONS.success.
+- `[v]` Стоп: если **две подряд** операции исчерпали 3 попытки — остановить прогон.
+- `[v]` Паузы с панели: между search-страницами, после всех Search, между mainInfo.
+
+### 11.3 Сценарий OE
+
+- `[v]` Фаза 1: multiSearch по каждому вводу → сохранить hits + `personUuid`.
+- `[v]` Фаза 2: уникальные `personUuid` → mainInfo_v1.
+- `[v]` Выгрузки JSON (Search / mainInfo / full) + CSV (черновой flatten; финальные колонки — по следующему ТЗ).
+- `[v]` Лимит страниц search на панели (защита от запросов вроде «Директор» ≈ 50×20).
+
+### 11.4 UI и диагностика
+
+- `[v]` Панель IIFE, статус текущего поиска/UUID/прогресса, журнал, Stop.
+- `[v]` DevToolsTrace (`scriptId=Pulse_export_OE`).
+- `[v]` Docs + строка в README + HTTP-справочник + `post_txt_sync`.
+
+---
+
 ## 9. Сводная таблица «скрипт ↔ документ ↔ раздел ROADMAP»
 
 | Файл `Script/` | Основной документ `Docs/` | Раздел ROADMAP |
@@ -449,6 +484,7 @@
 | `UI_AutoTest.js` | — (справочник) | § 7 |
 | `UI_AutoTest_LinksCrawler.js` | Скрипт_UI_AutoTest_LinksCrawler.md | § 8 |
 | `SUP_Config_Update.js` | Скрипт_SUP_Config_Update.md | § 10 |
+| `Pulse_export_OE.js` | Скрипт_Pulse_export_OE.md | § 11 |
 
 **Общий HTTP-справочник:** [Docs/Справочник_скрипты_HTTP_запросы_и_последовательность.md](Docs/Справочник_скрипты_HTTP_запросы_и_последовательность.md)
 

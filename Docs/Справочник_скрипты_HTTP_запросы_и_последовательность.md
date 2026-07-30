@@ -1,6 +1,6 @@
 # Справочник: скрипты каталога `Script/` — HTTP-запросы, payload и порядок выполнения
 
-Документ описывает **все скрипты** из `Script/` (сейчас **11** файлов `.js`): какие обращения к сети выполняются, **тело запроса (payload)** где применимо, и **логическая последовательность** шагов. Аутентификация везде опирается на **куки текущей вкладки** (`credentials: "include"`); URL-ы стендов приведены как в коде (без реальных секретов).
+Документ описывает **все скрипты** из `Script/` (сейчас **12** файлов `.js`): какие обращения к сети выполняются, **тело запроса (payload)** где применимо, и **логическая последовательность** шагов. Аутентификация везде опирается на **куки текущей вкладки** (`credentials: "include"`); URL-ы стендов приведены как в коде (без реальных секретов).
 
 **DevToolsTrace:** на каждой панели — переключатель «Trace (диагностика → файл .log)» для записи HTTP, журнала и кликов при отладке. См. [Docs/DevToolsTrace.md](DevToolsTrace.md).
 
@@ -290,6 +290,32 @@
 **Подробности:** [Docs/Скрипт_SUP_Config_Update.md](Скрипт_SUP_Config_Update.md).
 
 ---
+
+## 11. `Pulse_export_OE.js`
+
+**Назначение:** выгрузка из **Пульс** (hr.ca.sbrf.ru): поиск сотрудников → карточки mainInfo.
+
+**Origin:** `window.location.origin` вкладки Пульс; fallback `https://hr.ca.sbrf.ru`.
+
+| Шаг | Метод | Путь (относительно origin) | Query / payload | Примечание |
+|-----|--------|-----------------------------|-----------------|------------|
+| 1..N | **GET** | `/api-web/globalsearch/api/v3/multiSearch` | `query`, `page`, **`size=20`**, **`category=PERSONS`** | По HAR полный список PERSONS — size=20 (не длина строки). Пагинация по `totalPages`/`last`. |
+| 2..M | **GET** | `/api-mobile/smart-profile/web/widgets/data` | `widgets=mainInfo_v1`, `userId={personUuid}` | Один GET на уникальный UUID из поиска. |
+
+**Последовательность:**
+
+1. Список query из поля / `.txt`.
+2. Для каждого query — страницы multiSearch → сбор `personUuid` + hits.
+3. Сохранение `PROM_PULSE_Search_*.json` (опционально).
+4. Пауза после Search.
+5. Для каждого уникального UUID — mainInfo_v1.
+6. Сохранение mainInfo / full / profile.csv.
+7. Retry до 3 раз с удлиняющейся паузой; две подряд «жёсткие» ошибки — стоп.
+
+Подробнее: [Docs/Скрипт_Pulse_export_OE.md](Скрипт_Pulse_export_OE.md).
+
+---
+
 ## Сводная таблица по типам операций
 
 | Скрипт | Основной тип запросов | Типичный контент-тело |
@@ -305,6 +331,7 @@
 | `UI_AutoTest.js` | — | — (клики по меню, без `fetch`) |
 | `UI_AutoTest_LinksCrawler.js` | — | — (клики по ссылкам этапов, без `fetch`) |
 | `SUP_Config_Update.js` | POST JSON + GET | list/export/bundle/add; `cfg-rn`, `x-cfga-location` |
+| `Pulse_export_OE.js` | GET | multiSearch query; mainInfo `widgets`+`userId` |
 
 ---
 
@@ -334,5 +361,6 @@
 | **1.19** | Добавлен § **3A** `AddressBook_export_OE.js` (Search → empInfoFull → GET departments, файлы `PROM_ALPHA_AB_*`); строка в сводной таблице. |
 | **1.20** | Добавлен § **10** `SUP_Config_Update.js` (UFS Config Manager: list/export/bundle/add, dry-run, import/export); строка в сводной таблице. |
 | **1.21** | § **10** `SUP_Config_Update.js`: каталог `parameter/list` (полный tenant), resolve по имени; UI поиск/выбор параметра; просмотр id/values на вкладке export. |
+| **1.22** | Добавлен § **11** `Pulse_export_OE.js` (multiSearch PERSONS size=20 → mainInfo_v1); сводная таблица и введение (12 скриптов). |
 
 *Актуальность проверяйте по скриптам в `Script/`.*

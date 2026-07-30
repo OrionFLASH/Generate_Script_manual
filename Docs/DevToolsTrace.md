@@ -22,6 +22,7 @@
 | `SUP_Config_Update.js` | над блоком журнала |
 | `Parameters_Actual_Export.js` | над «Журнал работы» |
 | `AddressBook_export.js` / `_OE.js` | над «Журнал работы» |
+| `Pulse_export_OE.js` | над «Журнал работы» |
 | `File_DB_Load_GP.js` / `_v2.js` | над «Журнал работы» |
 | `News_Community_Export.js` | в блоке журнала |
 | `Profile_GP_LOAD_file.js` | над «Журнал работы» |
