@@ -460,10 +460,15 @@
 - `[v]` Фаза 2: уникальные `personUuid` → mainInfo_v1.
 - `[v]` Выгрузки JSON (Search / mainInfo / full) + CSV (черновой flatten; финальные колонки — по следующему ТЗ).
 - `[v]` Лимит страниц search на панели (защита от запросов вроде «Директор» ≈ 50×20).
+- `[v]` Из ответа search брать также `employeeId`, `fullName`, `position`; в журнале/статусе mainInfo показывать **Таб.номер / ФИО / Должность**.
+- `[v]` Пагинация строго по `totalPages` с первой страницы: `page = 0 … totalPages-1` (с учётом maxPages).
+- `[v]` Чекбоксы Search / mainInfo управляют **запросами** (не только сохранением): mainInfo → авто-вкл. Search; только Search → mainInfo не выполнять.
 
 ### 11.4 UI и диагностика
 
 - `[v]` Панель IIFE, статус текущего поиска/UUID/прогресса, журнал, Stop.
+- `[v]` Структурированный блок статуса: какой поиск из N, страница, какой mainInfo, кого запрашиваем.
+- `[v]` В DevToolsTrace писать payload запросов и извлечённые `personUuid` / `totalPages` (+ employeeId/ФИО/должность).
 - `[v]` DevToolsTrace (`scriptId=Pulse_export_OE`).
 - `[v]` Docs + строка в README + HTTP-справочник + `post_txt_sync`.
 

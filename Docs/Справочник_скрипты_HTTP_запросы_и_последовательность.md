@@ -299,17 +299,17 @@
 
 | Шаг | Метод | Путь (относительно origin) | Query / payload | Примечание |
 |-----|--------|-----------------------------|-----------------|------------|
-| 1..N | **GET** | `/api-web/globalsearch/api/v3/multiSearch` | `query`, `page`, **`size=20`**, **`category=PERSONS`** | По HAR полный список PERSONS — size=20 (не длина строки). Пагинация по `totalPages`/`last`. |
-| 2..M | **GET** | `/api-mobile/smart-profile/web/widgets/data` | `widgets=mainInfo_v1`, `userId={personUuid}` | Один GET на уникальный UUID из поиска. |
+| 1..N | **GET** | `/api-web/globalsearch/api/v3/multiSearch` | `query`, `page`, **`size=20`**, **`category=PERSONS`** | По HAR size=20. Пагинация: с `page=0` читаем `totalPages`, далее `page=0…totalPages-1`. Из hit: `personUuid`, `employeeId`, `fullName`, `position`. |
+| 2..M | **GET** | `/api-mobile/smart-profile/web/widgets/data` | `widgets=mainInfo_v1`, `userId={personUuid}` | Только если отмечена фаза mainInfo. Один GET на уникальный UUID. |
 
 **Последовательность:**
 
-1. Список query из поля / `.txt`.
-2. Для каждого query — страницы multiSearch → сбор `personUuid` + hits.
-3. Сохранение `PROM_PULSE_Search_*.json` (опционально).
-4. Пауза после Search.
-5. Для каждого уникального UUID — mainInfo_v1.
-6. Сохранение mainInfo / full / profile.csv.
+1. Список query из поля / `.txt`. Галочки **Search** / **mainInfo** включают соответствующие фазы (mainInfo авто-включает Search).
+2. Если Search: для каждого query — страницы multiSearch по `totalPages` → сбор `personUuid` + employeeId/ФИО/должность.
+3. Сохранение `PROM_PULSE_Search_*.json` (вместе с фазой Search).
+4. Пауза после Search (если будет mainInfo).
+5. Если mainInfo: для каждого уникального UUID — mainInfo_v1.
+6. Сохранение mainInfo / full / profile.csv по чекбоксам.
 7. Retry до 3 раз с удлиняющейся паузой; две подряд «жёсткие» ошибки — стоп.
 
 Подробнее: [Docs/Скрипт_Pulse_export_OE.md](Скрипт_Pulse_export_OE.md).
@@ -362,5 +362,6 @@
 | **1.20** | Добавлен § **10** `SUP_Config_Update.js` (UFS Config Manager: list/export/bundle/add, dry-run, import/export); строка в сводной таблице. |
 | **1.21** | § **10** `SUP_Config_Update.js`: каталог `parameter/list` (полный tenant), resolve по имени; UI поиск/выбор параметра; просмотр id/values на вкладке export. |
 | **1.22** | Добавлен § **11** `Pulse_export_OE.js` (multiSearch PERSONS size=20 → mainInfo_v1); сводная таблица и введение (12 скриптов). |
+| **1.23** | § **11** `Pulse_export_OE.js`: пагинация строго по `totalPages`; фазы Search/mainInfo по галочкам; employeeId/ФИО/должность в статусе и trace. |
 
 *Актуальность проверяйте по скриптам в `Script/`.*

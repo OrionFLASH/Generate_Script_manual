@@ -4,10 +4,10 @@
 
 DevTools-скрипт для **hr.ca.sbrf.ru (Пульс)**: последовательный сценарий **OE** —
 
-1. **multiSearch** (`category=PERSONS`) по списку запросов;
-2. сбор уникальных **`personUuid`**;
-3. **mainInfo_v1** по каждому UUID;
-4. сохранение JSON и чернового CSV.
+1. **multiSearch** (`category=PERSONS`) по списку запросов (если отмечена фаза Search);
+2. сбор уникальных **`personUuid`** + **`employeeId` / `fullName` / `position`**;
+3. **mainInfo_v1** по каждому UUID (если отмечена фаза mainInfo);
+4. сохранение JSON и чернового CSV по чекбоксам выгрузки.
 
 Образец поведения — [AddressBook_export_OE.js](Скрипт_AddressBook_export_OE.md). Финальный набор полей JSON/CSV пользователь уточнит отдельно; сейчас сохраняется полный ответ API + компактный профиль в CSV.
 
@@ -30,18 +30,32 @@ DevTools-скрипт для **hr.ca.sbrf.ru (Пульс)**: последова�
 В HAR UI при наборе текста шлёт несколько multiSearch: **size=8** и **size=5** (несколько `category`) и затем **size=20** только с **`category=PERSONS`**.  
 **`size` не равен длине query** — для выгрузки фиксируем **`size=20`**, как у полного списка PERSONS.
 
-ID в поиске: **`personUuid`** в `data.PERSONS.data.content[]`.
+ID в поиске: **`personUuid`** в `data.PERSONS.data.content[]`.  
+Дополнительно из hit забираются: **`employeeId`** (Таб.номер), **`fullName`** (ФИО), **`position`** (Должность) — для журнала, статуса и CSV.
 
-Пагинация: `page=0…N` по `totalPages` / `last`. На панели — лимит **макс. страниц** (по умолчанию 50; для широких запросов вроде «Директор» API отдаёт до ~50 страниц).
+### Пагинация по `totalPages`
+
+С первой страницы (`page=0`) читается `data.PERSONS.data.totalPages`.  
+Дальше запрашиваются страницы **`page = 0 … totalPages - 1`** (пример: `totalPages=5` → `0,1,2,3,4`).  
+На панели — лимит **макс. страниц** (по умолчанию 50).
 
 ## 4. Сценарий OE
 
 1. Разбор поля/файла: разделители `\n`, `;`, `,`.
-2. Для каждого query — все страницы multiSearch (с паузой между страницами).
-3. Сохранение Search JSON (если отмечено).
-4. Пауза «после Search».
-5. Для каждого уникального `personUuid` (порядок первого появления) — mainInfo_v1.
-6. Сохранение mainInfo / full / profile.csv по чекбоксам.
+2. **Если отмечен Search** — для каждого query все страницы multiSearch (пауза между страницами).
+3. Сохранение Search JSON (вместе с фазой Search).
+4. Пауза «после Search» (если будет mainInfo).
+5. **Если отмечен mainInfo** — для каждого уникального `personUuid` — mainInfo_v1; в статусе/журнале: Таб.номер / ФИО / Должность.
+6. Сохранение Full / profile.csv — по отдельным чекбоксам (только сохранение).
+
+### Зависимость галочек Search / mainInfo
+
+| Search | mainInfo | Поведение |
+|--------|----------|-----------|
+| ✓ | ✓ | Search → mainInfo |
+| ✓ | ✗ | Только Search, карточки не запрашиваются |
+| ✗ | ✓ | Автоматически включается Search (mainInfo без поиска невозможен) |
+| ✗ | ✗ | Запуск запрещён (Full/CSV сами запросов не делают) |
 
 ### Имена файлов
 
@@ -64,11 +78,11 @@ ID в поиске: **`personUuid`** в `data.PERSONS.data.content[]`.
 
 ## 6. UI
 
-- Статус-бар: какой поиск / страница / UUID / прогресс.
-- Журнал работы + DevToolsTrace (`scriptId=Pulse_export_OE`).
-- Чекбоксы: какие файлы сохранять (Search / mainInfo / full / CSV).
+- **Структурированный статус**: фаза, какой поиск из N, страница из totalPages, какой mainInfo, кого запрашиваем (Таб.номер / ФИО / Должность), payload.
+- Журнал работы + DevToolsTrace (`scriptId=Pulse_export_OE`): в trace пишутся payload запросов и извлечённые `personUuid`, `totalPages`, метаданные сотрудника.
+- Чекбоксы: **Search** / **mainInfo** — фазы запросов (+ JSON); **Full JSON** / **Profile CSV** — только сохранение.
 - Параметры: паузы, база retry, maxPages.
-- Кнопки: **Search → mainInfo**, **Стоп**, загрузка `.txt` в поле, **Закрыть панель**.
+- Кнопки: **Запуск**, **Стоп**, загрузка `.txt` в поле, **Закрыть панель**.
 
 ## 7. Ключевые функции
 
@@ -78,10 +92,11 @@ ID в поиске: **`personUuid`** в `data.PERSONS.data.content[]`.
 | `parseQueriesFromText` | Разбор списка query |
 | `buildMultiSearchUrl` / `buildMainInfoUrl` | URL запросов |
 | `fetchJsonWithRetry` | GET + до 3 попыток, удлиняющаяся пауза |
-| `parsePersonsBlock` / `personUuidFromHit` | Разбор PERSONS и UUID |
+| `parsePersonsBlock` / `personUuidFromHit` | Разбор PERSONS, UUID, totalPages |
+| `personMetaFromHit` | employeeId / fullName / position из hit |
 | `extractMainInfoData` / `pickSearchHit` / `pickMainInfo` | Компактные поля для CSV |
 | `buildCsv` | CSV `;`, UTF-8 BOM |
-| `runOeExport` | Полный пайплайн OE |
+| `runOeExport` | Полный пайплайн OE (с учётом фаз) |
 | `startPulsePanel` | Панель `pulseExportOePanelRoot` |
 
 ## 8. CSV (черновик колонок)
@@ -94,3 +109,4 @@ ID в поиске: **`personUuid`** в `data.PERSONS.data.content[]`.
 | Версия | Дата | Изменения |
 |--------|------|-----------|
 | 1.0 | 2026-07-30 | Первый выпуск по HAR/ToDo Пульс: multiSearch PERSONS size=20 → mainInfo_v1, JSON+CSV, retry |
+| 1.1 | 2026-07-31 | Пагинация строго по totalPages; фазы Search/mainInfo по галочкам; статус с Таб.номер/ФИО/Должность; payload в trace |
