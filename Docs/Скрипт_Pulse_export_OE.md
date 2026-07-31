@@ -18,6 +18,12 @@ DevTools-скрипт для **hr.ca.sbrf.ru (Пульс)**: последова�
 - Панель: `id=pulseExportOePanelRoot`.
 - Запросы с **`credentials: "include"`**, origin — вкладки (fallback `https://hr.ca.sbrf.ru`).
 
+### Настройки в коде
+
+Все параметры по умолчанию — в объекте **`PULSE_CFG`** в начале скрипта (паузы, джиттер, `PAGE_SIZE`, пути API, `DEFAULT_QUERIES`, лимиты Trace). Править удобнее всего там.
+
+Стартовые query по умолчанию: `673892`, `Лакомкин Олег`.
+
 ## 3. API (по HAR `hr.ca.sbrf.ru.har`)
 
 | Метод | Путь | Назначение |
@@ -46,16 +52,24 @@ ID в поиске: **`personUuid`** в `data.PERSONS.data.content[]`.
 3. Сохранение Search JSON (вместе с фазой Search).
 4. Пауза «после Search» (если будет mainInfo).
 5. **Если отмечен mainInfo** — для каждого уникального `personUuid` — mainInfo_v1; в статусе/журнале: Таб.номер / ФИО / Должность.
-6. Сохранение Full / profile.csv — по отдельным чекбоксам (только сохранение).
+6. Сохранение Full / profile.csv — только если отмечены **и** доступны (нужны Search + mainInfo).
 
-### Зависимость галочек Search / mainInfo
+### Зависимость галочек
 
-| Search | mainInfo | Поведение |
-|--------|----------|-----------|
-| ✓ | ✓ | Search → mainInfo |
-| ✓ | ✗ | Только Search, карточки не запрашиваются |
-| ✗ | ✓ | Автоматически включается Search (mainInfo без поиска невозможен) |
-| ✗ | ✗ | Запуск запрещён (Full/CSV сами запросов не делают) |
+| Search | mainInfo | Full / CSV | Поведение |
+|--------|----------|------------|-----------|
+| ✓ | ✓ | можно | Search → mainInfo; Full/CSV по галочкам |
+| ✓ | ✗ | недоступны | Только Search |
+| ✗ | ✓ | — | Авто-вкл. Search |
+| ✗ | ✗ | недоступны | Запуск запрещён |
+| вкл. Full/CSV | — | — | Авто-вкл. Search + mainInfo |
+
+### Паузы и джиттер
+
+- Номинал по умолчанию: **1500 мс** между запросами и после Search.
+- К каждой паузе добавляется случайный джиттер **+5…10%**.
+- Каждый **10-й** и каждый **50-й** запрос — джиттер **+15…25%** (имитация более длинной паузы человека).
+- Параметры джиттера — в `PULSE_CFG.JITTER_*`.
 
 ### Имена файлов
 
@@ -76,11 +90,14 @@ ID в поиске: **`personUuid`** в `data.PERSONS.data.content[]`.
 - Если **две подряд** операции исчерпали 3 попытки — **стоп** прогона.
 - Кнопка **«Стоп»** — мягкая остановка очереди.
 
-## 6. UI
+## 6. UI и Trace
 
 - **Структурированный статус**: фаза, какой поиск из N, страница из totalPages, какой mainInfo, кого запрашиваем (Таб.номер / ФИО / Должность), payload.
-- Журнал работы + DevToolsTrace (`scriptId=Pulse_export_OE`): в trace пишутся payload запросов и извлечённые `personUuid`, `totalPages`, метаданные сотрудника.
-- Чекбоксы: **Search** / **mainInfo** — фазы запросов (+ JSON); **Full JSON** / **Profile CSV** — только сохранение.
+- Журнал на панели — **без маскирования** (удобно оператору).
+- DevToolsTrace (`scriptId=Pulse_export_OE`): payload, HTTP-тела и строки журнала в `.log` проходят **`sanitizeForTrace`**.
+  - Формат маски: первая буква + `***` + последние 3 (`673892` → `6***892`).
+  - Маскируются чувствительные ключи ответов (employeeId, tabNumber, телефоны, почты, positionId, ФИО/UUID в LOG и т.п.) и query-параметры URL.
+- Чекбоксы: **Search** / **mainInfo** — фазы; **Full** / **CSV** — только при обеих фазах.
 - Параметры: паузы, база retry, maxPages.
 - Кнопки: **Запуск**, **Стоп**, загрузка `.txt` в поле, **Закрыть панель**.
 
@@ -88,10 +105,13 @@ ID в поиске: **`personUuid`** в `data.PERSONS.data.content[]`.
 
 | Имя | Назначение |
 |-----|------------|
+| `PULSE_CFG` | Все дефолты и константы |
 | `getPulseOrigin` | Origin вкладки или fallback |
 | `parseQueriesFromText` | Разбор списка query |
 | `buildMultiSearchUrl` / `buildMainInfoUrl` | URL запросов |
 | `fetchJsonWithRetry` | GET + до 3 попыток, удлиняющаяся пауза |
+| `humanDelay` / `nextHumanPauseMs` | Пауза с джиттером |
+| `maskSensitiveValue` / `sanitizeForTrace` | Маскирование для Trace |
 | `parsePersonsBlock` / `personUuidFromHit` | Разбор PERSONS, UUID, totalPages |
 | `personMetaFromHit` | employeeId / fullName / position из hit |
 | `extractMainInfoData` / `pickSearchHit` / `pickMainInfo` | Компактные поля для CSV |
@@ -110,3 +130,4 @@ ID в поиске: **`personUuid`** в `data.PERSONS.data.content[]`.
 |--------|------|-----------|
 | 1.0 | 2026-07-30 | Первый выпуск по HAR/ToDo Пульс: multiSearch PERSONS size=20 → mainInfo_v1, JSON+CSV, retry |
 | 1.1 | 2026-07-31 | Пагинация строго по totalPages; фазы Search/mainInfo по галочкам; статус с Таб.номер/ФИО/Должность; payload в trace |
+| 1.2 | 2026-07-31 | `PULSE_CFG` сверху; пауза 1500+джиттер; Full/CSV зависят от Search+mainInfo; маскирование Trace; дефолт query |
