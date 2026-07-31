@@ -476,6 +476,14 @@ function createDevToolsTrace(opts) {
     return s;
   }
 
+  var devTrace = createDevToolsTrace({
+    scriptId: PULSE_CFG.SCRIPT_ID,
+    maxBodyLen: PULSE_CFG.TRACE_MAX_BODY_LEN,
+    maxLines: PULSE_CFG.TRACE_MAX_LINES,
+    sanitizeForTrace: sanitizeForTrace
+  });
+  var httpFetch = devTrace.wrapFetch(__nativeFetch);
+
   var runInProgress = false;
   var stopRequested = false;
   /** Счётчик запросов для джиттера пауз (сбрасывается на старте прогона). */
