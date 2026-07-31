@@ -7,6 +7,74 @@
 (function () {
   "use strict";
 
+  // =============================================================================
+  // НАСТРОЙКИ — правьте значения здесь при необходимости
+  // =============================================================================
+  var PULSE_CFG = {
+    /** id DOM-панели */
+    PANEL_ID: "pulseExportOePanelRoot",
+    /** scriptId для DevToolsTrace / имени .log */
+    SCRIPT_ID: "Pulse_export_OE",
+    /** Префикс имён файлов выгрузки */
+    FILE_PREFIX: "PROM_PULSE_",
+    /** Fallback origin, если у вкладки нет location.origin */
+    ORIGIN_FALLBACK: "https://hr.ca.sbrf.ru",
+    /** Пути API (относительно origin) */
+    MULTI_SEARCH_PATH: "/api-web/globalsearch/api/v3/multiSearch",
+    MAIN_INFO_PATH: "/api-mobile/smart-profile/web/widgets/data",
+    /** multiSearch: category и size (по HAR для PERSONS — size=20) */
+    SEARCH_CATEGORY: "PERSONS",
+    PAGE_SIZE: 20,
+    /** Паузы по умолчанию, мс */
+    PAUSE_BETWEEN_MS: 1500,
+    PAUSE_AFTER_SEARCH_MS: 1500,
+    RETRY_BASE_MS: 1000,
+    MAX_RETRY: 3,
+    REQUEST_PAUSE_MAX_MS: 300000,
+    /** Лимит страниц multiSearch на один query */
+    MAX_PAGES: 50,
+    /**
+     * Имитация «человеческих» пауз:
+     * обычный джиттер +5…10% к номиналу;
+     * каждый LONG_EVERY / EXTRA_EVERY запрос — джиттер +15…25%.
+     */
+    JITTER_NORMAL_MIN: 0.05,
+    JITTER_NORMAL_MAX: 0.1,
+    JITTER_LONG_MIN: 0.15,
+    JITTER_LONG_MAX: 0.25,
+    JITTER_LONG_EVERY: 10,
+    JITTER_EXTRA_EVERY: 50,
+    /** Стартовые строки в поле поиска */
+    DEFAULT_QUERIES: ["673892", "Лакомкин Олег"],
+    PANEL_FONT: "12px",
+    /** DevToolsTrace */
+    TRACE_MAX_BODY_LEN: 16384,
+    TRACE_MAX_LINES: 8000
+  };
+
+  /** Ключи JSON (ответы search/mainInfo), значения которых маскируются в Trace. */
+  var TRACE_MASK_KEYS = {
+    employeeid: true,
+    tabnumber: true,
+    positionid: true,
+    preferred_phone: true,
+    preferred_mail: true,
+    value: true,
+    sigma: true,
+    alpha: true,
+    personal: true,
+    work: true,
+    mail: true,
+    phone: true,
+    personuuid: true,
+    userid: true,
+    fullname: true,
+    firstname: true,
+    lastname: true,
+    midname: true,
+    secondname: true,
+    birthday: true
+  };
 
 /**
  * DevToolsTrace — трассировка UI, HTTP и журнала для DevTools-скриптов (один файл → вставка в консоль).
@@ -18,6 +86,13 @@ function createDevToolsTrace(opts) {
   var scriptId = (opts && opts.scriptId) || "devtools_script";
   var maxBodyLen = (opts && opts.maxBodyLen) || 16384;
   var maxLines = (opts && opts.maxLines) || 8000;
+  /** @type {(s: string) => string} */
+  var sanitizeForTrace =
+    opts && typeof opts.sanitizeForTrace === "function"
+      ? opts.sanitizeForTrace
+      : function (s) {
+          return s;
+        };
   var enabled = false;
   /** @type {string[]} */
   var buffer = [];
@@ -55,10 +130,11 @@ function createDevToolsTrace(opts) {
    */
   function push(kind, message, detail) {
     if (!enabled) return;
-    var line = isoNow() + " [" + kind + "] " + message;
+    var safeMsg = sanitizeForTrace(String(message == null ? "" : message));
+    var line = isoNow() + " [" + kind + "] " + safeMsg;
     if (detail && typeof detail === "object") {
       try {
-        line += " " + JSON.stringify(detail);
+        line += " " + sanitizeForTrace(JSON.stringify(detail));
       } catch (_e) {
         line += " [detail unserializable]";
       }
@@ -117,7 +193,7 @@ function createDevToolsTrace(opts) {
             ? String(input.url)
             : String(input);
       var method = (init && init.method) || "GET";
-      var reqBody = init && init.body != null ? truncBody(init.body) : "";
+      var reqBody = init && init.body != null ? sanitizeForTrace(truncBody(init.body)) : "";
       push("HTTP", "→ " + method + " " + url, reqBody ? { requestBody: reqBody } : null);
       var t0 = Date.now();
       var res = await nativeFetch(input, init);
@@ -125,7 +201,7 @@ function createDevToolsTrace(opts) {
       var status = res.status;
       var respText = "";
       try {
-        respText = truncBody(await res.clone().text());
+        respText = sanitizeForTrace(truncBody(await res.clone().text()));
       } catch (_e) {
         respText = "[body read error]";
       }
@@ -271,41 +347,111 @@ function createDevToolsTrace(opts) {
 }
 
   var __nativeFetch = window.fetch.bind(window);
-  var PANEL_ID = "pulseExportOePanelRoot";
-  var prev = document.getElementById(PANEL_ID);
+  var prev = document.getElementById(PULSE_CFG.PANEL_ID);
   if (prev) prev.remove();
 
-  /** Fallback origin, если у вкладки нет location.origin. */
-  var PULSE_ORIGIN_FALLBACK = "https://hr.ca.sbrf.ru";
-  var MULTI_SEARCH_PATH = "/api-web/globalsearch/api/v3/multiSearch";
-  var MAIN_INFO_PATH = "/api-mobile/smart-profile/web/widgets/data";
-  /** По HAR UI для полного списка PERSONS всегда size=20 (не длина query). */
-  var DEFAULT_PAGE_SIZE = 20;
-  var DEFAULT_PAUSE_MS = 400;
-  var DEFAULT_PAUSE_AFTER_SEARCH_MS = 600;
-  var DEFAULT_RETRY_BASE_MS = 1000;
-  var MAX_RETRY = 3;
-  var REQUEST_PAUSE_MAX_MS = 300000;
-  var DEFAULT_MAX_PAGES = 50;
-  var FILE_PREFIX = "PROM_PULSE_";
+  /**
+   * Маска: первая буква + *** + последние 3 (пример: 673892 → 6***892).
+   * @param {unknown} v
+   * @returns {string}
+   */
+  function maskSensitiveValue(v) {
+    var s = v == null ? "" : String(v);
+    if (!s) return s;
+    if (s.length === 1) return s + "***";
+    if (s.length <= 4) return s.charAt(0) + "***" + s.slice(1);
+    return s.charAt(0) + "***" + s.slice(-3);
+  }
 
-  var DEFAULT_QUERIES = [
-    "673892",
-    "Лакомкин Олег Олегович",
-    "Лакомкин",
-    "Гайн Роман",
-    "Гайн",
-    "Гайн Роман Андреевич",
-    "Директор"
-  ];
+  /**
+   * Рекурсивно маскирует чувствительные ключи в объекте/массиве для Trace.
+   * @param {unknown} node
+   * @returns {unknown}
+   */
+  function maskSensitiveTree(node) {
+    if (node == null) return node;
+    if (Array.isArray(node)) {
+      return node.map(maskSensitiveTree);
+    }
+    if (typeof node === "object") {
+      /** @type {Record<string, unknown>} */
+      var out = {};
+      var keys = Object.keys(/** @type {object} */ (node));
+      for (var i = 0; i < keys.length; i++) {
+        var k = keys[i];
+        var val = /** @type {Record<string, unknown>} */ (node)[k];
+        var lk = k.toLowerCase();
+        if (TRACE_MASK_KEYS[lk] && (typeof val === "string" || typeof val === "number")) {
+          out[k] = maskSensitiveValue(val);
+        } else if (TRACE_MASK_KEYS[lk] && val && typeof val === "object" && !Array.isArray(val)) {
+          // contacts.phones.personal = { phone, priority } — маскируем вложенные строки
+          out[k] = maskSensitiveTree(val);
+        } else {
+          out[k] = maskSensitiveTree(val);
+        }
+      }
+      return out;
+    }
+    return node;
+  }
 
-  var PANEL_FONT = "12px";
+  /**
+   * Маскирование текста/JSON для записи в Trace.
+   * @param {string} raw
+   * @returns {string}
+   */
+  function sanitizeForTrace(raw) {
+    var s = String(raw == null ? "" : raw);
+    if (!s) return s;
+    // Попытка разобрать JSON целиком (тела HTTP)
+    var t = s.replace(/^\s+/, "");
+    if (t.charAt(0) === "{" || t.charAt(0) === "[") {
+      try {
+        var parsed = JSON.parse(s);
+        return JSON.stringify(maskSensitiveTree(parsed));
+      } catch (_e) {
+        /* не JSON — дальше текстовые замены */
+      }
+    }
+    // Маркеры из журнала: Таб.номер=…, employeeId=…, personUuid=… и т.п.
+    s = s.replace(
+      /(Таб\.номер|employeeId|personUuid|userId|ФИО|Должность|fullName|position)\s*=\s*([^|]+?)(?=\s*\||$)/gi,
+      function (_m, label, val) {
+        return label + "=" + maskSensitiveValue(String(val).replace(/^\s+|\s+$/g, ""));
+      }
+    );
+    // UUID в квадратных скобках personUuid=[...]
+    s = s.replace(/personUuid=\[([^\]]*)\]/gi, function (_m, inner) {
+      var parts = String(inner)
+        .split(",")
+        .map(function (p) {
+          return maskSensitiveValue(p.replace(/^\s+|\s+$/g, ""));
+        });
+      return "personUuid=[" + parts.join(", ") + "]";
+    });
+    // query-параметры URL
+    s = s.replace(/([?&](?:userId|query|employeeId)=)([^&\s"]+)/gi, function (_m, p, v) {
+      try {
+        return p + maskSensitiveValue(decodeURIComponent(v));
+      } catch (_e2) {
+        return p + maskSensitiveValue(v);
+      }
+    });
+    return s;
+  }
 
-  var devTrace = createDevToolsTrace({ scriptId: "Pulse_export_OE" });
+  var devTrace = createDevToolsTrace({
+    scriptId: PULSE_CFG.SCRIPT_ID,
+    maxBodyLen: PULSE_CFG.TRACE_MAX_BODY_LEN,
+    maxLines: PULSE_CFG.TRACE_MAX_LINES,
+    sanitizeForTrace: sanitizeForTrace
+  });
   var httpFetch = devTrace.wrapFetch(__nativeFetch);
 
   var runInProgress = false;
   var stopRequested = false;
+  /** Счётчик запросов для джиттера пауз (сбрасывается на старте прогона). */
+  var humanPauseSeq = 0;
 
   /**
    * @returns {{ origin: string }}
@@ -318,7 +464,7 @@ function createDevToolsTrace(opts) {
     } catch (_e) {
       /* ignore */
     }
-    return { origin: PULSE_ORIGIN_FALLBACK };
+    return { origin: PULSE_CFG.ORIGIN_FALLBACK };
   }
 
   /**
@@ -329,6 +475,35 @@ function createDevToolsTrace(opts) {
     return new Promise(function (resolve) {
       setTimeout(resolve, ms);
     });
+  }
+
+  /**
+   * Пауза с «человеческим» джиттером относительно номинала.
+   * @param {number} baseMs
+   * @returns {number}
+   */
+  function nextHumanPauseMs(baseMs) {
+    var base = Number(baseMs) || 0;
+    if (base <= 0) return 0;
+    humanPauseSeq += 1;
+    var longHit =
+      humanPauseSeq % PULSE_CFG.JITTER_LONG_EVERY === 0 ||
+      humanPauseSeq % PULSE_CFG.JITTER_EXTRA_EVERY === 0;
+    var jMin = longHit ? PULSE_CFG.JITTER_LONG_MIN : PULSE_CFG.JITTER_NORMAL_MIN;
+    var jMax = longHit ? PULSE_CFG.JITTER_LONG_MAX : PULSE_CFG.JITTER_NORMAL_MAX;
+    var factor = 1 + jMin + Math.random() * (jMax - jMin);
+    var ms = Math.round(base * factor);
+    if (ms > PULSE_CFG.REQUEST_PAUSE_MAX_MS) ms = PULSE_CFG.REQUEST_PAUSE_MAX_MS;
+    return ms;
+  }
+
+  /**
+   * @param {number} baseMs
+   * @returns {Promise<void>}
+   */
+  async function humanDelay(baseMs) {
+    var ms = nextHumanPauseMs(baseMs);
+    if (ms > 0) await delay(ms);
   }
 
   /**
@@ -356,7 +531,7 @@ function createDevToolsTrace(opts) {
    * @returns {string}
    */
   function buildFileName(kind, tsStamp, ext) {
-    return FILE_PREFIX + kind + "_" + tsStamp + (ext || ".json");
+    return PULSE_CFG.FILE_PREFIX + kind + "_" + tsStamp + (ext || ".json");
   }
 
   /**
@@ -562,7 +737,7 @@ function createDevToolsTrace(opts) {
     var originInfo = getPulseOrigin();
 
     var box = document.createElement("div");
-    box.id = PANEL_ID;
+    box.id = PULSE_CFG.PANEL_ID;
     box.style.cssText =
       "position:fixed;top:12px;right:12px;z-index:2147483646;width:min(680px,calc(100vw - 24px));" +
       "max-height:calc(100vh - 24px);overflow:auto;box-sizing:border-box;padding:14px 16px 16px;" +
@@ -582,7 +757,7 @@ function createDevToolsTrace(opts) {
       "Origin: " +
       originInfo.origin +
       " · category=PERSONS · size=" +
-      DEFAULT_PAGE_SIZE +
+      PULSE_CFG.PAGE_SIZE +
       " · пагинация по totalPages";
     titleWrap.appendChild(title);
     titleWrap.appendChild(sub);
@@ -694,7 +869,7 @@ function createDevToolsTrace(opts) {
       inp.style.cssText =
         "width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid #94a3b8;border-radius:8px;" +
         "background:#fff;color:#0f172a;font-size:" +
-        PANEL_FONT +
+        PULSE_CFG.PANEL_FONT +
         ";";
       row.appendChild(cap);
       row.appendChild(inp);
@@ -704,16 +879,20 @@ function createDevToolsTrace(opts) {
     var paramsGrid = document.createElement("div");
     paramsGrid.style.cssText =
       "display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 10px;margin:0 0 12px 0;";
-    var fBetween = mkNum("Пауза между запросами, мс", DEFAULT_PAUSE_MS, "Между страницами search и между mainInfo");
+    var fBetween = mkNum(
+      "Пауза между запросами, мс",
+      PULSE_CFG.PAUSE_BETWEEN_MS,
+      "Номинал; фактически +5–10% (каждые 10/50 запросов +15–25%)"
+    );
     var fAfterSearch = mkNum(
       "Пауза после Search, мс",
-      DEFAULT_PAUSE_AFTER_SEARCH_MS,
-      "После всех multiSearch перед первым mainInfo"
+      PULSE_CFG.PAUSE_AFTER_SEARCH_MS,
+      "После всех multiSearch перед первым mainInfo (с тем же джиттером)"
     );
-    var fRetry = mkNum("База retry-паузы, мс", DEFAULT_RETRY_BASE_MS, "Попытка N ждёт base×N мс");
+    var fRetry = mkNum("База retry-паузы, мс", PULSE_CFG.RETRY_BASE_MS, "Попытка N ждёт base×N мс");
     var fMaxPages = mkNum(
       "Макс. страниц на один поиск",
-      DEFAULT_MAX_PAGES,
+      PULSE_CFG.MAX_PAGES,
       "Защита от широких запросов (в HAR «Директор» ≈ 50 страниц)"
     );
     paramsGrid.appendChild(fBetween.row);
@@ -751,12 +930,28 @@ function createDevToolsTrace(opts) {
     var depHint = document.createElement("div");
     depHint.style.cssText = "font-size:10px;color:#64748b;margin:0 0 12px 2px;line-height:1.35;";
     depHint.textContent =
-      "mainInfo зависит от Search: при включении mainInfo автоматически включается Search. " +
-      "Снятый Search — запросы поиска не выполняются; снятый mainInfo — карточки не запрашиваются.";
+      "Зависимости: mainInfo → Search; Full/CSV → Search + mainInfo. " +
+      "Без Search карточки недоступны; без Search+mainInfo Full/CSV недоступны.";
     box.appendChild(depHint);
 
-    /** Зависимость фаз: mainInfo → Search; снятие Search снимает mainInfo. */
+    /** Зависимости фаз и выгрузок. */
     var syncingPhaseChk = false;
+
+    /**
+     * Full/CSV доступны только при Search + mainInfo.
+     */
+    function syncExportDeps() {
+      var both = saveChk.search.checked && saveChk.mainInfo.checked;
+      saveChk.full.disabled = !both;
+      saveChk.csv.disabled = !both;
+      if (!both) {
+        if (saveChk.full.checked || saveChk.csv.checked) {
+          saveChk.full.checked = false;
+          saveChk.csv.checked = false;
+        }
+      }
+    }
+
     saveChk.mainInfo.addEventListener("change", function () {
       if (syncingPhaseChk) return;
       if (saveChk.mainInfo.checked && !saveChk.search.checked) {
@@ -765,6 +960,7 @@ function createDevToolsTrace(opts) {
         syncingPhaseChk = false;
         appendLog("mainInfo включён → автоматически включён Search (зависимость)", "info");
       }
+      syncExportDeps();
     });
     saveChk.search.addEventListener("change", function () {
       if (syncingPhaseChk) return;
@@ -774,7 +970,31 @@ function createDevToolsTrace(opts) {
         syncingPhaseChk = false;
         appendLog("Search выключен → mainInfo снят (без Search карточки недоступны)", "warn");
       }
+      syncExportDeps();
     });
+    saveChk.full.addEventListener("change", function () {
+      if (syncingPhaseChk) return;
+      if (saveChk.full.checked && !(saveChk.search.checked && saveChk.mainInfo.checked)) {
+        syncingPhaseChk = true;
+        saveChk.search.checked = true;
+        saveChk.mainInfo.checked = true;
+        syncingPhaseChk = false;
+        appendLog("Full JSON → включены Search и mainInfo (зависимость)", "info");
+      }
+      syncExportDeps();
+    });
+    saveChk.csv.addEventListener("change", function () {
+      if (syncingPhaseChk) return;
+      if (saveChk.csv.checked && !(saveChk.search.checked && saveChk.mainInfo.checked)) {
+        syncingPhaseChk = true;
+        saveChk.search.checked = true;
+        saveChk.mainInfo.checked = true;
+        syncingPhaseChk = false;
+        appendLog("Profile CSV → включены Search и mainInfo (зависимость)", "info");
+      }
+      syncExportDeps();
+    });
+    syncExportDeps();
 
     var labInput = document.createElement("div");
     labInput.style.cssText = "font-size:11px;font-weight:700;color:#64748b;letter-spacing:0.04em;text-transform:uppercase;margin:0 0 6px 0;";
@@ -788,7 +1008,7 @@ function createDevToolsTrace(opts) {
       "width:100%;box-sizing:border-box;margin:0 0 10px 0;padding:8px 10px;font-size:12px;" +
       "color:#0f172a;background:#fff;border:1px solid #94a3b8;border-radius:10px;resize:vertical;min-height:110px;";
     ta.placeholder = "Одна строка — один query\nРазделители: перевод строки, ; ,";
-    ta.value = DEFAULT_QUERIES.join("\n");
+    ta.value = PULSE_CFG.DEFAULT_QUERIES.join("\n");
     box.appendChild(ta);
 
     var fileRow = document.createElement("div");
@@ -862,7 +1082,7 @@ function createDevToolsTrace(opts) {
     function readMs(inp, fallback) {
       var n = parseInt(String(inp.value).trim(), 10);
       if (isNaN(n) || n < 0) return fallback;
-      if (n > REQUEST_PAUSE_MAX_MS) return REQUEST_PAUSE_MAX_MS;
+      if (n > PULSE_CFG.REQUEST_PAUSE_MAX_MS) return PULSE_CFG.REQUEST_PAUSE_MAX_MS;
       return n;
     }
 
@@ -895,7 +1115,7 @@ function createDevToolsTrace(opts) {
       var lastErr = "unknown";
       var lastStatus = 0;
       var lastData = null;
-      for (var attempt = 1; attempt <= MAX_RETRY; attempt++) {
+      for (var attempt = 1; attempt <= PULSE_CFG.MAX_RETRY; attempt++) {
         if (stopRequested) {
           return { ok: false, status: 0, data: null, error: "остановлено", attempts: attempt };
         }
@@ -926,20 +1146,20 @@ function createDevToolsTrace(opts) {
           }
           lastErr = apiErr;
           appendLog(
-            context + " попытка " + attempt + "/" + MAX_RETRY + ": " + apiErr,
+            context + " попытка " + attempt + "/" + PULSE_CFG.MAX_RETRY + ": " + apiErr,
             "warn"
           );
         } catch (e) {
           lastErr = context + ": " + String(e && e.message ? e.message : e);
-          appendLog(context + " попытка " + attempt + "/" + MAX_RETRY + ": " + lastErr, "warn");
+          appendLog(context + " попытка " + attempt + "/" + PULSE_CFG.MAX_RETRY + ": " + lastErr, "warn");
         }
-        if (attempt < MAX_RETRY) {
+        if (attempt < PULSE_CFG.MAX_RETRY) {
           var wait = retryBaseMs * attempt;
           appendLog("повтор через " + wait + " мс…", "warn");
           await delay(wait);
         }
       }
-      return { ok: false, status: lastStatus, data: lastData, error: lastErr, attempts: MAX_RETRY };
+      return { ok: false, status: lastStatus, data: lastData, error: lastErr, attempts: PULSE_CFG.MAX_RETRY };
     }
 
     /**
@@ -957,8 +1177,9 @@ function createDevToolsTrace(opts) {
         encodeURIComponent(String(page)) +
         "&size=" +
         encodeURIComponent(String(size)) +
-        "&category=PERSONS";
-      return o + MULTI_SEARCH_PATH + "?" + q;
+        "&category=" +
+        encodeURIComponent(PULSE_CFG.SEARCH_CATEGORY);
+      return o + PULSE_CFG.MULTI_SEARCH_PATH + "?" + q;
     }
 
     /**
@@ -969,7 +1190,7 @@ function createDevToolsTrace(opts) {
       var o = getPulseOrigin().origin;
       return (
         o +
-        MAIN_INFO_PATH +
+        PULSE_CFG.MAIN_INFO_PATH +
         "?widgets=mainInfo_v1&userId=" +
         encodeURIComponent(userId)
       );
@@ -1161,6 +1382,7 @@ function createDevToolsTrace(opts) {
       var uuidSeen = {};
       var doSearch = !!save.search;
       var doMainInfo = !!save.mainInfo;
+      humanPauseSeq = 0;
 
       appendLog(
         "Старт OE: запросов " +
@@ -1170,7 +1392,7 @@ function createDevToolsTrace(opts) {
           ", mainInfo=" +
           (doMainInfo ? "да" : "нет") +
           ", size=" +
-          DEFAULT_PAGE_SIZE +
+          PULSE_CFG.PAGE_SIZE +
           ", maxPages=" +
           cfg.maxPages +
           ", ts=" +
@@ -1184,7 +1406,7 @@ function createDevToolsTrace(opts) {
           "Запросов поиска: " + queries.length,
           "Фаза Search: " + (doSearch ? "включена" : "пропуск"),
           "Фаза mainInfo: " + (doMainInfo ? "включена" : "пропуск"),
-          "size=" + DEFAULT_PAGE_SIZE + ", maxPages=" + cfg.maxPages
+          "size=" + PULSE_CFG.PAGE_SIZE + ", maxPages=" + cfg.maxPages
         ]
       });
 
@@ -1224,8 +1446,8 @@ function createDevToolsTrace(opts) {
             var searchPayload = {
               query: query,
               page: page,
-              size: DEFAULT_PAGE_SIZE,
-              category: "PERSONS"
+              size: PULSE_CFG.PAGE_SIZE,
+              category: PULSE_CFG.SEARCH_CATEGORY
             };
             setStatus({
               level: "info",
@@ -1241,13 +1463,13 @@ function createDevToolsTrace(opts) {
               lines: [
                 "query = «" + query + "»",
                 "page = " + page + (knownTotalPages != null ? " (последняя = " + (knownTotalPages - 1) + ")" : ""),
-                "size = " + DEFAULT_PAGE_SIZE,
+                "size = " + PULSE_CFG.PAGE_SIZE,
                 "category = PERSONS"
               ]
             });
             devTrace.log("multiSearch payload " + JSON.stringify(searchPayload));
 
-            var url = buildMultiSearchUrl(query, page, DEFAULT_PAGE_SIZE);
+            var url = buildMultiSearchUrl(query, page, PULSE_CFG.PAGE_SIZE);
             var res = await fetchJsonWithRetry(
               url,
               "multiSearch «" + query + "» p" + page,
@@ -1368,7 +1590,7 @@ function createDevToolsTrace(opts) {
               appendLog("    достигнут maxPages=" + cfg.maxPages, "warn");
               break;
             }
-            if (cfg.pauseBetween > 0) await delay(cfg.pauseBetween);
+            if (cfg.pauseBetween > 0) await humanDelay(cfg.pauseBetween);
           }
 
           if (searchHardFail) {
@@ -1382,7 +1604,7 @@ function createDevToolsTrace(opts) {
             );
             if (consecutiveHardFails >= 2) {
               appendLog(
-                "Стоп: две подряд операции исчерпали " + MAX_RETRY + " попытки",
+                "Стоп: две подряд операции исчерпали " + PULSE_CFG.MAX_RETRY + " попытки",
                 "err"
               );
               setStatus({
@@ -1427,7 +1649,7 @@ function createDevToolsTrace(opts) {
           });
 
           if (qi < queries.length - 1 && cfg.pauseBetween > 0 && !stopRequested) {
-            await delay(cfg.pauseBetween);
+            await humanDelay(cfg.pauseBetween);
           }
         }
 
@@ -1436,8 +1658,8 @@ function createDevToolsTrace(opts) {
           exportedAt: new Date().toISOString(),
           scenario: "pulse_multisearch",
           origin: getPulseOrigin().origin,
-          pageSize: DEFAULT_PAGE_SIZE,
-          category: "PERSONS",
+          pageSize: PULSE_CFG.PAGE_SIZE,
+          category: PULSE_CFG.SEARCH_CATEGORY,
           timestamp: tsStamp,
           items: searchItems
         });
@@ -1475,7 +1697,7 @@ function createDevToolsTrace(opts) {
               "Уникальных personUuid: " + uuidOrder.length
             ]
           });
-          await delay(cfg.pauseAfterSearch);
+          await humanDelay(cfg.pauseAfterSearch);
         }
 
         appendLog("Фаза mainInfo: уникальных personUuid=" + uuidOrder.length);
@@ -1557,7 +1779,7 @@ function createDevToolsTrace(opts) {
             appendLog("FAIL mainInfo " + uid + ": " + mres.error, "err");
             if (consecutiveHardFails >= 2) {
               appendLog(
-                "Стоп: две подряд операции исчерпали " + MAX_RETRY + " попытки",
+                "Стоп: две подряд операции исчерпали " + PULSE_CFG.MAX_RETRY + " попытки",
                 "err"
               );
               setStatus({
@@ -1594,7 +1816,7 @@ function createDevToolsTrace(opts) {
             );
           }
           if (mi < uuidOrder.length - 1 && cfg.pauseBetween > 0 && !stopRequested) {
-            await delay(cfg.pauseBetween);
+            await humanDelay(cfg.pauseBetween);
           }
         }
 
@@ -1799,10 +2021,10 @@ function createDevToolsTrace(opts) {
         await runOeExport(
           queries,
           {
-            pauseBetween: readMs(fBetween.inp, DEFAULT_PAUSE_MS),
-            pauseAfterSearch: readMs(fAfterSearch.inp, DEFAULT_PAUSE_AFTER_SEARCH_MS),
-            retryBase: readMs(fRetry.inp, DEFAULT_RETRY_BASE_MS),
-            maxPages: Math.max(1, readMs(fMaxPages.inp, DEFAULT_MAX_PAGES) || DEFAULT_MAX_PAGES)
+            pauseBetween: readMs(fBetween.inp, PULSE_CFG.PAUSE_BETWEEN_MS),
+            pauseAfterSearch: readMs(fAfterSearch.inp, PULSE_CFG.PAUSE_AFTER_SEARCH_MS),
+            retryBase: readMs(fRetry.inp, PULSE_CFG.RETRY_BASE_MS),
+            maxPages: Math.max(1, readMs(fMaxPages.inp, PULSE_CFG.MAX_PAGES) || PULSE_CFG.MAX_PAGES)
           },
           {
             search: doSearch,

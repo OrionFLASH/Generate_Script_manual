@@ -310,7 +310,7 @@
 4. Пауза после Search (если будет mainInfo).
 5. Если mainInfo: для каждого уникального UUID — mainInfo_v1.
 6. Сохранение mainInfo / full / profile.csv по чекбоксам.
-7. Retry до 3 раз с удлиняющейся паузой; две подряд «жёсткие» ошибки — стоп.
+7. Retry до 3 раз с удлиняющейся паузой; две подряд «жёсткие» ошибки — стоп. Паузы между запросами — номинал с панели (**1500 мс** по умолчанию) + джиттер (+5–10%, каждые 10/50 запросов +15–25%). В Trace тела ответов и PII маскируются.
 
 Подробнее: [Docs/Скрипт_Pulse_export_OE.md](Скрипт_Pulse_export_OE.md).
 
@@ -363,5 +363,6 @@
 | **1.21** | § **10** `SUP_Config_Update.js`: каталог `parameter/list` (полный tenant), resolve по имени; UI поиск/выбор параметра; просмотр id/values на вкладке export. |
 | **1.22** | Добавлен § **11** `Pulse_export_OE.js` (multiSearch PERSONS size=20 → mainInfo_v1); сводная таблица и введение (12 скриптов). |
 | **1.23** | § **11** `Pulse_export_OE.js`: пагинация строго по `totalPages`; фазы Search/mainInfo по галочкам; employeeId/ФИО/должность в статусе и trace. |
+| **1.24** | § **11** `Pulse_export_OE.js`: `PULSE_CFG`, пауза 1500+джиттер, Full/CSV зависят от Search+mainInfo, маскирование PII в Trace. |
 
 *Актуальность проверяйте по скриптам в `Script/`.*
