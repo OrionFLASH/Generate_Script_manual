@@ -475,6 +475,7 @@
 - `[v]` Структурированный блок статуса: какой поиск из N, страница, какой mainInfo, кого запрашиваем.
 - `[v]` В DevToolsTrace писать payload запросов и извлечённые `personUuid` / `totalPages` (+ employeeId/ФИО/должность).
 - `[v]` В Trace не писать сырые PII из ответов — маскировать помеченные поля и значения в LOG (`sanitizeForTrace`).
+- `[v]` Исправлено: после выноса маскирования восстановлены `devTrace` / `httpFetch` (ReferenceError при старте панели).
 - `[v]` DevToolsTrace (`scriptId=Pulse_export_OE`).
 - `[v]` Docs + строка в README + HTTP-справочник + `post_txt_sync`.
 
