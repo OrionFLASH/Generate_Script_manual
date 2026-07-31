@@ -479,11 +479,14 @@ function createDevToolsTrace(opts) {
     var personsSuccess = persons.success !== false;
     var block = persons.data && typeof persons.data === "object" ? /** @type {Record<string, unknown>} */ (persons.data) : {};
     var content = Array.isArray(block.content) ? block.content : [];
+    var rawPages = Number(block.totalPages);
+    var totalPages = !isNaN(rawPages) && rawPages >= 0 ? rawPages : content.length > 0 ? 1 : 0;
+    var rawEl = Number(block.totalElements);
     return {
       content: content,
-      totalElements: Number(block.totalElements) || content.length,
-      totalPages: Number(block.totalPages) || 1,
-      last: block.last !== false,
+      totalElements: !isNaN(rawEl) ? rawEl : content.length,
+      totalPages: totalPages,
+      last: typeof block.last === "boolean" ? block.last : totalPages <= 1,
       personsSuccess: personsSuccess
     };
   }
@@ -496,6 +499,40 @@ function createDevToolsTrace(opts) {
     if (!hit || typeof hit !== "object") return "";
     var id = /** @type {Record<string, unknown>} */ (hit).personUuid;
     return id != null ? String(id).trim() : "";
+  }
+
+  /**
+   * Таб.номер / ФИО / должность из hit поиска (несколько возможных путей в ответе).
+   * @param {object} hit
+   * @returns {{ employeeId: string; fullName: string; position: string }}
+   */
+  function personMetaFromHit(hit) {
+    var h = hit && typeof hit === "object" ? hit : {};
+    var pbasic = h.pbasic && typeof h.pbasic === "object" ? h.pbasic : {};
+    var jbasic = h.jbasic && typeof h.jbasic === "object" ? h.jbasic : {};
+    var jposList = h.jposition && h.jposition.position;
+    var jpos = Array.isArray(jposList) && jposList[0] && typeof jposList[0] === "object" ? jposList[0] : {};
+    var employeeId = "";
+    if (jbasic.employeeId != null && String(jbasic.employeeId).trim()) {
+      employeeId = String(jbasic.employeeId).trim();
+    } else if (h.employeeId != null && String(h.employeeId).trim()) {
+      employeeId = String(h.employeeId).trim();
+    }
+    var fullName = "";
+    if (pbasic.fullName != null && String(pbasic.fullName).trim()) {
+      fullName = String(pbasic.fullName).trim();
+    } else if (h.fullName != null && String(h.fullName).trim()) {
+      fullName = String(h.fullName).trim();
+    }
+    var position = "";
+    if (jpos.fullName != null && String(jpos.fullName).trim()) {
+      position = String(jpos.fullName).trim();
+    } else if (jpos.shortName != null && String(jpos.shortName).trim()) {
+      position = String(jpos.shortName).trim();
+    } else if (h.position != null && String(h.position).trim()) {
+      position = String(h.position).trim();
+    }
+    return { employeeId: employeeId, fullName: fullName, position: position };
   }
 
   /**
@@ -538,7 +575,7 @@ function createDevToolsTrace(opts) {
     var titleWrap = document.createElement("div");
     var title = document.createElement("div");
     title.style.cssText = "font-size:16px;font-weight:800;letter-spacing:-0.02em;color:#0f172a;";
-    title.textContent = "Пульс — multiSearch → mainInfo";
+    title.textContent = "Пульс — Search → mainInfo";
     var sub = document.createElement("div");
     sub.style.cssText = "font-size:11px;color:#475569;margin-top:4px;line-height:1.4;";
     sub.textContent =
@@ -546,7 +583,7 @@ function createDevToolsTrace(opts) {
       originInfo.origin +
       " · category=PERSONS · size=" +
       DEFAULT_PAGE_SIZE +
-      " (по HAR, не длина query)";
+      " · пагинация по totalPages";
     titleWrap.appendChild(title);
     titleWrap.appendChild(sub);
     hdr.appendChild(titleWrap);
@@ -555,25 +592,72 @@ function createDevToolsTrace(opts) {
     var statusEl = document.createElement("div");
     statusEl.style.cssText =
       "margin:0 0 12px 0;padding:10px 12px;border-radius:10px;background:#0f172a;color:#e2e8f0;" +
-      "font-size:12px;line-height:1.45;min-height:44px;box-sizing:border-box;";
-    statusEl.textContent = "Готов к запуску. Вставьте запросы поиска и нажмите «Search → mainInfo».";
+      "font-size:12px;line-height:1.45;min-height:88px;box-sizing:border-box;";
+    statusEl.innerHTML =
+      '<div style="font-weight:700;margin-bottom:6px;">Готов к запуску</div>' +
+      '<div style="opacity:.85;font-size:11px;">Отметьте Search и/или mainInfo, вставьте запросы и нажмите «Запуск».</div>';
     box.appendChild(statusEl);
 
     /**
-     * @param {string} text
-     * @param {"info"|"ok"|"warn"|"err"} [level]
+     * Структурированный статус текущего запроса.
+     * @param {{
+     *   level?: "info"|"ok"|"warn"|"err";
+     *   phase?: string;
+     *   title?: string;
+     *   lines?: string[];
+     *   text?: string;
+     * }} info
      */
-    function setStatus(text, level) {
+    function setStatus(info) {
       var colors = {
         info: { bg: "#0f172a", fg: "#e2e8f0" },
         ok: { bg: "#064e3b", fg: "#d1fae5" },
         warn: { bg: "#78350f", fg: "#ffedd5" },
         err: { bg: "#7f1d1d", fg: "#fee2e2" }
       };
-      var c = colors[level || "info"] || colors.info;
+      if (typeof info === "string") {
+        info = { text: info, level: arguments[1] || "info" };
+      }
+      var level = (info && info.level) || "info";
+      var c = colors[level] || colors.info;
       statusEl.style.background = c.bg;
       statusEl.style.color = c.fg;
-      statusEl.textContent = text;
+      if (info && info.text && !(info.lines && info.lines.length)) {
+        statusEl.textContent = info.text;
+        return;
+      }
+      var html = "";
+      if (info && info.phase) {
+        html +=
+          '<div style="font-size:10px;letter-spacing:.06em;text-transform:uppercase;opacity:.75;margin-bottom:4px;">' +
+          escapeHtml(info.phase) +
+          "</div>";
+      }
+      if (info && info.title) {
+        html += '<div style="font-weight:800;margin-bottom:6px;">' + escapeHtml(info.title) + "</div>";
+      }
+      if (info && info.lines && info.lines.length) {
+        html += '<div style="display:grid;gap:3px;font-size:11px;opacity:.95;">';
+        for (var li = 0; li < info.lines.length; li++) {
+          html += "<div>" + escapeHtml(info.lines[li]) + "</div>";
+        }
+        html += "</div>";
+      } else if (info && info.text) {
+        html += "<div>" + escapeHtml(info.text) + "</div>";
+      }
+      statusEl.innerHTML = html || "—";
+    }
+
+    /**
+     * @param {string} s
+     * @returns {string}
+     */
+    function escapeHtml(s) {
+      return String(s == null ? "" : s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
     }
 
     var logEl = document.createElement("div");
@@ -640,13 +724,13 @@ function createDevToolsTrace(opts) {
 
     var saveRow = document.createElement("div");
     saveRow.style.cssText =
-      "display:flex;flex-wrap:wrap;gap:10px 14px;margin:0 0 12px 0;padding:8px 10px;" +
+      "display:flex;flex-wrap:wrap;gap:10px 14px;margin:0 0 6px 0;padding:8px 10px;" +
       "background:#fff;border:1px solid #e2e8f0;border-radius:10px;";
     /** @type {Record<string, HTMLInputElement>} */
     var saveChk = {};
     var saveDefs = [
-      { key: "search", label: "Search JSON" },
-      { key: "mainInfo", label: "mainInfo JSON" },
+      { key: "search", label: "Search (запросы + JSON)" },
+      { key: "mainInfo", label: "mainInfo (запросы + JSON)" },
       { key: "full", label: "Full JSON" },
       { key: "csv", label: "Profile CSV" }
     ];
@@ -664,6 +748,33 @@ function createDevToolsTrace(opts) {
       saveChk[sd.key] = chk;
     }
     box.appendChild(saveRow);
+    var depHint = document.createElement("div");
+    depHint.style.cssText = "font-size:10px;color:#64748b;margin:0 0 12px 2px;line-height:1.35;";
+    depHint.textContent =
+      "mainInfo зависит от Search: при включении mainInfo автоматически включается Search. " +
+      "Снятый Search — запросы поиска не выполняются; снятый mainInfo — карточки не запрашиваются.";
+    box.appendChild(depHint);
+
+    /** Зависимость фаз: mainInfo → Search; снятие Search снимает mainInfo. */
+    var syncingPhaseChk = false;
+    saveChk.mainInfo.addEventListener("change", function () {
+      if (syncingPhaseChk) return;
+      if (saveChk.mainInfo.checked && !saveChk.search.checked) {
+        syncingPhaseChk = true;
+        saveChk.search.checked = true;
+        syncingPhaseChk = false;
+        appendLog("mainInfo включён → автоматически включён Search (зависимость)", "info");
+      }
+    });
+    saveChk.search.addEventListener("change", function () {
+      if (syncingPhaseChk) return;
+      if (!saveChk.search.checked && saveChk.mainInfo.checked) {
+        syncingPhaseChk = true;
+        saveChk.mainInfo.checked = false;
+        syncingPhaseChk = false;
+        appendLog("Search выключен → mainInfo снят (без Search карточки недоступны)", "warn");
+      }
+    });
 
     var labInput = document.createElement("div");
     labInput.style.cssText = "font-size:11px;font-weight:700;color:#64748b;letter-spacing:0.04em;text-transform:uppercase;margin:0 0 6px 0;";
@@ -705,7 +816,12 @@ function createDevToolsTrace(opts) {
         ta.value = text;
         var n = parseQueriesFromText(text).length;
         appendLog("Файл «" + f.name + "»: значений " + n, n ? "ok" : "warn");
-        setStatus("Загружен файл «" + f.name + "»: " + n + " запросов.", n ? "ok" : "warn");
+        setStatus({
+          level: n ? "ok" : "warn",
+          phase: "Файл",
+          title: "Загружен «" + f.name + "»",
+          lines: ["Запросов в поле: " + n]
+        });
       };
       reader.readAsText(f);
     });
@@ -717,7 +833,7 @@ function createDevToolsTrace(opts) {
     btnRow.style.cssText = "display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:0 0 10px 0;";
     var bRun = document.createElement("button");
     bRun.type = "button";
-    bRun.textContent = "Search → mainInfo";
+    bRun.textContent = "Запуск";
     bRun.style.cssText =
       "min-height:46px;padding:10px;border:none;border-radius:10px;cursor:pointer;font-weight:800;font-size:13px;color:#fff;" +
       "background:linear-gradient(180deg,#0d9488,#0f766e);box-shadow:0 2px 8px rgba(15,118,110,.35);";
@@ -866,6 +982,7 @@ function createDevToolsTrace(opts) {
      */
     function pickSearchHit(hit) {
       var h = hit || {};
+      var meta = personMetaFromHit(h);
       var pbasic = h.pbasic || {};
       var jbasic = h.jbasic || {};
       var jpos = (((h.jposition || {}).position || [])[0]) || {};
@@ -875,14 +992,14 @@ function createDevToolsTrace(opts) {
       var jmob = (h.jcontactsmobile || {}).value || "";
       return {
         personUuid: h.personUuid || "",
-        employeeId: jbasic.employeeId || "",
+        employeeId: meta.employeeId || jbasic.employeeId || "",
         status: jbasic.status || "",
-        fullName: pbasic.fullName || "",
+        fullName: meta.fullName || pbasic.fullName || "",
         lastName: pbasic.lastName || "",
         firstName: pbasic.firstName || "",
         midName: pbasic.midName || "",
         birthDay: pbasic.birthDay || "",
-        position: jpos.fullName || jpos.shortName || "",
+        position: meta.position || jpos.fullName || jpos.shortName || "",
         funcBlock: jpos.funcBlock || "",
         unitName: junit.fullName || junit.shortName || "",
         unitId: junit.unitId || "",
@@ -1042,10 +1159,16 @@ function createDevToolsTrace(opts) {
       /** @type {{ personUuid: string; fromQuery: string; hit: object }[]} */
       var uuidOrder = [];
       var uuidSeen = {};
+      var doSearch = !!save.search;
+      var doMainInfo = !!save.mainInfo;
 
       appendLog(
         "Старт OE: запросов " +
           queries.length +
+          ", фазы: Search=" +
+          (doSearch ? "да" : "нет") +
+          ", mainInfo=" +
+          (doMainInfo ? "да" : "нет") +
           ", size=" +
           DEFAULT_PAGE_SIZE +
           ", maxPages=" +
@@ -1053,150 +1176,262 @@ function createDevToolsTrace(opts) {
           ", ts=" +
           tsStamp
       );
-      setStatus("Фаза Search: 0/" + queries.length, "info");
+      setStatus({
+        level: "info",
+        phase: "Подготовка",
+        title: "Старт выгрузки",
+        lines: [
+          "Запросов поиска: " + queries.length,
+          "Фаза Search: " + (doSearch ? "включена" : "пропуск"),
+          "Фаза mainInfo: " + (doMainInfo ? "включена" : "пропуск"),
+          "size=" + DEFAULT_PAGE_SIZE + ", maxPages=" + cfg.maxPages
+        ]
+      });
 
-      for (var qi = 0; qi < queries.length; qi++) {
-        if (stopRequested) {
-          appendLog("Остановлено пользователем на фазе Search", "warn");
-          break;
-        }
-        var query = queries[qi];
-        setStatus(
-          "Search " + (qi + 1) + "/" + queries.length + ": «" + query + "» (страницы…)",
-          "info"
-        );
-        appendLog("[Search " + (qi + 1) + "/" + queries.length + "] «" + query + "» …");
-
-        /** @type {object[]} */
-        var pages = [];
-        /** @type {object[]} */
-        var allHits = [];
-        var page = 0;
-        var stopReason = "completed";
-        var searchHardFail = false;
-
-        while (page < cfg.maxPages) {
+      if (doSearch) {
+        for (var qi = 0; qi < queries.length; qi++) {
           if (stopRequested) {
-            stopReason = "stopped";
+            appendLog("Остановлено пользователем на фазе Search", "warn");
             break;
           }
-          setStatus(
-            "Search " +
-              (qi + 1) +
-              "/" +
-              queries.length +
-              ": «" +
-              query +
-              "» page=" +
-              page +
-              " size=" +
-              DEFAULT_PAGE_SIZE,
-            "info"
-          );
-          var url = buildMultiSearchUrl(query, page, DEFAULT_PAGE_SIZE);
-          var res = await fetchJsonWithRetry(url, "multiSearch «" + query + "» p" + page, cfg.retryBase);
-          if (!res.ok) {
-            searchHardFail = true;
+          var query = queries[qi];
+          appendLog("[Search " + (qi + 1) + "/" + queries.length + "] «" + query + "» …");
+
+          /** @type {object[]} */
+          var pages = [];
+          /** @type {object[]} */
+          var allHits = [];
+          var page = 0;
+          var knownTotalPages = null;
+          var stopReason = "completed";
+          var searchHardFail = false;
+
+          while (true) {
+            if (stopRequested) {
+              stopReason = "stopped";
+              break;
+            }
+            if (page >= cfg.maxPages) {
+              stopReason = "max_pages";
+              appendLog("    достигнут maxPages=" + cfg.maxPages, "warn");
+              break;
+            }
+            if (knownTotalPages != null && page >= knownTotalPages) {
+              stopReason = "last_page";
+              break;
+            }
+
+            var searchPayload = {
+              query: query,
+              page: page,
+              size: DEFAULT_PAGE_SIZE,
+              category: "PERSONS"
+            };
+            setStatus({
+              level: "info",
+              phase: "Search · multiSearch",
+              title:
+                "Поиск " +
+                (qi + 1) +
+                " из " +
+                queries.length +
+                (knownTotalPages != null
+                  ? " · страница " + (page + 1) + " из " + knownTotalPages
+                  : " · страница " + (page + 1) + " (totalPages…)"),
+              lines: [
+                "query = «" + query + "»",
+                "page = " + page + (knownTotalPages != null ? " (последняя = " + (knownTotalPages - 1) + ")" : ""),
+                "size = " + DEFAULT_PAGE_SIZE,
+                "category = PERSONS"
+              ]
+            });
+            devTrace.log("multiSearch payload " + JSON.stringify(searchPayload));
+
+            var url = buildMultiSearchUrl(query, page, DEFAULT_PAGE_SIZE);
+            var res = await fetchJsonWithRetry(
+              url,
+              "multiSearch «" + query + "» p" + page,
+              cfg.retryBase
+            );
+            if (!res.ok) {
+              searchHardFail = true;
+              pages.push({
+                page: page,
+                ok: false,
+                status: res.status,
+                error: res.error,
+                attempts: res.attempts,
+                payload: searchPayload
+              });
+              stopReason = "http_or_api_error";
+              break;
+            }
+            var persons = parsePersonsBlock(res.data);
+            if (page === 0) {
+              knownTotalPages = persons.totalPages;
+              if (knownTotalPages < 0) knownTotalPages = 0;
+              appendLog(
+                "    totalPages=" +
+                  knownTotalPages +
+                  " → страницы page=" +
+                  (knownTotalPages === 0 ? "(пусто)" : "0…" + (knownTotalPages - 1)),
+                "ok"
+              );
+              devTrace.log(
+                "multiSearch extracted totalPages=" +
+                  knownTotalPages +
+                  " totalElements=" +
+                  persons.totalElements
+              );
+            }
+
+            var pageUuids = [];
+            var pageMetas = [];
+            for (var hi = 0; hi < persons.content.length; hi++) {
+              allHits.push(persons.content[hi]);
+              var u = personUuidFromHit(persons.content[hi]);
+              if (u) pageUuids.push(u);
+              var metaHit = personMetaFromHit(persons.content[hi]);
+              pageMetas.push({
+                personUuid: u,
+                employeeId: metaHit.employeeId,
+                fullName: metaHit.fullName,
+                position: metaHit.position
+              });
+            }
             pages.push({
               page: page,
-              ok: false,
+              ok: true,
               status: res.status,
-              error: res.error,
-              attempts: res.attempts
+              totalElements: persons.totalElements,
+              totalPages: persons.totalPages,
+              last: persons.last,
+              contentCount: persons.content.length,
+              personUuids: pageUuids,
+              people: pageMetas,
+              payload: searchPayload,
+              data: res.data
             });
-            stopReason = "http_or_api_error";
-            break;
+            appendLog(
+              "    page " +
+                page +
+                ": hits=" +
+                persons.content.length +
+                ", totalElements=" +
+                persons.totalElements +
+                ", totalPages=" +
+                persons.totalPages +
+                ", last=" +
+                persons.last +
+                ", personUuid=[" +
+                pageUuids.join(", ") +
+                "]",
+              "ok"
+            );
+            for (var pm = 0; pm < pageMetas.length; pm++) {
+              var m = pageMetas[pm];
+              appendLog(
+                "      · personUuid=" +
+                  m.personUuid +
+                  " | Таб.номер=" +
+                  (m.employeeId || "—") +
+                  " | ФИО=" +
+                  (m.fullName || "—") +
+                  " | Должность=" +
+                  (m.position || "—")
+              );
+            }
+            devTrace.log(
+              "multiSearch extracted page=" +
+                page +
+                " personUuids=" +
+                JSON.stringify(pageUuids) +
+                " people=" +
+                JSON.stringify(pageMetas)
+            );
+
+            var pagesToFetch =
+              knownTotalPages != null ? knownTotalPages : persons.totalPages;
+            // Пагинация по totalPages: page = 0 … totalPages-1
+            if (pagesToFetch <= 0 || page + 1 >= pagesToFetch) {
+              stopReason = "last_page";
+              break;
+            }
+            // Fallback, если totalPages не пришёл, но last=true
+            if ((knownTotalPages == null || knownTotalPages === 0) && persons.last) {
+              stopReason = "last_page";
+              break;
+            }
+            page++;
+            if (page >= cfg.maxPages) {
+              stopReason = "max_pages";
+              appendLog("    достигнут maxPages=" + cfg.maxPages, "warn");
+              break;
+            }
+            if (cfg.pauseBetween > 0) await delay(cfg.pauseBetween);
           }
-          var persons = parsePersonsBlock(res.data);
-          pages.push({
-            page: page,
-            ok: true,
-            status: res.status,
-            totalElements: persons.totalElements,
-            totalPages: persons.totalPages,
-            last: persons.last,
-            contentCount: persons.content.length,
-            data: res.data
+
+          if (searchHardFail) {
+            consecutiveHardFails++;
+            appendLog(
+              "FAIL Search «" +
+                query +
+                "»: " +
+                (pages[pages.length - 1] && pages[pages.length - 1].error),
+              "err"
+            );
+            if (consecutiveHardFails >= 2) {
+              appendLog(
+                "Стоп: две подряд операции исчерпали " + MAX_RETRY + " попытки",
+                "err"
+              );
+              setStatus({
+                level: "err",
+                phase: "Search",
+                title: "Стоп: две серии ошибок подряд",
+                lines: ["Фаза Search прервана после двух hard-fail подряд."]
+              });
+              break;
+            }
+          } else {
+            consecutiveHardFails = 0;
+          }
+
+          var picked = [];
+          for (var pj = 0; pj < allHits.length; pj++) {
+            var hit = allHits[pj];
+            var uuid = personUuidFromHit(hit);
+            var compact = pickSearchHit(hit);
+            picked.push(compact);
+            if (uuid && !uuidSeen[uuid]) {
+              uuidSeen[uuid] = true;
+              uuidOrder.push({ personUuid: uuid, fromQuery: query, hit: compact });
+            }
+          }
+
+          searchItems.push({
+            query: query,
+            notFound: allHits.length === 0 && !searchHardFail,
+            stopReason: stopReason,
+            totalPages: knownTotalPages,
+            pages: pages,
+            hits: picked,
+            uniquePersonUuids: picked
+              .map(function (x) {
+                return x.personUuid;
+              })
+              .filter(Boolean)
+              .filter(function (id, idx, arr) {
+                return arr.indexOf(id) === idx;
+              })
           });
-          for (var hi = 0; hi < persons.content.length; hi++) {
-            allHits.push(persons.content[hi]);
-          }
-          appendLog(
-            "    page " +
-              page +
-              ": hits=" +
-              persons.content.length +
-              ", totalElements=" +
-              persons.totalElements +
-              ", totalPages=" +
-              persons.totalPages +
-              ", last=" +
-              persons.last,
-            "ok"
-          );
-          if (persons.last || page + 1 >= persons.totalPages) {
-            stopReason = "last_page";
-            break;
-          }
-          page++;
-          if (page >= cfg.maxPages) {
-            stopReason = "max_pages";
-            appendLog("    достигнут maxPages=" + cfg.maxPages, "warn");
-            break;
-          }
-          if (cfg.pauseBetween > 0) await delay(cfg.pauseBetween);
-        }
 
-        if (searchHardFail) {
-          consecutiveHardFails++;
-          appendLog(
-            "FAIL Search «" + query + "»: " + (pages[pages.length - 1] && pages[pages.length - 1].error),
-            "err"
-          );
-          if (consecutiveHardFails >= 2) {
-            appendLog("Стоп: две подряд операции исчерпали " + MAX_RETRY + " попытки", "err");
-            setStatus("Стоп: две серии ошибок подряд (Search).", "err");
-            break;
-          }
-        } else {
-          consecutiveHardFails = 0;
-        }
-
-        var picked = [];
-        for (var pj = 0; pj < allHits.length; pj++) {
-          var hit = allHits[pj];
-          var uuid = personUuidFromHit(hit);
-          var compact = pickSearchHit(hit);
-          picked.push(compact);
-          if (uuid && !uuidSeen[uuid]) {
-            uuidSeen[uuid] = true;
-            uuidOrder.push({ personUuid: uuid, fromQuery: query, hit: compact });
+          if (qi < queries.length - 1 && cfg.pauseBetween > 0 && !stopRequested) {
+            await delay(cfg.pauseBetween);
           }
         }
 
-        searchItems.push({
-          query: query,
-          notFound: allHits.length === 0 && !searchHardFail,
-          stopReason: stopReason,
-          pages: pages,
-          hits: picked,
-          uniquePersonUuids: picked
-            .map(function (x) {
-              return x.personUuid;
-            })
-            .filter(Boolean)
-            .filter(function (id, idx, arr) {
-              return arr.indexOf(id) === idx;
-            })
-        });
-
-        if (qi < queries.length - 1 && cfg.pauseBetween > 0 && !stopRequested) {
-          await delay(cfg.pauseBetween);
-        }
-      }
-
-      var fnameSearch = buildFileName("Search", tsStamp);
-      if (save.search) {
+        var fnameSearch = buildFileName("Search", tsStamp);
         downloadJson(fnameSearch, {
           exportedAt: new Date().toISOString(),
           scenario: "pulse_multisearch",
@@ -1207,110 +1442,175 @@ function createDevToolsTrace(opts) {
           items: searchItems
         });
         appendLog("Файл: " + fnameSearch, "ok");
+      } else {
+        appendLog("Фаза Search пропущена (галочка снята)", "warn");
       }
 
       if (stopRequested) {
-        setStatus("Остановлено. Search сохранён (если отмечен).", "warn");
+        setStatus({
+          level: "warn",
+          phase: "Стоп",
+          title: "Остановлено пользователем",
+          lines: [
+            "Search: " + (doSearch ? searchItems.length + " запросов обработано" : "не выполнялся")
+          ]
+        });
         return;
       }
 
       consecutiveHardFails = 0;
-
-      if (cfg.pauseAfterSearch > 0 && uuidOrder.length > 0) {
-        setStatus("Пауза после Search перед mainInfo…", "info");
-        await delay(cfg.pauseAfterSearch);
-      }
-
       /** @type {Record<string, object>} */
       var mainById = {};
-      appendLog("Фаза mainInfo: уникальных personUuid=" + uuidOrder.length);
-      for (var mi = 0; mi < uuidOrder.length; mi++) {
-        if (stopRequested) {
-          appendLog("Остановлено на фазе mainInfo", "warn");
-          break;
+      /** @type {object[]} */
+      var mainList = [];
+
+      if (doMainInfo) {
+        if (cfg.pauseAfterSearch > 0 && uuidOrder.length > 0) {
+          setStatus({
+            level: "info",
+            phase: "Пауза",
+            title: "После Search перед mainInfo",
+            lines: [
+              "Пауза " + cfg.pauseAfterSearch + " мс",
+              "Уникальных personUuid: " + uuidOrder.length
+            ]
+          });
+          await delay(cfg.pauseAfterSearch);
         }
-        var entry = uuidOrder[mi];
-        var uid = entry.personUuid;
-        setStatus(
-          "mainInfo " +
-            (mi + 1) +
-            "/" +
-            uuidOrder.length +
-            ": " +
-            uid +
-            " (из поиска «" +
-            entry.fromQuery +
-            "»)",
-          "info"
-        );
-        appendLog(
-          "[" +
-            (mi + 1) +
-            "/" +
-            uuidOrder.length +
-            "] mainInfo userId=" +
-            uid +
-            " ← «" +
-            entry.fromQuery +
-            "» …"
-        );
-        var mres = await fetchJsonWithRetry(
-          buildMainInfoUrl(uid),
-          "mainInfo " + uid,
-          cfg.retryBase
-        );
-        if (!mres.ok) {
-          consecutiveHardFails++;
-          mainById[uid] = {
-            personUuid: uid,
-            fromQuery: entry.fromQuery,
-            ok: false,
-            status: mres.status,
-            error: mres.error,
-            attempts: mres.attempts,
-            searchHit: entry.hit
-          };
-          appendLog("FAIL mainInfo " + uid + ": " + mres.error, "err");
-          if (consecutiveHardFails >= 2) {
-            appendLog("Стоп: две подряд операции исчерпали " + MAX_RETRY + " попытки", "err");
-            setStatus("Стоп: две серии ошибок подряд (mainInfo).", "err");
+
+        appendLog("Фаза mainInfo: уникальных personUuid=" + uuidOrder.length);
+        for (var mi = 0; mi < uuidOrder.length; mi++) {
+          if (stopRequested) {
+            appendLog("Остановлено на фазе mainInfo", "warn");
             break;
           }
-        } else {
-          consecutiveHardFails = 0;
-          var infoData = extractMainInfoData(mres.data);
-          mainById[uid] = {
-            personUuid: uid,
-            fromQuery: entry.fromQuery,
-            ok: true,
-            status: mres.status,
-            attempts: mres.attempts,
-            searchHit: entry.hit,
-            raw: mres.data,
-            mainInfo: infoData,
-            picked: pickMainInfo(infoData)
+          var entry = uuidOrder[mi];
+          var uid = entry.personUuid;
+          var sh = entry.hit || {};
+          var tabNum = sh.employeeId || "";
+          var fio = sh.fullName || "";
+          var dolzhnost = sh.position || "";
+          var mainPayload = {
+            widgets: "mainInfo_v1",
+            userId: uid
           };
-          appendLog("    → HTTP " + mres.status + " OK", "ok");
-        }
-        if (mi < uuidOrder.length - 1 && cfg.pauseBetween > 0 && !stopRequested) {
-          await delay(cfg.pauseBetween);
-        }
-      }
+          setStatus({
+            level: "info",
+            phase: "mainInfo · widgets/data",
+            title: "Карточка " + (mi + 1) + " из " + uuidOrder.length,
+            lines: [
+              "Запрос mainInfo " + (mi + 1) + "/" + uuidOrder.length,
+              "personUuid (userId) = " + uid,
+              "Таб.номер = " + (tabNum || "—"),
+              "ФИО = " + (fio || "—"),
+              "Должность = " + (dolzhnost || "—"),
+              "из поиска «" + entry.fromQuery + "»",
+              "payload: widgets=mainInfo_v1&userId=" + uid
+            ]
+          });
+          appendLog(
+            "[" +
+              (mi + 1) +
+              "/" +
+              uuidOrder.length +
+              "] mainInfo userId=" +
+              uid +
+              " | Таб.номер=" +
+              (tabNum || "—") +
+              " | ФИО=" +
+              (fio || "—") +
+              " | Должность=" +
+              (dolzhnost || "—") +
+              " ← «" +
+              entry.fromQuery +
+              "» …"
+          );
+          devTrace.log("mainInfo payload " + JSON.stringify(mainPayload));
+          devTrace.log(
+            "mainInfo target personUuid=" +
+              uid +
+              " employeeId=" +
+              tabNum +
+              " fullName=" +
+              fio +
+              " position=" +
+              dolzhnost
+          );
 
-      var mainList = uuidOrder.map(function (e) {
-        return (
-          mainById[e.personUuid] || {
-            personUuid: e.personUuid,
-            fromQuery: e.fromQuery,
-            ok: false,
-            error: "не запрошено",
-            searchHit: e.hit
+          var mres = await fetchJsonWithRetry(
+            buildMainInfoUrl(uid),
+            "mainInfo " + uid,
+            cfg.retryBase
+          );
+          if (!mres.ok) {
+            consecutiveHardFails++;
+            mainById[uid] = {
+              personUuid: uid,
+              fromQuery: entry.fromQuery,
+              ok: false,
+              status: mres.status,
+              error: mres.error,
+              attempts: mres.attempts,
+              payload: mainPayload,
+              searchHit: entry.hit
+            };
+            appendLog("FAIL mainInfo " + uid + ": " + mres.error, "err");
+            if (consecutiveHardFails >= 2) {
+              appendLog(
+                "Стоп: две подряд операции исчерпали " + MAX_RETRY + " попытки",
+                "err"
+              );
+              setStatus({
+                level: "err",
+                phase: "mainInfo",
+                title: "Стоп: две серии ошибок подряд",
+                lines: ["Фаза mainInfo прервана после двух hard-fail подряд."]
+              });
+              break;
+            }
+          } else {
+            consecutiveHardFails = 0;
+            var infoData = extractMainInfoData(mres.data);
+            mainById[uid] = {
+              personUuid: uid,
+              fromQuery: entry.fromQuery,
+              ok: true,
+              status: mres.status,
+              attempts: mres.attempts,
+              payload: mainPayload,
+              searchHit: entry.hit,
+              raw: mres.data,
+              mainInfo: infoData,
+              picked: pickMainInfo(infoData)
+            };
+            appendLog(
+              "    → HTTP " +
+                mres.status +
+                " OK | Таб.номер=" +
+                (tabNum || "—") +
+                " | ФИО=" +
+                (fio || "—"),
+              "ok"
+            );
           }
-        );
-      });
+          if (mi < uuidOrder.length - 1 && cfg.pauseBetween > 0 && !stopRequested) {
+            await delay(cfg.pauseBetween);
+          }
+        }
 
-      var fnameMain = buildFileName("mainInfo", tsStamp);
-      if (save.mainInfo) {
+        mainList = uuidOrder.map(function (e) {
+          return (
+            mainById[e.personUuid] || {
+              personUuid: e.personUuid,
+              fromQuery: e.fromQuery,
+              ok: false,
+              error: "не запрошено",
+              searchHit: e.hit
+            }
+          );
+        });
+
+        var fnameMain = buildFileName("mainInfo", tsStamp);
         downloadJson(fnameMain, {
           exportedAt: new Date().toISOString(),
           scenario: "pulse_mainInfo_v1",
@@ -1319,6 +1619,17 @@ function createDevToolsTrace(opts) {
           results: mainList
         });
         appendLog("Файл: " + fnameMain, "ok");
+      } else {
+        appendLog("Фаза mainInfo пропущена (галочка снята)", "warn");
+        mainList = uuidOrder.map(function (e) {
+          return {
+            personUuid: e.personUuid,
+            fromQuery: e.fromQuery,
+            ok: false,
+            error: "mainInfo не запрашивался",
+            searchHit: e.hit
+          };
+        });
       }
 
       if (save.full) {
@@ -1328,6 +1639,7 @@ function createDevToolsTrace(opts) {
           scenario: "pulse_search_mainInfo_full",
           origin: getPulseOrigin().origin,
           timestamp: tsStamp,
+          phases: { search: doSearch, mainInfo: doMainInfo },
           searches: searchItems,
           profiles: mainList
         });
@@ -1337,22 +1649,34 @@ function createDevToolsTrace(opts) {
       if (save.csv) {
         /** @type {object[]} */
         var csvRows = [];
-        for (var ci = 0; ci < mainList.length; ci++) {
-          var row = mainList[ci];
-          var sh = row.searchHit || {};
+        var csvSource = mainList.length
+          ? mainList
+          : uuidOrder.map(function (e) {
+              return {
+                personUuid: e.personUuid,
+                fromQuery: e.fromQuery,
+                ok: false,
+                error: doMainInfo ? "" : "mainInfo не запрашивался",
+                searchHit: e.hit,
+                picked: {}
+              };
+            });
+        for (var ci = 0; ci < csvSource.length; ci++) {
+          var row = csvSource[ci];
+          var shCsv = row.searchHit || {};
           var pk = row.picked || {};
           csvRows.push({
             searchedQuery: row.fromQuery || "",
             personUuid: row.personUuid || "",
-            employeeId_search: sh.employeeId || "",
-            fullName_search: sh.fullName || "",
-            status_search: sh.status || "",
-            position_search: sh.position || "",
-            unitName_search: sh.unitName || "",
-            emailOffice_search: sh.emailOffice || "",
-            emailExternal_search: sh.emailExternal || "",
-            preferredMail_search: sh.preferredMail || "",
-            mobile_search: sh.mobile || "",
+            employeeId_search: shCsv.employeeId || "",
+            fullName_search: shCsv.fullName || "",
+            status_search: shCsv.status || "",
+            position_search: shCsv.position || "",
+            unitName_search: shCsv.unitName || "",
+            emailOffice_search: shCsv.emailOffice || "",
+            emailExternal_search: shCsv.emailExternal || "",
+            preferredMail_search: shCsv.preferredMail || "",
+            mobile_search: shCsv.mobile || "",
             tabNumber: pk.tabNumber || "",
             lastName: pk.lastName || "",
             firstName: pk.firstName || "",
@@ -1397,35 +1721,40 @@ function createDevToolsTrace(opts) {
       var okMain = mainList.filter(function (x) {
         return x.ok;
       }).length;
-      setStatus(
-        "Готово. Search: " +
-          searchItems.length +
-          ", UUID: " +
-          uuidOrder.length +
-          ", mainInfo OK: " +
-          okMain +
-          "/" +
-          mainList.length +
-          ", ts=" +
-          tsStamp,
-        "ok"
-      );
+      setStatus({
+        level: "ok",
+        phase: "Готово",
+        title: "Выгрузка завершена · " + tsStamp,
+        lines: [
+          "Search: " +
+            (doSearch ? searchItems.length + " запросов" : "пропуск") +
+            ", UUID: " +
+            uuidOrder.length,
+          "mainInfo: " +
+            (doMainInfo ? okMain + "/" + mainList.length + " OK" : "пропуск")
+        ]
+      });
       appendLog(
         "Итог: searchQueries=" +
           searchItems.length +
           ", uniqueUuid=" +
           uuidOrder.length +
           ", mainInfoOk=" +
-          okMain,
+          okMain +
+          ", phases search=" +
+          doSearch +
+          " mainInfo=" +
+          doMainInfo,
         "ok"
       );
       console.log("[Пульс OE] Готово ts=" + tsStamp + " uuid=" + uuidOrder.length);
     }
 
+
     bStop.addEventListener("click", function () {
       stopRequested = true;
       appendLog("Запрошена остановка", "warn");
-      setStatus("Остановка…", "warn");
+      setStatus({ level: "warn", phase: "Стоп", title: "Остановка…", lines: ["Ожидание завершения текущего запроса"] });
     });
 
     bRun.addEventListener("click", async function () {
@@ -1433,10 +1762,35 @@ function createDevToolsTrace(opts) {
         appendLog("Уже выполняется", "warn");
         return;
       }
+      var doSearch = saveChk.search.checked;
+      var doMainInfo = saveChk.mainInfo.checked;
+      if (doMainInfo && !doSearch) {
+        saveChk.search.checked = true;
+        doSearch = true;
+        appendLog("mainInfo без Search невозможен → Search включён", "warn");
+      }
+      if (!doSearch && !doMainInfo) {
+        appendLog("Не выбрана ни одна фаза запросов (Search / mainInfo)", "err");
+        setStatus({
+          level: "err",
+          phase: "Ошибка",
+          title: "Нет фаз для выполнения",
+          lines: [
+            "Отметьте Search и/или mainInfo.",
+            "Full JSON / CSV — только сохранение, без собственных запросов."
+          ]
+        });
+        return;
+      }
       var queries = parseQueriesFromText(ta.value);
       if (!queries.length) {
         appendLog("Нет запросов поиска в поле", "err");
-        setStatus("Нет запросов поиска.", "err");
+        setStatus({
+          level: "err",
+          phase: "Ошибка",
+          title: "Нет запросов поиска",
+          lines: ["Вставьте строки в поле или загрузите .txt"]
+        });
         return;
       }
       stopRequested = false;
@@ -1451,15 +1805,20 @@ function createDevToolsTrace(opts) {
             maxPages: Math.max(1, readMs(fMaxPages.inp, DEFAULT_MAX_PAGES) || DEFAULT_MAX_PAGES)
           },
           {
-            search: saveChk.search.checked,
-            mainInfo: saveChk.mainInfo.checked,
+            search: doSearch,
+            mainInfo: doMainInfo,
             full: saveChk.full.checked,
             csv: saveChk.csv.checked
           }
         );
       } catch (e) {
         appendLog(String(e && e.message ? e.message : e), "err");
-        setStatus("Ошибка: " + String(e && e.message ? e.message : e), "err");
+        setStatus({
+          level: "err",
+          phase: "Ошибка",
+          title: "Сбой выполнения",
+          lines: [String(e && e.message ? e.message : e)]
+        });
       } finally {
         setBusy(false);
       }
