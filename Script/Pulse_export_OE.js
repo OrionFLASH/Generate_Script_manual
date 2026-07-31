@@ -380,12 +380,9 @@ function createDevToolsTrace(opts) {
       for (var i = 0; i < keys.length; i++) {
         var k = keys[i];
         var val = /** @type {Record<string, unknown>} */ (node)[k];
-        var lk = k.toLowerCase();
+        var lk = String(k).toLowerCase();
         if (TRACE_MASK_KEYS[lk] && (typeof val === "string" || typeof val === "number")) {
           out[k] = maskSensitiveValue(val);
-        } else if (TRACE_MASK_KEYS[lk] && val && typeof val === "object" && !Array.isArray(val)) {
-          // contacts.phones.personal = { phone, priority } — маскируем вложенные строки
-          out[k] = maskSensitiveTree(val);
         } else {
           out[k] = maskSensitiveTree(val);
         }
@@ -408,45 +405,76 @@ function createDevToolsTrace(opts) {
     if (t.charAt(0) === "{" || t.charAt(0) === "[") {
       try {
         var parsed = JSON.parse(s);
-        return JSON.stringify(maskSensitiveTree(parsed));
+        return JSON.stringify(maskSensitiveDeep(parsed));
       } catch (_e) {
-        /* не JSON — дальше текстовые замены */
+        /* не JSON — текстовые замены ниже */
       }
     }
-    // Маркеры из журнала: Таб.номер=…, employeeId=…, personUuid=… и т.п.
+    return maskSensitiveInPlainText(s);
+  }
+
+  /**
+   * Рекурсивный обход с разбором вложенных JSON-строк (responseBody и т.п.).
+   * @param {unknown} node
+   * @returns {unknown}
+   */
+  function maskSensitiveDeep(node) {
+    if (node == null) return node;
+    if (typeof node === "string") {
+      var trimmed = node.replace(/^\s+/, "");
+      if (trimmed.charAt(0) === "{" || trimmed.charAt(0) === "[") {
+        try {
+          return JSON.stringify(maskSensitiveTree(JSON.parse(node)));
+        } catch (_e) {
+          return maskSensitiveInPlainText(node);
+        }
+      }
+      return maskSensitiveInPlainText(node);
+    }
+    if (typeof node === "object") {
+      return maskSensitiveTree(node);
+    }
+    return node;
+  }
+
+  /**
+   * Текстовое маскирование лейблов и "key": "value" паттернов.
+   * @param {string} s
+   * @returns {string}
+   */
+  function maskSensitiveInPlainText(s) {
+    s = String(s);
     s = s.replace(
       /(Таб\.номер|employeeId|personUuid|userId|ФИО|Должность|fullName|position)\s*=\s*([^|]+?)(?=\s*\||$)/gi,
       function (_m, label, val) {
         return label + "=" + maskSensitiveValue(String(val).replace(/^\s+|\s+$/g, ""));
       }
     );
-    // UUID в квадратных скобках personUuid=[...]
     s = s.replace(/personUuid=\[([^\]]*)\]/gi, function (_m, inner) {
       var parts = String(inner)
         .split(",")
         .map(function (p) {
-          return maskSensitiveValue(p.replace(/^\s+|\s+$/g, ""));
+          var t = p.replace(/^\s+|\s+$/g, "");
+          return t ? maskSensitiveValue(t) : t;
         });
       return "personUuid=[" + parts.join(", ") + "]";
     });
-    // query-параметры URL
     s = s.replace(/([?&](?:userId|query|employeeId)=)([^&\s"]+)/gi, function (_m, p, v) {
       try {
-        return p + maskSensitiveValue(decodeURIComponent(v));
+        return p + encodeURIComponent(maskSensitiveValue(decodeURIComponent(v))).replace(/%2A/g, "*");
       } catch (_e2) {
         return p + maskSensitiveValue(v);
       }
     });
+    // Fallback: "key": "value" для чувствительных ключей в сыром/обрезанном JSON
+    s = s.replace(
+      /"(employeeId|tabNumber|positionId|preferred_phone|preferred_mail|personUuid|userId|fullName|firstName|lastName|midName|secondName|birthDay|sigma|alpha|mail|phone|personal|work|value)"\s*:\s*"([^"]*)"/gi,
+      function (_m, key, val) {
+        return '"' + key + '": "' + maskSensitiveValue(val) + '"';
+      }
+    );
     return s;
   }
-
-  var devTrace = createDevToolsTrace({
-    scriptId: PULSE_CFG.SCRIPT_ID,
-    maxBodyLen: PULSE_CFG.TRACE_MAX_BODY_LEN,
-    maxLines: PULSE_CFG.TRACE_MAX_LINES,
-    sanitizeForTrace: sanitizeForTrace
-  });
-  var httpFetch = devTrace.wrapFetch(__nativeFetch);
 
   var runInProgress = false;
   var stopRequested = false;
