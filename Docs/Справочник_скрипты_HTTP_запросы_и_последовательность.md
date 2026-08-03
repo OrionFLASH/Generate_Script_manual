@@ -232,7 +232,7 @@
 |-----|--------|------|----------------|
 | 1..N | **POST** | `/bo/rmkib.gamification/proxy/v1/news` | Без тегов: `{ "newsStatus", "businessBlock", "pageNum" }`. С тегами: `{ "newsStatus", "newsTagList": [ { "tagType", "tagCode" }, … ], "pageNum" }` |
 
-**Параметры** — чекбоксы на панели: **`NEWS_STATUS_OPTIONS`** (`published` / `planned` / `draft`), **`NEWS_BUSINESS_BLOCK_OPTIONS`** (`KMKKSB`, `CSM`, `AKMKKSB`, `MNS`, `KMFACTORING`), опционально **`NEWS_TAG_OPTIONS`** + custom TEXT. По умолчанию отмечены `published` и `KMKKSB`; теги выключены.
+**Параметры** — блок **`NEWS_CFG`** вверху скрипта + чекбоксы на панели: **`STATUS_OPTIONS`** (`published` / `planned` / `draft`), **`BUSINESS_BLOCK_OPTIONS`** (`KMKKSB`, `CSM`, `AKMKKSB`, `MNS`, `KMFACTORING`), опционально **`TAG_OPTIONS`** + custom TEXT. По умолчанию отмечены `published` и `KMKKSB`; теги выключены. Паузы: `PAYLOAD_GAP_MS` / `PAGE_GAP_MS`.
 
 **Последовательность:**
 

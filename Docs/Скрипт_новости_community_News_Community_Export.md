@@ -22,12 +22,17 @@
 }
 ```
 
-Справочники на панели (константы в скрипте):
+Списки допустимых значений и паузы задаются в блоке **`NEWS_CFG`** вверху скрипта (удобно править):
 
-| Поле | Варианты | По умолчанию |
-|------|----------|--------------|
-| `newsStatus` | `published` (Опубликована), `planned` (Запланирована), `draft` (Черновик) | отмечен `published` |
-| `businessBlock` | `KMKKSB`, `CSM`, `AKMKKSB`, `MNS`, `KMFACTORING` | отмечен `KMKKSB` |
+| Ключ `NEWS_CFG` | Назначение |
+|-----------------|------------|
+| `STATUS_OPTIONS` | варианты `newsStatus` (по умолчанию отмечен `published`) |
+| `BUSINESS_BLOCK_OPTIONS` | варианты `businessBlock` (по умолчанию `KMKKSB`) |
+| `TAG_OPTIONS` | теги `NEWS_TYPE` (по умолчанию все выкл.) |
+| `CUSTOM_TAG_TYPE` | тип своих тегов (`TEXT`) |
+| `PAYLOAD_GAP_MS` / `PAGE_GAP_MS` | паузы 500 / 100 мс |
+| `CSV_DATA_KEYS` | колонки CSV после параметров запроса |
+| `ORIGINS` / `NEWS_PATH` | стенды и путь API |
 
 ### 2. С фильтром по тегам
 
@@ -108,3 +113,4 @@
 | 1.0 | Первая версия: POST news, пагинация, JSON + CSV leaders/authors |
 | 1.1 | Множественный выбор newsStatus и newsTagList через чекбоксы |
 | **2.0** | UI v2; обход `newsStatus × businessBlock`; пагинация по `page.total`; паузы 500/100; статистика; CSV по новостям + параметры запроса; опциональный фильтр тегов + custom TEXT |
+| **2.1** | Все параметры вынесены в блок **`NEWS_CFG`** вверху скрипта (паузы, статусы, блоки, теги, CSV, origins) |

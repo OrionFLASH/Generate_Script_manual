@@ -9,6 +9,142 @@
   "use strict";
 
 
+
+  // =============================================================================
+  // НАСТРОЙКИ — правьте значения здесь при необходимости
+  // =============================================================================
+  var NEWS_CFG = {
+    /** id DOM-панели */
+    PANEL_ID: "newsCommunityExportRoot",
+    /** scriptId для DevToolsTrace / имени .log */
+    SCRIPT_ID: "News_Community_Export",
+
+    /** Путь API (относительно origin) */
+    NEWS_PATH: "/bo/rmkib.gamification/proxy/v1/news",
+
+    /** Referer без тегов (относительно origin) */
+    REFERER_ADMIN_COMMUNITY: "/salesheroes/admin/community",
+    /** Referer с тегами: /community?newsTagList=… */
+    REFERER_COMMUNITY_PATH: "/community",
+
+    /** Стенды → контуры → origin */
+    ORIGINS: {
+      PROM: {
+        ALPHA: "https://efs-our-business-prom.omega.sbrf.ru",
+        SIGMA: "https://salesheroes.sberbank.ru"
+      },
+      PSI: {
+        ALPHA: "https://iam-enigma-psi.omega.sbrf.ru",
+        SIGMA: "https://salesheroes-psi.sigma.sbrf.ru"
+      },
+      "IFT-SB": {
+        ALPHA: "https://iam-enigma-psi.omega.sbrf.ru",
+        SIGMA: "https://salesheroes-psi.sigma.sbrf.ru"
+      },
+      "IFT-GF": {
+        ALPHA: "https://iam-enigma-psi.omega.sbrf.ru",
+        SIGMA: "https://salesheroes-psi.sigma.sbrf.ru"
+      }
+    },
+    STAND_KEYS: ["PROM", "PSI", "IFT-SB", "IFT-GF"],
+    CONTOUR_KEYS: ["ALPHA", "SIGMA"],
+    /** Fallback, если origin вкладки не совпал со справочником */
+    FALLBACK_STAND: "PROM",
+    FALLBACK_CONTOUR: "SIGMA",
+
+    /** Пауза между разными комбинациями payload (мс) */
+    PAYLOAD_GAP_MS: 500,
+    /** Пауза между страницами внутри одной комбинации (мс) */
+    PAGE_GAP_MS: 100,
+    /** Верхний предел пауз на панели (мс) */
+    GAP_MAX_MS: 60000,
+
+    /**
+     * Допустимые newsStatus — чекбоксы на панели.
+     * value → в payload; label → подпись; defaultChecked → отмечен при открытии.
+     */
+    STATUS_OPTIONS: [
+      { value: "published", label: "published (Опубликована)", defaultChecked: true },
+      { value: "planned", label: "planned (Запланирована)", defaultChecked: false },
+      { value: "draft", label: "draft (Черновик)", defaultChecked: false }
+    ],
+
+    /**
+     * Допустимые businessBlock — чекбоксы на панели.
+     */
+    BUSINESS_BLOCK_OPTIONS: [
+      { value: "KMKKSB", label: "KMKKSB", defaultChecked: true },
+      { value: "CSM", label: "CSM", defaultChecked: false },
+      { value: "AKMKKSB", label: "AKMKKSB", defaultChecked: false },
+      { value: "MNS", label: "MNS", defaultChecked: false },
+      { value: "KMFACTORING", label: "KMFACTORING", defaultChecked: false }
+    ],
+
+    /**
+     * Теги NEWS_TYPE для опционального фильтра (по умолчанию все выключены).
+     * tagType / tagCode → в newsTagList; label → подпись.
+     */
+    TAG_OPTIONS: [
+      {
+        tagType: "NEWS_TYPE",
+        tagCode: "bestPractice",
+        label: "bestPractice (Лучшие практики)",
+        defaultChecked: false
+      },
+      {
+        tagType: "NEWS_TYPE",
+        tagCode: "achievement",
+        label: "achievement (Достижения)",
+        defaultChecked: false
+      },
+      {
+        tagType: "NEWS_TYPE",
+        tagCode: "publication",
+        label: "publication (Новости проекта)",
+        defaultChecked: false
+      }
+    ],
+
+    /** tagType для пользовательских тегов из textarea */
+    CUSTOM_TAG_TYPE: "TEXT",
+    /** Подсказка в textarea своих тегов */
+    CUSTOM_TAGS_PLACEHOLDER: "M&A\nГарантии\nВалютное хеджирование",
+
+    /** Placeholder поля префикса имени файла */
+    FILENAME_PREFIX_PLACEHOLDER: "авто: news_community_{стенд}_{контур}_",
+    /** Авто-префикс: news_community_{stand}_{contour}_ */
+    FILENAME_PREFIX_AUTO: "news_community_",
+
+    /**
+     * Колонки новости в CSV после параметров запроса
+     * (newsStatus, businessBlock, pageNum, total).
+     * newsItemStatus → поле newsStatus объекта новости.
+     */
+    CSV_DATA_KEYS: [
+      "newsId",
+      "newsType",
+      "summary",
+      "newsText",
+      "newsItemStatus",
+      "tbCode",
+      "gosbCode",
+      "contests",
+      "rewards",
+      "createDate",
+      "updateDate",
+      "plannedDate",
+      "date",
+      "businessBlocks"
+    ],
+
+    /** Лимит строк журнала на панели */
+    LOG_MAX_LINES: 1200,
+
+    /** DevToolsTrace */
+    TRACE_MAX_BODY_LEN: 16384,
+    TRACE_MAX_LINES: 8000
+  };
+
 /**
  * DevToolsTrace — трассировка UI, HTTP и журнала для DevTools-скриптов (один файл → вставка в консоль).
  * Использование: createDevToolsTrace({ scriptId: "MyScript" }) → mountToggleRow, attachPanel, wrapFetch, log.
@@ -272,115 +408,28 @@ function createDevToolsTrace(opts) {
 }
 
   var __nativeFetch = fetch.bind(window);
-  var devTrace = createDevToolsTrace({ scriptId: "News_Community_Export" });
+  var devTrace = createDevToolsTrace({
+    scriptId: NEWS_CFG.SCRIPT_ID,
+    maxBodyLen: NEWS_CFG.TRACE_MAX_BODY_LEN,
+    maxLines: NEWS_CFG.TRACE_MAX_LINES
+  });
   var httpFetch = devTrace.wrapFetch(__nativeFetch);
 
   // ---------------------------------------------------------------------------
-  // Конфигурация окружений и справочники payload
+  // Алиасы из NEWS_CFG (удобные короткие имена для кода ниже)
   // ---------------------------------------------------------------------------
-  const NEWS_ORIGINS = {
-    PROM: {
-      ALPHA: "https://efs-our-business-prom.omega.sbrf.ru",
-      SIGMA: "https://salesheroes.sberbank.ru"
-    },
-    PSI: {
-      ALPHA: "https://iam-enigma-psi.omega.sbrf.ru",
-      SIGMA: "https://salesheroes-psi.sigma.sbrf.ru"
-    },
-    "IFT-SB": {
-      ALPHA: "https://iam-enigma-psi.omega.sbrf.ru",
-      SIGMA: "https://salesheroes-psi.sigma.sbrf.ru"
-    },
-    "IFT-GF": {
-      ALPHA: "https://iam-enigma-psi.omega.sbrf.ru",
-      SIGMA: "https://salesheroes-psi.sigma.sbrf.ru"
-    }
-  };
-  const NEWS_STAND_KEYS = ["PROM", "PSI", "IFT-SB", "IFT-GF"];
-  const NEWS_CONTOUR_KEYS = ["ALPHA", "SIGMA"];
-  const NEWS_PATH = "/bo/rmkib.gamification/proxy/v1/news";
-  const NEWS_AUTO_ENV = detectNewsEnvFromLocation();
-  const DEFAULT_NEWS_STAND = (NEWS_AUTO_ENV && NEWS_AUTO_ENV.stand) || "PROM";
-  const DEFAULT_NEWS_CONTOUR = (NEWS_AUTO_ENV && NEWS_AUTO_ENV.contour) || "SIGMA";
-
-  /** Пауза между разными комбинациями payload (мс). */
-  const DEFAULT_PAYLOAD_GAP_MS = 500;
-  /** Пауза между страницами внутри одной комбинации (мс). */
-  const DEFAULT_PAGE_GAP_MS = 100;
-
-  /**
-   * Допустимые newsStatus — чекбоксы на панели.
-   * @type {{ value: string, label: string, defaultChecked?: boolean }[]}
-   */
-  const NEWS_STATUS_OPTIONS = [
-    { value: "published", label: "published (Опубликована)", defaultChecked: true },
-    { value: "planned", label: "planned (Запланирована)", defaultChecked: false },
-    { value: "draft", label: "draft (Черновик)", defaultChecked: false }
-  ];
-
-  /**
-   * Допустимые businessBlock — чекбоксы на панели.
-   * @type {{ value: string, label: string, defaultChecked?: boolean }[]}
-   */
-  const NEWS_BUSINESS_BLOCK_OPTIONS = [
-    { value: "KMKKSB", label: "KMKKSB", defaultChecked: true },
-    { value: "CSM", label: "CSM", defaultChecked: false },
-    { value: "AKMKKSB", label: "AKMKKSB", defaultChecked: false },
-    { value: "MNS", label: "MNS", defaultChecked: false },
-    { value: "KMFACTORING", label: "KMFACTORING", defaultChecked: false }
-  ];
-
-  /**
-   * Теги NEWS_TYPE для опционального фильтра (по умолчанию все выключены).
-   * @type {{ tagType: string, tagCode: string, label: string, defaultChecked?: boolean }[]}
-   */
-  const NEWS_TAG_OPTIONS = [
-    {
-      tagType: "NEWS_TYPE",
-      tagCode: "bestPractice",
-      label: "bestPractice (Лучшие практики)",
-      defaultChecked: false
-    },
-    {
-      tagType: "NEWS_TYPE",
-      tagCode: "achievement",
-      label: "achievement (Достижения)",
-      defaultChecked: false
-    },
-    {
-      tagType: "NEWS_TYPE",
-      tagCode: "publication",
-      label: "publication (Новости проекта)",
-      defaultChecked: false
-    }
-  ];
-
-  const DEFAULT_EXPORT_FILENAME_PREFIX_PLACEHOLDER = "авто: news_community_{стенд}_{контур}_";
-
-  /**
-   * Колонки новости в CSV после параметров запроса
-   * (newsStatus, businessBlock, pageNum, total).
-   * @type {string[]}
-   */
-  const NEWS_CSV_DATA_KEYS = [
-    "newsId",
-    "newsType",
-    "summary",
-    "newsText",
-    "newsItemStatus",
-    "tbCode",
-    "gosbCode",
-    "contests",
-    "rewards",
-    "createDate",
-    "updateDate",
-    "plannedDate",
-    "date",
-    "businessBlocks"
-  ];
-
-  let NEWS_UI_STAND = DEFAULT_NEWS_STAND;
-  let NEWS_UI_CONTOUR = DEFAULT_NEWS_CONTOUR;
+  var NEWS_ORIGINS = NEWS_CFG.ORIGINS;
+  var NEWS_STAND_KEYS = NEWS_CFG.STAND_KEYS;
+  var NEWS_CONTOUR_KEYS = NEWS_CFG.CONTOUR_KEYS;
+  var NEWS_PATH = NEWS_CFG.NEWS_PATH;
+  var DEFAULT_PAYLOAD_GAP_MS = NEWS_CFG.PAYLOAD_GAP_MS;
+  var DEFAULT_PAGE_GAP_MS = NEWS_CFG.PAGE_GAP_MS;
+  var GAP_MAX_MS = NEWS_CFG.GAP_MAX_MS;
+  var NEWS_STATUS_OPTIONS = NEWS_CFG.STATUS_OPTIONS;
+  var NEWS_BUSINESS_BLOCK_OPTIONS = NEWS_CFG.BUSINESS_BLOCK_OPTIONS;
+  var NEWS_TAG_OPTIONS = NEWS_CFG.TAG_OPTIONS;
+  var DEFAULT_EXPORT_FILENAME_PREFIX_PLACEHOLDER = NEWS_CFG.FILENAME_PREFIX_PLACEHOLDER;
+  var NEWS_CSV_DATA_KEYS = NEWS_CFG.CSV_DATA_KEYS;
 
   function detectNewsEnvFromLocation() {
     var origin = "";
@@ -401,6 +450,14 @@ function createDevToolsTrace(opts) {
     }
     return null;
   }
+
+  var NEWS_AUTO_ENV = detectNewsEnvFromLocation();
+  var DEFAULT_NEWS_STAND = (NEWS_AUTO_ENV && NEWS_AUTO_ENV.stand) || NEWS_CFG.FALLBACK_STAND;
+  var DEFAULT_NEWS_CONTOUR = (NEWS_AUTO_ENV && NEWS_AUTO_ENV.contour) || NEWS_CFG.FALLBACK_CONTOUR;
+
+  let NEWS_UI_STAND = DEFAULT_NEWS_STAND;
+  let NEWS_UI_CONTOUR = DEFAULT_NEWS_CONTOUR;
+
 
   function getNewsEnv() {
     var stand =
@@ -535,9 +592,9 @@ function createDevToolsTrace(opts) {
         encodeURIComponent(String(first.tagCode)) +
         "%7C" +
         encodeURIComponent(String(first.tagType));
-      return base + "/community?" + q;
+      return base + NEWS_CFG.REFERER_COMMUNITY_PATH + "?" + q;
     }
-    return base + "/salesheroes/admin/community";
+    return base + NEWS_CFG.REFERER_ADMIN_COMMUNITY;
   }
 
   /**
@@ -760,14 +817,14 @@ function createDevToolsTrace(opts) {
   }
 
   function startNewsPanel() {
-    var prevRoot = document.getElementById("newsCommunityExportRoot");
+    var prevRoot = document.getElementById(NEWS_CFG.PANEL_ID);
     if (prevRoot) prevRoot.remove();
 
     /** @type {object|null} */
     var lastExportBundle = null;
 
     const root = document.createElement("div");
-    root.id = "newsCommunityExportRoot";
+    root.id = NEWS_CFG.PANEL_ID;
     root.style.cssText =
       "position:fixed;left:10px;top:10px;width:min(980px,calc(100vw - 16px));max-height:94vh;height:94vh;" +
       "display:flex;flex-direction:column;overflow:hidden;z-index:999999;" +
@@ -1070,7 +1127,7 @@ function createDevToolsTrace(opts) {
     payloadBox.appendChild(customTagLab);
     const inpCustomTags = document.createElement("textarea");
     inpCustomTags.rows = 3;
-    inpCustomTags.placeholder = "M&A\nГарантии\nВалютное хеджирование";
+    inpCustomTags.placeholder = NEWS_CFG.CUSTOM_TAGS_PLACEHOLDER;
     inpCustomTags.style.cssText =
       "width:100%;box-sizing:border-box;padding:8px;font-size:11px;border:1px solid #64748b;border-radius:6px;" +
       "resize:vertical;min-height:56px;font-family:ui-monospace,Menlo,monospace;color-scheme:light;margin-bottom:10px;";
@@ -1100,7 +1157,7 @@ function createDevToolsTrace(opts) {
     const inpPayloadGapMs = document.createElement("input");
     inpPayloadGapMs.type = "number";
     inpPayloadGapMs.min = "0";
-    inpPayloadGapMs.max = "60000";
+    inpPayloadGapMs.max = String(GAP_MAX_MS);
     inpPayloadGapMs.value = String(DEFAULT_PAYLOAD_GAP_MS);
     inpPayloadGapMs.title = "Пауза между разными комбинациями newsStatus×businessBlock (или status+теги)";
     inpPayloadGapMs.style.cssText =
@@ -1115,7 +1172,7 @@ function createDevToolsTrace(opts) {
     const inpPageGapMs = document.createElement("input");
     inpPageGapMs.type = "number";
     inpPageGapMs.min = "0";
-    inpPageGapMs.max = "60000";
+    inpPageGapMs.max = String(GAP_MAX_MS);
     inpPageGapMs.value = String(DEFAULT_PAGE_GAP_MS);
     inpPageGapMs.title = "Пауза между pageNum внутри одной комбинации";
     inpPageGapMs.style.cssText =
@@ -1126,7 +1183,7 @@ function createDevToolsTrace(opts) {
     payloadBox.appendChild(optsRow);
     panelScroll.appendChild(payloadBox);
 
-    const LOG_MAX_LINES = 1200;
+    const LOG_MAX_LINES = NEWS_CFG.LOG_MAX_LINES;
     const logWrap = document.createElement("div");
     logWrap.style.cssText =
       "margin-top:8px;flex-shrink:0;display:flex;flex-direction:column;height:min(180px,22vh);min-height:88px;max-height:26vh;box-sizing:border-box;";
@@ -1201,7 +1258,7 @@ function createDevToolsTrace(opts) {
       });
       var customCodes = parseCustomTagCodes(inpCustomTags.value);
       customCodes.forEach(function (code) {
-        tags.push({ tagType: "TEXT", tagCode: code });
+        tags.push({ tagType: NEWS_CFG.CUSTOM_TAG_TYPE, tagCode: code });
       });
       return {
         newsStatuses: statuses,
@@ -1276,14 +1333,14 @@ function createDevToolsTrace(opts) {
     function readGapMs(inp, fallback) {
       const n = parseInt(String(inp.value || "").trim(), 10);
       if (!Number.isFinite(n) || n < 0) return fallback;
-      if (n > 60000) return 60000;
+      if (n > GAP_MAX_MS) return GAP_MAX_MS;
       return n;
     }
 
     function buildExportFilenamePrefix(standKey, contourKey) {
       var custom = sanitizeExportFilenamePrefix(inpFnamePrefix.value);
       if (custom) return custom.endsWith("_") ? custom : custom + "_";
-      return "news_community_" + standKey + "_" + contourKey + "_";
+      return NEWS_CFG.FILENAME_PREFIX_AUTO + standKey + "_" + contourKey + "_";
     }
 
     var fetchBusy = false;

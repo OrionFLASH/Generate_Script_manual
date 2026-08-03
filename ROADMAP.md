@@ -325,7 +325,7 @@
 ### 6.0 Доработка v2 (пагинация × businessBlock, UI, CSV, теги) — ToDo_news
 
 - `[v]` **План и декомпозиция** (этот подраздел): режимы payload, UI, CSV-колонки, паузы, статистика.
-- `[v]` **Константы:** `NEWS_STATUS_OPTIONS` (published / planned / draft), `NEWS_BUSINESS_BLOCK_OPTIONS` (KMKKSB, CSM, AKMKKSB, MNS, KMFACTORING), `NEWS_TAG_OPTIONS` (bestPractice / achievement / publication, все off), паузы 500 / 100 мс.
+- `[v]` **Константы:** блок **`NEWS_CFG`** вверху скрипта — `STATUS_OPTIONS`, `BUSINESS_BLOCK_OPTIONS`, `TAG_OPTIONS`, паузы 500/100, CSV, origins, path.
 - `[v]` **Режим без тегов:** последовательные комбинации `newsStatus × businessBlock`; payload `{ newsStatus, businessBlock, pageNum }`; пагинация по `body.page.total` / `isLast`; пустой/ошибочный ответ — лог и переход к следующей комбинации.
 - `[v]` **Режим с тегами:** если выбран ≥1 NEWS_TYPE или custom TEXT — payload `{ newsStatus, newsTagList[], pageNum }` (без businessBlock); все выбранные теги в одном `newsTagList`; обход по каждому `newsStatus`.
 - `[v]` **Custom-теги:** textarea (`;` / перевод строки); `tagType: TEXT`.
