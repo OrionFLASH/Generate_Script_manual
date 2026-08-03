@@ -1341,20 +1341,26 @@ function createDevToolsTrace(opts) {
     }
 
     var fetchBusy = false;
+    /** Флаг кнопки «Стоп»: прервать после текущего запроса и сохранить уже загруженное. */
+    var stopRequested = false;
 
     function setExportButtonsBusy(busy) {
       btnJson.disabled = busy;
       btnCsv.disabled = busy;
+      btnStop.disabled = !busy;
       var op = busy ? "0.55" : "1";
       var cur = busy ? "wait" : "pointer";
       btnJson.style.opacity = op;
       btnCsv.style.opacity = op;
       btnJson.style.cursor = cur;
       btnCsv.style.cursor = cur;
+      btnStop.style.opacity = busy ? "1" : "0.55";
+      btnStop.style.cursor = busy ? "pointer" : "not-allowed";
     }
 
     /**
      * Выгрузка всех комбинаций с пагинацией.
+     * При stopRequested — выход после текущего POST; уже загруженные страницы возвращаются.
      * @param {string} sourceTag
      * @returns {Promise<{
      *   bundle: object,
@@ -1365,7 +1371,8 @@ function createDevToolsTrace(opts) {
      *   flatRows: object[],
      *   errors: number,
      *   combosOk: number,
-     *   combosSkip: number
+     *   combosSkip: number,
+     *   stopped: boolean
      * }|null>}
      */
     async function runNewsFetch(sourceTag) {
@@ -1378,6 +1385,7 @@ function createDevToolsTrace(opts) {
       }
       var combos = buildCombos(sel);
       var prefix = buildExportFilenamePrefix(env.stand, env.contour);
+      stopRequested = false;
 
       log(
         "Старт (" +
@@ -1416,8 +1424,15 @@ function createDevToolsTrace(opts) {
       var combosOk = 0;
       var combosSkip = 0;
       var newsTotal = 0;
+      var stoppedByUser = false;
 
       for (var ci = 0; ci < combos.length; ci++) {
+        if (stopRequested) {
+          stoppedByUser = true;
+          log("Стоп: дальнейшие комбинации пропущены.");
+          break;
+        }
+
         var combo = combos[ci];
         var comboLabel = formatComboForLog(combo);
         var blockOrTags = sel.useTags
@@ -1449,6 +1464,12 @@ function createDevToolsTrace(opts) {
         var comboAborted = false;
 
         while (!comboAborted) {
+          if (stopRequested) {
+            stoppedByUser = true;
+            log("  Стоп: пагинация комбинации прервана.");
+            break;
+          }
+
           var payload = buildNewsPayload(pageNum, combo);
           setStats({
             page:
@@ -1590,7 +1611,14 @@ function createDevToolsTrace(opts) {
           if (totalPages === 0) break;
 
           pageNum++;
-          if (pageGapMs > 0) await delay(pageGapMs);
+          if (pageGapMs > 0) {
+            await delay(pageGapMs);
+            if (stopRequested) {
+              stoppedByUser = true;
+              log("  Стоп после паузы страницы.");
+              break;
+            }
+          }
         }
 
         if (comboHadSuccess) {
@@ -1603,12 +1631,12 @@ function createDevToolsTrace(opts) {
             },
             pagesFetched: comboPages.length,
             newsCount: mergedCombo ? countNewsInBody(mergedCombo.body) : 0,
-            partial: !!comboAborted,
+            partial: !!comboAborted || stoppedByUser,
             merged: mergedCombo
           });
           log(
             "  Комбинация " +
-              (comboAborted ? "частично OK" : "OK") +
+              (comboAborted || stoppedByUser ? "частично OK" : "OK") +
               ": страниц " +
               comboPages.length +
               ", новостей " +
@@ -1624,15 +1652,26 @@ function createDevToolsTrace(opts) {
           errors: String(errors)
         });
 
+        if (stoppedByUser) break;
+
         if (ci < combos.length - 1 && payloadGapMs > 0) {
           await delay(payloadGapMs);
+          if (stopRequested) {
+            stoppedByUser = true;
+            log("Стоп после паузы между payload.");
+            break;
+          }
         }
       }
 
       if (rawPages.length === 0) {
-        setStats({ phase: "нет данных", page: "—" });
+        setStats({
+          phase: stoppedByUser ? "стоп (нет данных)" : "нет данных",
+          page: "—"
+        });
         log(
-          "Выгрузка не завершена: нет успешных страниц. Ошибок/пропусков: " +
+          (stoppedByUser ? "Остановлено пользователем. " : "") +
+            "Выгрузка не завершена: нет успешных страниц. Ошибок/пропусков: " +
             errors +
             "."
         );
@@ -1650,6 +1689,7 @@ function createDevToolsTrace(opts) {
           combosTotal: combos.length,
           combosOk: combosOk,
           combosSkip: combosSkip,
+          stoppedByUser: !!stoppedByUser,
           mode: sel.useTags ? "tags" : "businessBlock",
           selection: {
             newsStatuses: sel.newsStatuses,
@@ -1666,8 +1706,15 @@ function createDevToolsTrace(opts) {
       lastExportBundle = bundle;
 
       setStats({
-        phase: "готово",
-        progress: combosOk + " OK / " + combosSkip + " skip / " + combos.length + " всего",
+        phase: stoppedByUser ? "стоп — сохранение" : "готово",
+        progress:
+          combosOk +
+          " OK / " +
+          combosSkip +
+          " skip / " +
+          combos.length +
+          " всего" +
+          (stoppedByUser ? " (прервано)" : ""),
         news: String(newsTotal),
         errors: String(errors),
         page: "—"
@@ -1682,7 +1729,8 @@ function createDevToolsTrace(opts) {
         flatRows: flatRows,
         errors: errors,
         combosOk: combosOk,
-        combosSkip: combosSkip
+        combosSkip: combosSkip,
+        stopped: !!stoppedByUser
       };
     }
 
@@ -1708,6 +1756,7 @@ function createDevToolsTrace(opts) {
         return;
       }
       fetchBusy = true;
+      stopRequested = false;
       setExportButtonsBusy(true);
       lastExportBundle = null;
       try {
@@ -1717,7 +1766,8 @@ function createDevToolsTrace(opts) {
         var fname = result.prefix + result.ts + ".json";
         downloadJson(fname, result.bundle);
         log(
-          "JSON готов. Страниц: " +
+          (result.stopped ? "Остановлено — JSON сохранён. " : "JSON готов. ") +
+            "Страниц: " +
             result.pagesCount +
             " | новостей: " +
             result.newsTotal +
@@ -1734,10 +1784,12 @@ function createDevToolsTrace(opts) {
             " | страниц: " +
             result.pagesCount +
             " | новостей: " +
-            result.newsTotal
+            result.newsTotal +
+            (result.stopped ? " | STOPPED" : "")
         );
       } finally {
         fetchBusy = false;
+        stopRequested = false;
         setExportButtonsBusy(false);
       }
     }
@@ -1748,6 +1800,7 @@ function createDevToolsTrace(opts) {
         return;
       }
       fetchBusy = true;
+      stopRequested = false;
       setExportButtonsBusy(true);
       lastExportBundle = null;
       try {
@@ -1760,7 +1813,8 @@ function createDevToolsTrace(opts) {
 
         var csvInfo = saveCsvFromFlatRows(result.flatRows, result.prefix, result.ts);
         log(
-          "Готово (JSON+CSV). Страниц: " +
+          (result.stopped ? "Остановлено — файлы сохранены. " : "Готово (JSON+CSV). ") +
+            "Страниц: " +
             result.pagesCount +
             " | новостей: " +
             result.newsTotal +
@@ -1776,10 +1830,12 @@ function createDevToolsTrace(opts) {
           "[News community] JSON+CSV | JSON: " +
             fnameJson +
             " | CSV: " +
-            (csvInfo.saved ? csvInfo.fname + " (" + csvInfo.rowCount + " строк)" : "нет строк")
+            (csvInfo.saved ? csvInfo.fname + " (" + csvInfo.rowCount + " строк)" : "нет строк") +
+            (result.stopped ? " | STOPPED" : "")
         );
       } finally {
         fetchBusy = false;
+        stopRequested = false;
         setExportButtonsBusy(false);
       }
     }
@@ -1791,7 +1847,7 @@ function createDevToolsTrace(opts) {
 
     const actionGrid = document.createElement("div");
     actionGrid.style.cssText =
-      "display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:12px 0 10px;";
+      "display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:12px 0 10px;";
 
     const btnJson = document.createElement("button");
     btnJson.type = "button";
@@ -1810,6 +1866,25 @@ function createDevToolsTrace(opts) {
       void runNewsCsvExport();
     });
     actionGrid.appendChild(btnCsv);
+
+    const btnStop = document.createElement("button");
+    btnStop.type = "button";
+    btnStop.textContent = "Стоп";
+    btnStop.title =
+      "Остановить запросы после текущего POST и сохранить уже успешно загруженные данные в файлы";
+    btnStop.disabled = true;
+    btnStop.style.cssText = btnBase + "background:#dc2626;opacity:0.55;cursor:not-allowed;";
+    btnStop.addEventListener("click", function () {
+      if (!fetchBusy) return;
+      if (stopRequested) {
+        log("Стоп уже запрошен — ожидаем завершения текущего запроса…");
+        return;
+      }
+      stopRequested = true;
+      setStats({ phase: "стоп… (ждём текущий POST)" });
+      log("Стоп запрошен: после текущего запроса сохраним уже загруженное.");
+    });
+    actionGrid.appendChild(btnStop);
     panelScroll.appendChild(actionGrid);
 
     root.appendChild(logWrap);
