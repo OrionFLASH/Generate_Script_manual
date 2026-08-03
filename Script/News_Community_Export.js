@@ -1219,7 +1219,8 @@ function createDevToolsTrace(opts) {
     addStatCell("blockOrTags", "block/теги");
     addStatCell("page", "стр.");
     addStatCell("progress", "прогресс");
-    addStatCell("news", "новостей");
+    addStatCell("news", "собрано");
+    addStatCell("newsCount", "newsCount");
     addStatCell("errors", "ошибок");
 
     /**
@@ -1231,6 +1232,7 @@ function createDevToolsTrace(opts) {
      *   page: string,
      *   progress: string,
      *   news: string,
+     *   newsCount: string,
      *   errors: string
      * }>} patch
      */
@@ -1252,6 +1254,7 @@ function createDevToolsTrace(opts) {
       page: "—",
       progress: "—",
       news: "0",
+      newsCount: "—",
       errors: "0"
     });
     panelScroll.appendChild(statsBox);
@@ -1825,6 +1828,7 @@ function createDevToolsTrace(opts) {
           progress: ci + " / " + combos.length + " завершено",
           page: "pageNum=1…",
           news: String(newsTotal),
+          newsCount: "—",
           errors: String(errors)
         });
 
@@ -1832,6 +1836,8 @@ function createDevToolsTrace(opts) {
 
         var pageNum = 1;
         var totalPages = null;
+        /** Общее число новостей в комбинации из body.newsCount (первый ответ). */
+        var comboNewsCount = null;
         var mergedCombo = null;
         var comboPages = [];
         var comboHadSuccess = false;
@@ -1854,7 +1860,8 @@ function createDevToolsTrace(opts) {
               pageNum +
               (totalPages != null ? "/" + totalPages : ""),
             status: String(combo.newsStatus),
-            blockOrTags: blockOrTags
+            blockOrTags: blockOrTags,
+            newsCount: comboNewsCount != null ? String(comboNewsCount) : "—"
           });
 
           log(
@@ -1990,6 +1997,15 @@ function createDevToolsTrace(opts) {
           var num = pageInfo && pageInfo.num != null ? pageInfo.num : pageNum;
           var newsOnPage = fr.data.body ? countNewsInBody(fr.data.body) : 0;
 
+          if (
+            comboNewsCount == null &&
+            fr.data.body &&
+            fr.data.body.newsCount != null
+          ) {
+            var nc = Number(fr.data.body.newsCount);
+            if (Number.isFinite(nc)) comboNewsCount = nc;
+          }
+
           var pageTotalVal = totalPages != null ? totalPages : total != null ? total : "";
           if (fr.data.body) {
             forEachNewsInBody(fr.data.body, function (newsItem) {
@@ -2011,6 +2027,7 @@ function createDevToolsTrace(opts) {
               (totalPages != null ? "/" + totalPages : "") +
               (isLast ? " last" : ""),
             news: String(newsTotal),
+            newsCount: comboNewsCount != null ? String(comboNewsCount) : "—",
             errors: String(errors),
             phase: (ci + 1) + "/" + combos.length
           });
@@ -2023,6 +2040,7 @@ function createDevToolsTrace(opts) {
               " | page.num=" +
               num +
               (totalPages != null ? " | total=" + totalPages : "") +
+              (comboNewsCount != null ? " | newsCount=" + comboNewsCount : "") +
               " | isLast=" +
               (isLast ? "true" : "false") +
               " | новостей на странице: " +
