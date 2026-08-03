@@ -56,6 +56,11 @@
     PAYLOAD_GAP_MS: 500,
     /** Пауза между страницами внутри одной комбинации (мс) */
     PAGE_GAP_MS: 100,
+    /**
+     * Макс. число страниц внутри одной комбинации (0 = все по total/isLast).
+     * Пример: 3 → запросить не больше pageNum 1..3.
+     */
+    MAX_PAGES_PER_COMBO: 0,
     /** Верхний предел пауз на панели (мс) */
     GAP_MAX_MS: 60000,
 
@@ -1393,7 +1398,7 @@ function createDevToolsTrace(opts) {
 
     const timingBox = document.createElement("div");
     timingBox.style.cssText =
-      "display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px;align-items:end;" +
+      "display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px;align-items:end;" +
       "padding-top:8px;border-top:1px solid #e2e8f0;";
 
     const fPayloadGap = mkNumField(
@@ -1411,6 +1416,15 @@ function createDevToolsTrace(opts) {
     );
     fPageGap.inp.max = String(GAP_MAX_MS);
     const inpPageGapMs = fPageGap.inp;
+
+    const fMaxPages = mkNumField(
+      "Макс. страниц",
+      NEWS_CFG.MAX_PAGES_PER_COMBO,
+      "Лимит pageNum внутри комбинации: 0 = все; 3 = только первые 3 страницы (или меньше, если total меньше)"
+    );
+    fMaxPages.inp.min = "0";
+    fMaxPages.inp.max = "9999";
+    const inpMaxPagesPerCombo = fMaxPages.inp;
 
     const fRetryPause = mkNumField(
       "Пауза повтора, мс",
@@ -1443,6 +1457,7 @@ function createDevToolsTrace(opts) {
 
     timingBox.appendChild(fPayloadGap.lab);
     timingBox.appendChild(fPageGap.lab);
+    timingBox.appendChild(fMaxPages.lab);
     timingBox.appendChild(fRetryPause.lab);
     timingBox.appendChild(fRetryMax.lab);
     timingBox.appendChild(labPrefix);
@@ -1610,6 +1625,17 @@ function createDevToolsTrace(opts) {
       return readGapMs(inpRetryPauseMs, NEWS_CFG.RETRY_PAUSE_MS || 2000);
     }
 
+    /**
+     * Макс. страниц на комбинацию: 0 = без лимита (все).
+     * @returns {number}
+     */
+    function readMaxPagesPerCombo() {
+      const n = parseInt(String(inpMaxPagesPerCombo.value || "").trim(), 10);
+      if (!Number.isFinite(n) || n < 0) return 0;
+      if (n > 9999) return 9999;
+      return n;
+    }
+
     function buildExportFilenamePrefix(standKey, contourKey) {
       var custom = sanitizeExportFilenamePrefix(inpFnamePrefix.value);
       if (custom) return custom.endsWith("_") ? custom : custom + "_";
@@ -1657,6 +1683,7 @@ function createDevToolsTrace(opts) {
       var pageGapMs = readGapMs(inpPageGapMs, DEFAULT_PAGE_GAP_MS);
       var retryMax = readRetryMax();
       var retryPauseMs = readRetryPauseMs();
+      var maxPagesPerCombo = readMaxPagesPerCombo();
       var sel = readPanelSelection();
       if (!validateSelection(sel)) {
         return null;
@@ -1683,7 +1710,9 @@ function createDevToolsTrace(opts) {
           " | повтор " +
           retryPauseMs +
           " мс × " +
-          retryMax
+          retryMax +
+          " | макс. страниц: " +
+          (maxPagesPerCombo > 0 ? String(maxPagesPerCombo) : "все")
       );
 
       setStats({
@@ -1878,7 +1907,11 @@ function createDevToolsTrace(opts) {
             }
 
             // Пропуск текущего запроса → следующий pageNum или следующая комбинация
-            if (totalPages != null && pageNum < totalPages) {
+            if (
+              totalPages != null &&
+              pageNum < totalPages &&
+              !(maxPagesPerCombo > 0 && pageNum >= maxPagesPerCombo)
+            ) {
               pageNum++;
               if (pageGapMs > 0) await delay(pageGapMs);
               continue;
@@ -1950,6 +1983,14 @@ function createDevToolsTrace(opts) {
           if (isLast) break;
           if (totalPages != null && pageNum >= totalPages) break;
           if (totalPages === 0) break;
+          if (maxPagesPerCombo > 0 && pageNum >= maxPagesPerCombo) {
+            log(
+              "  Лимит страниц комбинации: " +
+                maxPagesPerCombo +
+                (totalPages != null ? " (total=" + totalPages + ")" : "")
+            );
+            break;
+          }
 
           pageNum++;
           if (pageGapMs > 0) {
@@ -2087,6 +2128,7 @@ function createDevToolsTrace(opts) {
           lastExhaustedFail: lastExhaustedFail,
           retryMax: retryMax,
           retryPauseMs: retryPauseMs,
+          maxPagesPerCombo: maxPagesPerCombo > 0 ? maxPagesPerCombo : null,
           mode: sel.useTags ? "tags" : "businessBlock",
           selection: {
             newsStatuses: sel.newsStatuses,
