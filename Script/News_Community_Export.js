@@ -704,7 +704,8 @@ function createDevToolsTrace(opts) {
    *   stopped?: boolean,
    *   fr: *,
    *   error: string|null,
-   *   attempts: number
+   *   attempts: number,
+   *   retries: number
    * }>}
    */
   async function fetchNewsPageWithRetry(origin, contourKey, payload, hooks) {
@@ -726,11 +727,21 @@ function createDevToolsTrace(opts) {
     var lastFr = null;
     /** @type {string|null} */
     var lastErr = null;
+    /** Число повторных запросов (attempt > 1). */
+    var retriesDone = 0;
 
     for (var attempt = 1; attempt <= maxAttempts; attempt++) {
       if (shouldStop()) {
-        return { ok: false, stopped: true, fr: lastFr, error: lastErr || "стоп", attempts: attempt - 1 };
+        return {
+          ok: false,
+          stopped: true,
+          fr: lastFr,
+          error: lastErr || "стоп",
+          attempts: attempt - 1,
+          retries: retriesDone
+        };
       }
+      if (attempt > 1) retriesDone++;
       try {
         lastFr = await fetchNewsPage(origin, contourKey, payload);
         lastErr = getNewsResponseError(lastFr);
@@ -745,31 +756,58 @@ function createDevToolsTrace(opts) {
         lastErr = getNewsResponseError(lastFr);
       }
 
-      if (onAttempt) onAttempt(attempt, maxAttempts, lastErr);
+      if (onAttempt) {
+        onAttempt(attempt, maxAttempts, lastErr, {
+          isRetry: attempt > 1,
+          retriesDone: retriesDone
+        });
+      }
 
       if (!lastErr) {
-        return { ok: true, fr: lastFr, error: null, attempts: attempt };
+        return {
+          ok: true,
+          fr: lastFr,
+          error: null,
+          attempts: attempt,
+          retries: retriesDone
+        };
       }
 
       logFn(
-        "  ошибка (попытка " +
+        "  " +
+          (attempt > 1 ? "повторная ошибка" : "ошибка") +
+          " (попытка " +
           attempt +
           "/" +
           maxAttempts +
+          (attempt > 1 ? ", повтор #" + retriesDone : "") +
           "): " +
           lastErr
       );
 
       if (attempt < maxAttempts) {
         if (shouldStop()) {
-          return { ok: false, stopped: true, fr: lastFr, error: lastErr, attempts: attempt };
+          return {
+            ok: false,
+            stopped: true,
+            fr: lastFr,
+            error: lastErr,
+            attempts: attempt,
+            retries: retriesDone
+          };
         }
-        logFn("  пауза " + pauseMs + " мс перед повтором…");
+        logFn("  пауза " + pauseMs + " мс перед повтором #" + (retriesDone + 1) + "…");
         if (pauseMs > 0) await delay(pauseMs);
       }
     }
 
-    return { ok: false, fr: lastFr, error: lastErr, attempts: maxAttempts };
+    return {
+      ok: false,
+      fr: lastFr,
+      error: lastErr,
+      attempts: maxAttempts,
+      retries: retriesDone
+    };
   }
 
   /**
@@ -1237,6 +1275,7 @@ function createDevToolsTrace(opts) {
     addStatCell("progress", "прогресс");
     addStatCell("news", "собрано");
     addStatCell("newsCount", "newsCount");
+    addStatCell("retries", "повторов");
     addStatCell("errors", "ошибок");
 
     /**
@@ -1250,6 +1289,7 @@ function createDevToolsTrace(opts) {
      *   progress: string,
      *   news: string,
      *   newsCount: string,
+     *   retries: string,
      *   errors: string
      * }>} patch
      */
@@ -1273,6 +1313,7 @@ function createDevToolsTrace(opts) {
       progress: "—",
       news: "0",
       newsCount: "—",
+      retries: "0",
       errors: "0"
     });
     panelScroll.appendChild(statsBox);
@@ -1299,12 +1340,23 @@ function createDevToolsTrace(opts) {
      * Компактная колонка чекбоксов.
      * @param {string} title
      * @param {{ key: string, label: string, short?: string, defaultChecked?: boolean }[]} items
-     * @returns {{ el: HTMLElement, getSelectedKeys: function(): string[], setAll: function(boolean): void }}
+     * @param {{ required?: boolean, requiredHint?: string, onChange?: function(): void }|undefined} opts
+     * @returns {{
+     *   el: HTMLElement,
+     *   getSelectedKeys: function(): string[],
+     *   setAll: function(boolean): void,
+     *   setRequiredOk: function(boolean): void
+     * }}
      */
-    function makeCompactCheckCol(title, items) {
+    function makeCompactCheckCol(title, items, opts) {
+      var o = opts || {};
+      var isRequired = !!o.required;
       const col = document.createElement("div");
-      col.style.cssText =
+      var styleOk =
         "min-width:0;padding:8px;border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc;";
+      var styleBad =
+        "min-width:0;padding:8px;border:1px solid #f87171;border-radius:8px;background:#fef2f2;";
+      col.style.cssText = styleOk;
 
       const head = document.createElement("div");
       head.style.cssText =
@@ -1334,6 +1386,11 @@ function createDevToolsTrace(opts) {
       list.style.cssText = "display:flex;flex-direction:column;gap:3px;";
       /** @type {Record<string, HTMLInputElement>} */
       const checks = {};
+
+      function notifyChange() {
+        if (typeof o.onChange === "function") o.onChange();
+      }
+
       items.forEach(function (item) {
         const row = document.createElement("label");
         row.style.cssText =
@@ -1344,6 +1401,7 @@ function createDevToolsTrace(opts) {
         c.type = "checkbox";
         c.checked = !!item.defaultChecked;
         c.style.cssText = "margin:0;flex-shrink:0;";
+        c.addEventListener("change", notifyChange);
         checks[item.key] = c;
         const sp = document.createElement("span");
         sp.style.cssText =
@@ -1355,10 +1413,18 @@ function createDevToolsTrace(opts) {
       });
       col.appendChild(list);
 
+      /** Подсказка при пустом обязательном выборе */
+      const hint = document.createElement("div");
+      hint.style.cssText =
+        "display:none;margin-top:6px;font-size:9px;line-height:1.3;color:#fca5a5;";
+      hint.textContent = o.requiredHint || "выберите хотя бы одно значение";
+      if (isRequired) col.appendChild(hint);
+
       function setAll(v) {
         Object.keys(checks).forEach(function (k) {
           checks[k].checked = !!v;
         });
+        notifyChange();
       }
       btnRow.appendChild(
         mkTiny("все", function () {
@@ -1371,6 +1437,16 @@ function createDevToolsTrace(opts) {
         })
       );
 
+      /**
+       * @param {boolean} ok
+       */
+      function setRequiredOk(ok) {
+        if (!isRequired) return;
+        col.style.cssText = ok ? styleOk : styleBad;
+        hint.style.display = ok ? "none" : "block";
+        lab.style.color = ok ? "#475569" : "#b91c1c";
+      }
+
       return {
         el: col,
         getSelectedKeys: function () {
@@ -1380,13 +1456,17 @@ function createDevToolsTrace(opts) {
           });
           return out;
         },
-        setAll: setAll
+        setAll: setAll,
+        setRequiredOk: setRequiredOk
       };
     }
 
     const selectGrid = document.createElement("div");
     selectGrid.style.cssText =
       "display:grid;grid-template-columns:minmax(0,0.9fr) minmax(0,1.1fr) minmax(0,1.2fr);gap:8px;margin-bottom:8px;";
+
+    /** Обновление цвета блоков и активности JSON/CSV — объявим после кнопок. */
+    var refreshRequiredSelectionUi = function () {};
 
     const statusCtl = makeCompactCheckCol(
       "Статус *",
@@ -1396,7 +1476,14 @@ function createDevToolsTrace(opts) {
           label: opt.label || opt.value,
           defaultChecked: !!opt.defaultChecked
         };
-      })
+      }),
+      {
+        required: true,
+        requiredHint: "выберите хотя бы один статус",
+        onChange: function () {
+          refreshRequiredSelectionUi();
+        }
+      }
     );
 
     const blockCtl = makeCompactCheckCol(
@@ -1407,7 +1494,14 @@ function createDevToolsTrace(opts) {
           label: opt.label || opt.value,
           defaultChecked: !!opt.defaultChecked
         };
-      })
+      }),
+      {
+        required: true,
+        requiredHint: "выберите хотя бы один блок",
+        onChange: function () {
+          refreshRequiredSelectionUi();
+        }
+      }
     );
 
     const tagColWrap = document.createElement("div");
@@ -1658,6 +1752,7 @@ function createDevToolsTrace(opts) {
      * }} sel
      */
     function validateSelection(sel) {
+      refreshRequiredSelectionUi();
       if (!sel.newsStatuses || sel.newsStatuses.length === 0) {
         log("Остановка: выберите хотя бы один newsStatus.");
         setStats({
@@ -1665,7 +1760,9 @@ function createDevToolsTrace(opts) {
           phase: "нет status",
           status: "—",
           blockOrTags: "—",
-          tags: "—"
+          tags: "—",
+          retries: "0",
+          errors: "0"
         });
         return false;
       }
@@ -1682,7 +1779,9 @@ function createDevToolsTrace(opts) {
                   return t.tagCode;
                 })
                 .join(", ")
-            : "—"
+            : "—",
+          retries: "0",
+          errors: "0"
         });
         return false;
       }
@@ -1728,25 +1827,60 @@ function createDevToolsTrace(opts) {
     /** Флаг кнопки «Стоп»: прервать после текущего запроса и сохранить уже загруженное. */
     var stopRequested = false;
 
+    function hasRequiredSelection() {
+      return (
+        statusCtl.getSelectedKeys().length > 0 &&
+        blockCtl.getSelectedKeys().length > 0
+      );
+    }
+
+    /**
+     * Цвет блоков status/block + доступность JSON/CSV вне выгрузки.
+     */
+    refreshRequiredSelectionUi = function () {
+      var hasStatus = statusCtl.getSelectedKeys().length > 0;
+      var hasBlock = blockCtl.getSelectedKeys().length > 0;
+      statusCtl.setRequiredOk(hasStatus);
+      blockCtl.setRequiredOk(hasBlock);
+      if (fetchBusy) return;
+      var ok = hasStatus && hasBlock;
+      btnJson.disabled = !ok;
+      btnCsv.disabled = !ok;
+      btnJson.style.opacity = ok ? "1" : "0.55";
+      btnCsv.style.opacity = ok ? "1" : "0.55";
+      btnJson.style.cursor = ok ? "pointer" : "not-allowed";
+      btnCsv.style.cursor = ok ? "pointer" : "not-allowed";
+      btnJson.title = ok
+        ? "Загрузить новости → JSON"
+        : "Выберите хотя бы один статус и один блок";
+      btnCsv.title = ok
+        ? "Выгрузить JSON + CSV"
+        : "Выберите хотя бы один статус и один блок";
+    };
+
     function setExportButtonsBusy(busy) {
-      btnJson.disabled = busy;
-      btnCsv.disabled = busy;
       btnStop.disabled = !busy;
       btnClose.disabled = busy;
       btnClose.title = busy
         ? "Закрыть недоступно во время выгрузки — сначала Стоп или дождитесь окончания"
         : "Закрыть панель";
-      var op = busy ? "0.55" : "1";
-      var cur = busy ? "wait" : "pointer";
-      btnJson.style.opacity = op;
-      btnCsv.style.opacity = op;
-      btnClose.style.opacity = op;
-      btnJson.style.cursor = cur;
-      btnCsv.style.cursor = cur;
+      btnClose.style.opacity = busy ? "0.55" : "1";
       btnClose.style.cursor = busy ? "not-allowed" : "pointer";
       btnStop.style.opacity = busy ? "1" : "0.55";
       btnStop.style.cursor = busy ? "pointer" : "not-allowed";
+      if (busy) {
+        btnJson.disabled = true;
+        btnCsv.disabled = true;
+        btnJson.style.opacity = "0.55";
+        btnCsv.style.opacity = "0.55";
+        btnJson.style.cursor = "wait";
+        btnCsv.style.cursor = "wait";
+      } else {
+        refreshRequiredSelectionUi();
+      }
     }
+
+    refreshRequiredSelectionUi();
 
     /**
      * Выгрузка всех комбинаций с пагинацией.
@@ -1809,6 +1943,7 @@ function createDevToolsTrace(opts) {
         progress: "0 / " + combos.length,
         news: "0",
         newsCount: "—",
+        retries: "0",
         errors: "0",
         page: "—",
         status: "—",
@@ -1829,7 +1964,10 @@ function createDevToolsTrace(opts) {
       var mergedAll = null;
       /** @type {object[]} */
       var flatRows = [];
+      /** Ошибки: запросы, у которых исчерпаны все попытки. */
       var errors = 0;
+      /** Повторы: число повторных запросов (attempt > 1). */
+      var retriesTotal = 0;
       var combosOk = 0;
       var combosSkip = 0;
       var newsTotal = 0;
@@ -1871,6 +2009,7 @@ function createDevToolsTrace(opts) {
           page: "pageNum=1…",
           news: String(newsTotal),
           newsCount: "—",
+          retries: String(retriesTotal),
           errors: String(errors)
         });
 
@@ -1880,6 +2019,8 @@ function createDevToolsTrace(opts) {
         var totalPages = null;
         /** Общее число новостей в комбинации из body.newsCount (первый ответ). */
         var comboNewsCount = null;
+        /** Повторы внутри текущей комбинации (для подписи в статистике). */
+        var comboRetries = 0;
         var mergedCombo = null;
         var comboPages = [];
         var comboHadSuccess = false;
@@ -1904,7 +2045,9 @@ function createDevToolsTrace(opts) {
             status: String(combo.newsStatus),
             blockOrTags: blockOrTags,
             tags: tagsStat,
-            newsCount: comboNewsCount != null ? String(comboNewsCount) : "—"
+            newsCount: comboNewsCount != null ? String(comboNewsCount) : "—",
+            retries: String(retriesTotal),
+            errors: String(errors)
           });
 
           log(
@@ -1925,22 +2068,42 @@ function createDevToolsTrace(opts) {
               shouldStop: function () {
                 return !!stopRequested;
               },
-              onAttempt: function (attempt, maxAttempts, err) {
+              onAttempt: function (attempt, maxAttempts, err, meta) {
+                var m = meta || {};
+                if (m.isRetry) {
+                  retriesTotal++;
+                  comboRetries++;
+                }
+                var afterFail =
+                  errors > 0 || consecutiveExhaustedFails > 0
+                    ? " · после ошибки, продолжение"
+                    : "";
                 setStats({
                   tone: err
-                    ? consecutiveExhaustedFails >= 1
+                    ? consecutiveExhaustedFails >= 1 || (m.isRetry && attempt > 2)
                       ? "retry2"
                       : "retry1"
                     : consecutiveExhaustedFails >= 1
                       ? "retry2"
                       : "run",
                   phase: err
-                    ? "повтор " + attempt + "/" + maxAttempts
+                    ? m.isRetry
+                      ? "повтор #" +
+                        comboRetries +
+                        " · " +
+                        attempt +
+                        "/" +
+                        maxAttempts +
+                        afterFail
+                      : "ошибка · попытка " + attempt + "/" + maxAttempts
                     : (ci + 1) + "/" + combos.length,
                   page:
                     "pageNum=" +
                     pageNum +
-                    (err ? " · " + String(err).slice(0, 60) : "")
+                    (totalPages != null ? "/" + totalPages : "") +
+                    (err ? " · " + String(err).slice(0, 48) : ""),
+                  retries: String(retriesTotal),
+                  errors: String(errors)
                 });
               }
             }
@@ -1957,9 +2120,11 @@ function createDevToolsTrace(opts) {
             consecutiveExhaustedFails++;
             var failErr = retryResult.error || "неизвестная ошибка";
             log(
-              "  Исчерпаны " +
+              "  Ошибка (все " +
                 retryResult.attempts +
-                " попыток: " +
+                " попыток с ошибкой, повторов: " +
+                (retryResult.retries || 0) +
+                "): " +
                 failErr +
                 " → пропуск этого запроса (" +
                 consecutiveExhaustedFails +
@@ -1992,8 +2157,23 @@ function createDevToolsTrace(opts) {
                 "  Переход к pageNum=" +
                   (pageNum + 1) +
                   (totalPages != null ? "/" + totalPages : "") +
-                  " после пропуска"
+                  " после ошибки (повторов всего: " +
+                  retriesTotal +
+                  ", ошибок: " +
+                  errors +
+                  ")"
               );
+              setStats({
+                tone: "retry2",
+                phase: "ошибка → след. стр.",
+                retries: String(retriesTotal),
+                errors: String(errors),
+                page:
+                  "pageNum=" +
+                  pageNum +
+                  " пропуск → " +
+                  (pageNum + 1)
+              });
               pageNum++;
               if (pageGapMs > 0) await delay(pageGapMs);
               continue;
@@ -2023,6 +2203,7 @@ function createDevToolsTrace(opts) {
                   pageNum +
                   " · " +
                   String(failErr).slice(0, 70),
+                retries: String(retriesTotal),
                 errors: String(errors)
               });
               log(
@@ -2087,6 +2268,7 @@ function createDevToolsTrace(opts) {
               (isLast ? " last" : ""),
             news: String(newsTotal),
             newsCount: comboNewsCount != null ? String(comboNewsCount) : "—",
+            retries: String(retriesTotal),
             errors: String(errors),
             phase: (ci + 1) + "/" + combos.length
           });
@@ -2094,7 +2276,11 @@ function createDevToolsTrace(opts) {
           log(
             "  → OK" +
               (retryResult.attempts > 1
-                ? " (с " + retryResult.attempts + " попытки)"
+                ? " (с " +
+                  retryResult.attempts +
+                  " попытки, повторов запроса: " +
+                  (retryResult.retries || 0) +
+                  ")"
                 : "") +
               " | page.num=" +
               num +
@@ -2184,6 +2370,7 @@ function createDevToolsTrace(opts) {
           progress: ci + 1 + "/" + combos.length,
           news: String(newsTotal),
           newsCount: comboNewsCount != null ? String(comboNewsCount) : "—",
+          retries: String(retriesTotal),
           errors: String(errors)
         });
 
@@ -2223,7 +2410,9 @@ function createDevToolsTrace(opts) {
                   return t.tagCode;
                 })
                 .join(", ")
-            : "—"
+            : "—",
+          retries: String(retriesTotal),
+          errors: String(errors)
         });
         log(
           (abortedByErrors
@@ -2231,7 +2420,9 @@ function createDevToolsTrace(opts) {
             : stoppedByUser
               ? "Остановлено пользователем. "
               : "") +
-            "Выгрузка не завершена: нет успешных страниц. Ошибок/пропусков: " +
+            "Выгрузка не завершена: нет успешных страниц. Повторов: " +
+            retriesTotal +
+            ", ошибок: " +
             errors +
             "."
         );
@@ -2265,6 +2456,8 @@ function createDevToolsTrace(opts) {
           lastExhaustedFail: lastExhaustedFail,
           retryMax: retryMax,
           retryPauseMs: retryPauseMs,
+          retriesTotal: retriesTotal,
+          errorsExhausted: errors,
           maxPagesPerCombo: maxPagesPerCombo > 0 ? maxPagesPerCombo : null,
           mode: sel.useTags ? "businessBlock+tags" : "businessBlock",
           selection: {
@@ -2313,6 +2506,7 @@ function createDevToolsTrace(opts) {
                 ? " · ошибки"
                 : ""),
         news: String(newsTotal),
+        retries: String(retriesTotal),
         errors: String(errors),
         page: fatalErrorInfo
           ? "pageNum=" +
@@ -2335,6 +2529,7 @@ function createDevToolsTrace(opts) {
         newsTotal: newsTotal,
         flatRows: flatRows,
         errors: errors,
+        retries: retriesTotal,
         combosOk: combosOk,
         combosSkip: combosSkip,
         stopped: !!stoppedByUser,
@@ -2385,6 +2580,8 @@ function createDevToolsTrace(opts) {
             result.combosOk +
             " | skip: " +
             result.combosSkip +
+            " | повторов: " +
+            result.retries +
             " | ошибок: " +
             result.errors +
             " | файл: " +
@@ -2447,6 +2644,8 @@ function createDevToolsTrace(opts) {
             result.pagesCount +
             " | новостей: " +
             result.newsTotal +
+            " | повторов: " +
+            result.retries +
             " | ошибок: " +
             result.errors +
             " | JSON: " +
