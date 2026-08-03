@@ -2,7 +2,7 @@
 // News_Community_Export.js — выгрузка списка новостей community (POST /proxy/v1/news)
 // =============================================================================
 // DevTools на странице стенда gamification. POST JSON с пагинацией pageNum.
-// Комбинации newsStatus × businessBlock (или фильтр newsTagList); JSON + CSV.
+// Комбинации newsStatus × businessBlock (+ опциональный newsTagList); JSON + CSV.
 // Куки сессии вкладки: credentials: "include".
 // =============================================================================
 (function () {
@@ -67,11 +67,13 @@
     /**
      * Повторы при ошибке HTTP / содержимого JSON:
      * пауза RETRY_PAUSE_MS, до RETRY_MAX попыток на один запрос.
-     * Два подряд запроса с исчерпанными попытками → аварийная остановка с сохранением.
+     * После исчерпания — пропуск страницы и переход к следующей, пока есть страницы.
+     * Авария (стоп выгрузки): два подряд исчерпанных запроса, когда следующей страницы уже нет
+     * (конец комбинации / total неизвестен).
      */
     RETRY_MAX: 3,
     RETRY_PAUSE_MS: 2000,
-    /** Сколько подряд «исчерпанных» запросов до аварийной остановки */
+    /** Сколько подряд «исчерпанных» запросов до аварии, когда пагинацию продолжать нельзя */
     CONSECUTIVE_FAIL_ABORT: 2,
 
     /**
@@ -553,6 +555,9 @@ function createDevToolsTrace(opts) {
       newsStatus: String(c.newsStatus || "published"),
       pageNum: Math.max(1, Math.floor(Number(pageNum) || 1))
     };
+    if (c.businessBlock) {
+      payload.businessBlock = String(c.businessBlock);
+    }
     var tags = Array.isArray(c.newsTagList) ? c.newsTagList : [];
     if (tags.length > 0) {
       payload.newsTagList = tags.map(function (t) {
@@ -561,8 +566,6 @@ function createDevToolsTrace(opts) {
           tagCode: String(t.tagCode || "").trim()
         };
       });
-    } else if (c.businessBlock) {
-      payload.businessBlock = String(c.businessBlock);
     }
     return payload;
   }
@@ -576,6 +579,10 @@ function createDevToolsTrace(opts) {
    * }} combo
    */
   function formatComboForLog(combo) {
+    var parts = [
+      "newsStatus=" + combo.newsStatus,
+      "businessBlock=" + (combo.businessBlock || "—")
+    ];
     var tags = combo.newsTagList || [];
     if (tags.length > 0) {
       var tagTxt = tags
@@ -583,14 +590,9 @@ function createDevToolsTrace(opts) {
           return t.tagCode + "/" + t.tagType;
         })
         .join(", ");
-      return "newsStatus=" + combo.newsStatus + " | tags[" + tags.length + "]: " + tagTxt;
+      parts.push("tags[" + tags.length + "]: " + tagTxt);
     }
-    return (
-      "newsStatus=" +
-      combo.newsStatus +
-      " | businessBlock=" +
-      (combo.businessBlock || "—")
-    );
+    return parts.join(" | ");
   }
 
   /**
@@ -991,7 +993,7 @@ function createDevToolsTrace(opts) {
     const titleSub = document.createElement("div");
     titleSub.style.cssText = "font-size:11px;color:#475569;margin-bottom:10px;line-height:1.45;";
     titleSub.textContent =
-      "POST /proxy/v1/news · комбинации newsStatus × businessBlock (или фильтр по тегам) · пагинация pageNum · JSON + CSV. Куки сессии вкладки (credentials: include).";
+      "POST /proxy/v1/news · status×block (≥1 каждый) · теги опциональны · пагинация pageNum · JSON + CSV. Куки сессии вкладки (credentials: include).";
     root.appendChild(titleSub);
 
     const stRow = document.createElement("div");
@@ -1061,7 +1063,8 @@ function createDevToolsTrace(opts) {
 
     const panelScroll = document.createElement("div");
     panelScroll.style.cssText =
-      "flex:1 1 0;min-height:0;overflow-y:auto;overflow-x:hidden;box-sizing:border-box;-webkit-overflow-scrolling:touch;";
+      "flex:1 1 0;min-height:0;overflow-y:auto;overflow-x:hidden;box-sizing:border-box;-webkit-overflow-scrolling:touch;" +
+      "display:flex;flex-direction:column;";
     root.appendChild(panelScroll);
 
     /** Компактная кнопка с Unicode-иконкой (без тяжёлых картинок). */
@@ -1120,6 +1123,7 @@ function createDevToolsTrace(opts) {
 
     /** Блок живой статистики текущего запроса */
     const statsBox = document.createElement("div");
+    statsBox.style.cssText = "flex-shrink:0;";
     const statsTitle = document.createElement("div");
     statsTitle.textContent = "Статистика";
     statsBox.appendChild(statsTitle);
@@ -1227,10 +1231,12 @@ function createDevToolsTrace(opts) {
 
     addStatCell("phase", "фаза");
     addStatCell("status", "status");
-    addStatCell("blockOrTags", "block/теги");
+    addStatCell("blockOrTags", "block");
+    addStatCell("tags", "теги");
     addStatCell("page", "стр.");
     addStatCell("progress", "прогресс");
-    addStatCell("news", "новостей");
+    addStatCell("news", "собрано");
+    addStatCell("newsCount", "newsCount");
     addStatCell("errors", "ошибок");
 
     /**
@@ -1239,9 +1245,11 @@ function createDevToolsTrace(opts) {
      *   phase: string,
      *   status: string,
      *   blockOrTags: string,
+     *   tags: string,
      *   page: string,
      *   progress: string,
      *   news: string,
+     *   newsCount: string,
      *   errors: string
      * }>} patch
      */
@@ -1260,16 +1268,18 @@ function createDevToolsTrace(opts) {
       phase: "ожидание",
       status: "—",
       blockOrTags: "—",
+      tags: "—",
       page: "—",
       progress: "—",
       news: "0",
+      newsCount: "—",
       errors: "0"
     });
     panelScroll.appendChild(statsBox);
 
     const payloadBox = document.createElement("div");
     payloadBox.style.cssText =
-      "margin-bottom:10px;padding:10px 12px;border:1px solid #cbd5e1;border-radius:10px;background:rgba(255,255,255,.9);";
+      "flex-shrink:0;margin-bottom:0;padding:10px 12px;border:1px solid #cbd5e1;border-radius:10px;background:rgba(255,255,255,.9);";
 
     const payloadHead = document.createElement("div");
     payloadHead.style.cssText =
@@ -1279,7 +1289,8 @@ function createDevToolsTrace(opts) {
     payloadTitle.textContent = "Параметры";
     const payloadHint = document.createElement("div");
     payloadHint.style.cssText = "font-size:10px;color:#64748b;";
-    payloadHint.textContent = "теги → без businessBlock · status × block последовательно";
+    payloadHint.textContent =
+      "обязательны status и businessBlock (≥1) · теги опциональны · status × block";
     payloadHead.appendChild(payloadTitle);
     payloadHead.appendChild(payloadHint);
     payloadBox.appendChild(payloadHead);
@@ -1378,7 +1389,7 @@ function createDevToolsTrace(opts) {
       "display:grid;grid-template-columns:minmax(0,0.9fr) minmax(0,1.1fr) minmax(0,1.2fr);gap:8px;margin-bottom:8px;";
 
     const statusCtl = makeCompactCheckCol(
-      "Статус",
+      "Статус *",
       NEWS_STATUS_OPTIONS.map(function (opt) {
         return {
           key: opt.value,
@@ -1389,7 +1400,7 @@ function createDevToolsTrace(opts) {
     );
 
     const blockCtl = makeCompactCheckCol(
-      "Блок",
+      "Блок *",
       NEWS_BUSINESS_BLOCK_OPTIONS.map(function (opt) {
         return {
           key: opt.value,
@@ -1403,7 +1414,7 @@ function createDevToolsTrace(opts) {
     tagColWrap.style.cssText =
       "min-width:0;padding:8px;border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc;display:flex;flex-direction:column;gap:6px;";
     const tagCtlInner = makeCompactCheckCol(
-      "Теги NEWS_TYPE",
+      "Теги (опц.)",
       NEWS_TAG_OPTIONS.map(function (opt, idx) {
         return {
           key: String(idx),
@@ -1532,7 +1543,8 @@ function createDevToolsTrace(opts) {
     const LOG_MAX_LINES = NEWS_CFG.LOG_MAX_LINES;
     const logWrap = document.createElement("div");
     logWrap.style.cssText =
-      "margin-top:8px;flex-shrink:0;display:flex;flex-direction:column;height:min(180px,22vh);min-height:88px;max-height:26vh;box-sizing:border-box;";
+      "margin-top:6px;flex:1 1 auto;min-height:160px;height:auto;max-height:none;" +
+      "display:flex;flex-direction:column;box-sizing:border-box;";
     const logLab = document.createElement("div");
     logLab.style.cssText = "font-weight:600;font-size:11px;color:#475569;margin-bottom:4px;flex-shrink:0;";
     logLab.textContent = "Журнал работы:";
@@ -1540,9 +1552,10 @@ function createDevToolsTrace(opts) {
     logWrap.appendChild(logLab);
     const logEl = document.createElement("div");
     logEl.style.cssText =
-      "flex:1 1 auto;min-height:0;overflow-y:auto;font-size:11px;color:#0f172a;background:rgba(248,250,252,.95);" +
+      "flex:1 1 auto;min-height:140px;overflow-y:auto;font-size:11px;color:#0f172a;background:rgba(248,250,252,.95);" +
       "border:1px solid #cbd5e1;border-radius:8px;padding:8px;";
     logWrap.appendChild(logEl);
+    panelScroll.appendChild(logWrap);
 
     function formatLogTime() {
       const d = new Date();
@@ -1574,7 +1587,7 @@ function createDevToolsTrace(opts) {
     }
 
     log(
-      "Панель v2. status×block или теги. Паузы/повторы — в блоке параметров."
+      "Панель v2. Обязательны status и businessBlock; теги опциональны. Паузы/повторы — в блоке параметров."
     );
 
     /**
@@ -1623,23 +1636,14 @@ function createDevToolsTrace(opts) {
     function buildCombos(sel) {
       /** @type {{ newsStatus: string, businessBlock?: string|null, newsTagList?: { tagType: string, tagCode: string }[] }[]} */
       var combos = [];
-      if (sel.useTags) {
-        for (var i = 0; i < sel.newsStatuses.length; i++) {
+      var tags = sel.useTags && sel.newsTagList ? sel.newsTagList.slice() : [];
+      for (var si = 0; si < sel.newsStatuses.length; si++) {
+        for (var bi = 0; bi < sel.businessBlocks.length; bi++) {
           combos.push({
-            newsStatus: sel.newsStatuses[i],
-            businessBlock: null,
-            newsTagList: sel.newsTagList.slice()
+            newsStatus: sel.newsStatuses[si],
+            businessBlock: sel.businessBlocks[bi],
+            newsTagList: tags.slice()
           });
-        }
-      } else {
-        for (var si = 0; si < sel.newsStatuses.length; si++) {
-          for (var bi = 0; bi < sel.businessBlocks.length; bi++) {
-            combos.push({
-              newsStatus: sel.newsStatuses[si],
-              businessBlock: sel.businessBlocks[bi],
-              newsTagList: []
-            });
-          }
         }
       }
       return combos;
@@ -1655,18 +1659,31 @@ function createDevToolsTrace(opts) {
      */
     function validateSelection(sel) {
       if (!sel.newsStatuses || sel.newsStatuses.length === 0) {
-        log("Остановка: не выбран ни один newsStatus.");
+        log("Остановка: выберите хотя бы один newsStatus.");
+        setStats({
+          tone: "done_err",
+          phase: "нет status",
+          status: "—",
+          blockOrTags: "—",
+          tags: "—"
+        });
         return false;
       }
-      if (sel.useTags) {
-        if (!sel.newsTagList || sel.newsTagList.length === 0) {
-          log("Остановка: режим тегов, но список newsTagList пуст.");
-          return false;
-        }
-        return true;
-      }
       if (!sel.businessBlocks || sel.businessBlocks.length === 0) {
-        log("Остановка: не выбран ни один businessBlock (и не заданы теги).");
+        log("Остановка: выберите хотя бы один businessBlock.");
+        setStats({
+          tone: "done_err",
+          phase: "нет businessBlock",
+          status: sel.newsStatuses.join(", "),
+          blockOrTags: "—",
+          tags: sel.useTags
+            ? sel.newsTagList
+                .map(function (t) {
+                  return t.tagCode;
+                })
+                .join(", ")
+            : "—"
+        });
         return false;
       }
       return true;
@@ -1715,12 +1732,18 @@ function createDevToolsTrace(opts) {
       btnJson.disabled = busy;
       btnCsv.disabled = busy;
       btnStop.disabled = !busy;
+      btnClose.disabled = busy;
+      btnClose.title = busy
+        ? "Закрыть недоступно во время выгрузки — сначала Стоп или дождитесь окончания"
+        : "Закрыть панель";
       var op = busy ? "0.55" : "1";
       var cur = busy ? "wait" : "pointer";
       btnJson.style.opacity = op;
       btnCsv.style.opacity = op;
+      btnClose.style.opacity = op;
       btnJson.style.cursor = cur;
       btnCsv.style.cursor = cur;
+      btnClose.style.cursor = busy ? "not-allowed" : "pointer";
       btnStop.style.opacity = busy ? "1" : "0.55";
       btnStop.style.cursor = busy ? "pointer" : "not-allowed";
     }
@@ -1766,8 +1789,8 @@ function createDevToolsTrace(opts) {
           env.contour +
           " | комбинаций: " +
           combos.length +
-          " | режим: " +
-          (sel.useTags ? "теги" : "businessBlock") +
+          " | режим: status×block" +
+          (sel.useTags ? "+теги" : "") +
           " | пауза payload " +
           payloadGapMs +
           " / страницы " +
@@ -1785,10 +1808,18 @@ function createDevToolsTrace(opts) {
         phase: "выгрузка",
         progress: "0 / " + combos.length,
         news: "0",
+        newsCount: "—",
         errors: "0",
         page: "—",
         status: "—",
-        blockOrTags: "—"
+        blockOrTags: "—",
+        tags: sel.useTags
+          ? sel.newsTagList
+              .map(function (t) {
+                return t.tagCode;
+              })
+              .join(", ")
+          : "—"
       });
 
       /** @type {*[]} */
@@ -1820,22 +1851,26 @@ function createDevToolsTrace(opts) {
 
         var combo = combos[ci];
         var comboLabel = formatComboForLog(combo);
-        var blockOrTags = sel.useTags
-          ? (combo.newsTagList || [])
-              .map(function (t) {
-                return t.tagCode;
-              })
-              .join(", ")
-          : String(combo.businessBlock || "—");
+        var blockOrTags = String(combo.businessBlock || "—");
+        var tagsStat =
+          combo.newsTagList && combo.newsTagList.length
+            ? combo.newsTagList
+                .map(function (t) {
+                  return t.tagCode;
+                })
+                .join(", ")
+            : "—";
 
         setStats({
           tone: consecutiveExhaustedFails >= 1 ? "retry2" : "run",
           phase: (ci + 1) + "/" + combos.length,
           status: String(combo.newsStatus),
           blockOrTags: blockOrTags,
+          tags: tagsStat,
           progress: ci + " / " + combos.length + " завершено",
           page: "pageNum=1…",
           news: String(newsTotal),
+          newsCount: "—",
           errors: String(errors)
         });
 
@@ -1843,6 +1878,8 @@ function createDevToolsTrace(opts) {
 
         var pageNum = 1;
         var totalPages = null;
+        /** Общее число новостей в комбинации из body.newsCount (первый ответ). */
+        var comboNewsCount = null;
         var mergedCombo = null;
         var comboPages = [];
         var comboHadSuccess = false;
@@ -1865,7 +1902,9 @@ function createDevToolsTrace(opts) {
               pageNum +
               (totalPages != null ? "/" + totalPages : ""),
             status: String(combo.newsStatus),
-            blockOrTags: blockOrTags
+            blockOrTags: blockOrTags,
+            tags: tagsStat,
+            newsCount: comboNewsCount != null ? String(comboNewsCount) : "—"
           });
 
           log(
@@ -1936,6 +1975,30 @@ function createDevToolsTrace(opts) {
               payload: payload
             };
 
+            var hitMaxPages =
+              maxPagesPerCombo > 0 && pageNum >= maxPagesPerCombo;
+            /**
+             * Пока известны оставшиеся страницы — всегда идём дальше (не рвём выгрузку
+             * посреди total из‑за двух подряд skip). Если total неизвестен — не
+             * уходим в бесконечный pageNum++: после abortLimit останавливаемся.
+             */
+            var canTryNextPage =
+              !hitMaxPages &&
+              ((totalPages != null && pageNum < totalPages) ||
+                (totalPages == null && consecutiveExhaustedFails < abortLimit));
+
+            if (canTryNextPage) {
+              log(
+                "  Переход к pageNum=" +
+                  (pageNum + 1) +
+                  (totalPages != null ? "/" + totalPages : "") +
+                  " после пропуска"
+              );
+              pageNum++;
+              if (pageGapMs > 0) await delay(pageGapMs);
+              continue;
+            }
+
             if (consecutiveExhaustedFails >= abortLimit) {
               abortedByErrors = true;
               fatalErrorInfo = {
@@ -1953,6 +2016,8 @@ function createDevToolsTrace(opts) {
                 phase: "ошибка — стоп",
                 status: String(combo.newsStatus),
                 blockOrTags: blockOrTags,
+                tags: tagsStat,
+                newsCount: comboNewsCount != null ? String(comboNewsCount) : "—",
                 page:
                   "pageNum=" +
                   pageNum +
@@ -1971,16 +2036,6 @@ function createDevToolsTrace(opts) {
               break;
             }
 
-            // Пропуск текущего запроса → следующий pageNum или следующая комбинация
-            if (
-              totalPages != null &&
-              pageNum < totalPages &&
-              !(maxPagesPerCombo > 0 && pageNum >= maxPagesPerCombo)
-            ) {
-              pageNum++;
-              if (pageGapMs > 0) await delay(pageGapMs);
-              continue;
-            }
             comboAborted = true;
             break;
           }
@@ -2000,6 +2055,15 @@ function createDevToolsTrace(opts) {
           if (Number.isFinite(total) && total > 0) totalPages = total;
           var num = pageInfo && pageInfo.num != null ? pageInfo.num : pageNum;
           var newsOnPage = fr.data.body ? countNewsInBody(fr.data.body) : 0;
+
+          if (
+            comboNewsCount == null &&
+            fr.data.body &&
+            fr.data.body.newsCount != null
+          ) {
+            var nc = Number(fr.data.body.newsCount);
+            if (Number.isFinite(nc)) comboNewsCount = nc;
+          }
 
           var pageTotalVal = totalPages != null ? totalPages : total != null ? total : "";
           if (fr.data.body) {
@@ -2022,6 +2086,7 @@ function createDevToolsTrace(opts) {
               (totalPages != null ? "/" + totalPages : "") +
               (isLast ? " last" : ""),
             news: String(newsTotal),
+            newsCount: comboNewsCount != null ? String(comboNewsCount) : "—",
             errors: String(errors),
             phase: (ci + 1) + "/" + combos.length
           });
@@ -2034,6 +2099,7 @@ function createDevToolsTrace(opts) {
               " | page.num=" +
               num +
               (totalPages != null ? " | total=" + totalPages : "") +
+              (comboNewsCount != null ? " | newsCount=" + comboNewsCount : "") +
               " | isLast=" +
               (isLast ? "true" : "false") +
               " | новостей на странице: " +
@@ -2117,6 +2183,7 @@ function createDevToolsTrace(opts) {
           tone: consecutiveExhaustedFails >= 1 ? "retry2" : "run",
           progress: ci + 1 + "/" + combos.length,
           news: String(newsTotal),
+          newsCount: comboNewsCount != null ? String(comboNewsCount) : "—",
           errors: String(errors)
         });
 
@@ -2145,12 +2212,17 @@ function createDevToolsTrace(opts) {
             : "—",
           status: fatalErrorInfo ? String((fatalErrorInfo.payload && fatalErrorInfo.payload.newsStatus) || "—") : "—",
           blockOrTags: fatalErrorInfo
-            ? String(
-                (fatalErrorInfo.payload && fatalErrorInfo.payload.businessBlock) ||
-                  (fatalErrorInfo.payload && fatalErrorInfo.payload.newsTagList
-                    ? "теги"
-                    : "—")
-              )
+            ? String((fatalErrorInfo.payload && fatalErrorInfo.payload.businessBlock) || "—")
+            : "—",
+          tags: fatalErrorInfo &&
+            fatalErrorInfo.payload &&
+            Array.isArray(fatalErrorInfo.payload.newsTagList) &&
+            fatalErrorInfo.payload.newsTagList.length
+            ? fatalErrorInfo.payload.newsTagList
+                .map(function (t) {
+                  return t.tagCode;
+                })
+                .join(", ")
             : "—"
         });
         log(
@@ -2194,10 +2266,10 @@ function createDevToolsTrace(opts) {
           retryMax: retryMax,
           retryPauseMs: retryPauseMs,
           maxPagesPerCombo: maxPagesPerCombo > 0 ? maxPagesPerCombo : null,
-          mode: sel.useTags ? "tags" : "businessBlock",
+          mode: sel.useTags ? "businessBlock+tags" : "businessBlock",
           selection: {
             newsStatuses: sel.newsStatuses,
-            businessBlocks: sel.useTags ? [] : sel.businessBlocks,
+            businessBlocks: sel.businessBlocks,
             newsTagList: sel.useTags ? sel.newsTagList : []
           },
           newsItemsFlat: newsTotal,
@@ -2209,20 +2281,37 @@ function createDevToolsTrace(opts) {
       };
       lastExportBundle = bundle;
 
+      var finishTone = abortedByErrors
+        ? "done_err"
+        : stoppedByUser
+          ? "stop"
+          : errors > 0
+            ? "done_err"
+            : "done_ok";
+      var finishPhase = abortedByErrors
+        ? "ошибка — сохранено"
+        : stoppedByUser
+          ? "стоп — сохранено"
+          : errors > 0
+            ? "готово с ошибками"
+            : "готово";
+
       setStats({
-        tone: abortedByErrors ? "done_err" : stoppedByUser ? "stop" : "done_ok",
-        phase: abortedByErrors
-          ? "ошибка — сохранено"
-          : stoppedByUser
-            ? "стоп — сохранено"
-            : "готово",
+        tone: finishTone,
+        phase: finishPhase,
         progress:
           combosOk +
           " OK / " +
           combosSkip +
           " skip / " +
           combos.length +
-          (abortedByErrors ? " · авария" : stoppedByUser ? " · стоп" : ""),
+          (abortedByErrors
+            ? " · авария"
+            : stoppedByUser
+              ? " · стоп"
+              : errors > 0
+                ? " · ошибки"
+                : ""),
         news: String(newsTotal),
         errors: String(errors),
         page: fatalErrorInfo
@@ -2230,7 +2319,12 @@ function createDevToolsTrace(opts) {
             fatalErrorInfo.pageNum +
             " · " +
             String(fatalErrorInfo.error).slice(0, 70)
-          : "—"
+          : lastExhaustedFail
+            ? "pageNum=" +
+              lastExhaustedFail.pageNum +
+              " · " +
+              String(lastExhaustedFail.error).slice(0, 70)
+            : "—"
       });
 
       return {
@@ -2280,7 +2374,9 @@ function createDevToolsTrace(opts) {
             ? "Авария — JSON сохранён. "
             : result.stopped
               ? "Остановлено — JSON сохранён. "
-              : "JSON готов. ") +
+              : result.errors > 0
+                ? "JSON сохранён с ошибками. "
+                : "JSON готов. ") +
             "Страниц: " +
             result.pagesCount +
             " | новостей: " +
@@ -2289,6 +2385,8 @@ function createDevToolsTrace(opts) {
             result.combosOk +
             " | skip: " +
             result.combosSkip +
+            " | ошибок: " +
+            result.errors +
             " | файл: " +
             fname
         );
@@ -2342,11 +2440,15 @@ function createDevToolsTrace(opts) {
             ? "Авария — файлы сохранены. "
             : result.stopped
               ? "Остановлено — файлы сохранены. "
-              : "Готово (JSON+CSV). ") +
+              : result.errors > 0
+                ? "Файлы сохранены с ошибками. "
+                : "Готово (JSON+CSV). ") +
             "Страниц: " +
             result.pagesCount +
             " | новостей: " +
             result.newsTotal +
+            " | ошибок: " +
+            result.errors +
             " | JSON: " +
             fnameJson
         );
@@ -2397,10 +2499,9 @@ function createDevToolsTrace(opts) {
       log("Стоп запрошен: после текущего запроса сохраним уже загруженное.");
     });
     btnClose.addEventListener("click", function () {
+      if (fetchBusy || btnClose.disabled) return;
       root.remove();
     });
-
-    root.appendChild(logWrap);
 
     document.body.appendChild(root);
     devTrace.attachPanel(root);
