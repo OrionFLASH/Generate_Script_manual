@@ -1050,7 +1050,8 @@ function createDevToolsTrace(opts) {
 
     const panelScroll = document.createElement("div");
     panelScroll.style.cssText =
-      "flex:1 1 0;min-height:0;overflow-y:auto;overflow-x:hidden;box-sizing:border-box;-webkit-overflow-scrolling:touch;";
+      "flex:1 1 0;min-height:0;overflow-y:auto;overflow-x:hidden;box-sizing:border-box;-webkit-overflow-scrolling:touch;" +
+      "display:flex;flex-direction:column;";
     root.appendChild(panelScroll);
 
     /** Компактная кнопка с Unicode-иконкой (без тяжёлых картинок). */
@@ -1216,7 +1217,8 @@ function createDevToolsTrace(opts) {
 
     addStatCell("phase", "фаза");
     addStatCell("status", "status");
-    addStatCell("blockOrTags", "block/теги");
+    addStatCell("blockOrTags", "block");
+    addStatCell("tags", "теги");
     addStatCell("page", "стр.");
     addStatCell("progress", "прогресс");
     addStatCell("news", "новостей");
@@ -1228,6 +1230,7 @@ function createDevToolsTrace(opts) {
      *   phase: string,
      *   status: string,
      *   blockOrTags: string,
+     *   tags: string,
      *   page: string,
      *   progress: string,
      *   news: string,
@@ -1249,6 +1252,7 @@ function createDevToolsTrace(opts) {
       phase: "ожидание",
       status: "—",
       blockOrTags: "—",
+      tags: "—",
       page: "—",
       progress: "—",
       news: "0",
@@ -1258,7 +1262,7 @@ function createDevToolsTrace(opts) {
 
     const payloadBox = document.createElement("div");
     payloadBox.style.cssText =
-      "margin-bottom:10px;padding:10px 12px;border:1px solid #cbd5e1;border-radius:10px;background:rgba(255,255,255,.9);";
+      "flex-shrink:0;margin-bottom:0;padding:10px 12px;border:1px solid #cbd5e1;border-radius:10px;background:rgba(255,255,255,.9);";
 
     const payloadHead = document.createElement("div");
     payloadHead.style.cssText =
@@ -1522,7 +1526,8 @@ function createDevToolsTrace(opts) {
     const LOG_MAX_LINES = NEWS_CFG.LOG_MAX_LINES;
     const logWrap = document.createElement("div");
     logWrap.style.cssText =
-      "margin-top:8px;flex-shrink:0;display:flex;flex-direction:column;height:min(180px,22vh);min-height:88px;max-height:26vh;box-sizing:border-box;";
+      "margin-top:6px;flex:1 1 auto;min-height:160px;height:auto;max-height:none;" +
+      "display:flex;flex-direction:column;box-sizing:border-box;";
     const logLab = document.createElement("div");
     logLab.style.cssText = "font-weight:600;font-size:11px;color:#475569;margin-bottom:4px;flex-shrink:0;";
     logLab.textContent = "Журнал работы:";
@@ -1530,9 +1535,10 @@ function createDevToolsTrace(opts) {
     logWrap.appendChild(logLab);
     const logEl = document.createElement("div");
     logEl.style.cssText =
-      "flex:1 1 auto;min-height:0;overflow-y:auto;font-size:11px;color:#0f172a;background:rgba(248,250,252,.95);" +
+      "flex:1 1 auto;min-height:140px;overflow-y:auto;font-size:11px;color:#0f172a;background:rgba(248,250,252,.95);" +
       "border:1px solid #cbd5e1;border-radius:8px;padding:8px;";
     logWrap.appendChild(logEl);
+    panelScroll.appendChild(logWrap);
 
     function formatLogTime() {
       const d = new Date();
@@ -1641,7 +1647,8 @@ function createDevToolsTrace(opts) {
           tone: "done_err",
           phase: "нет status",
           status: "—",
-          blockOrTags: "—"
+          blockOrTags: "—",
+          tags: "—"
         });
         return false;
       }
@@ -1651,7 +1658,14 @@ function createDevToolsTrace(opts) {
           tone: "done_err",
           phase: "нет businessBlock",
           status: sel.newsStatuses.join(", "),
-          blockOrTags: "—"
+          blockOrTags: "—",
+          tags: sel.useTags
+            ? sel.newsTagList
+                .map(function (t) {
+                  return t.tagCode;
+                })
+                .join(", ")
+            : "—"
         });
         return false;
       }
@@ -1774,7 +1788,14 @@ function createDevToolsTrace(opts) {
         errors: "0",
         page: "—",
         status: "—",
-        blockOrTags: "—"
+        blockOrTags: "—",
+        tags: sel.useTags
+          ? sel.newsTagList
+              .map(function (t) {
+                return t.tagCode;
+              })
+              .join(", ")
+          : "—"
       });
 
       /** @type {*[]} */
@@ -1807,21 +1828,21 @@ function createDevToolsTrace(opts) {
         var combo = combos[ci];
         var comboLabel = formatComboForLog(combo);
         var blockOrTags = String(combo.businessBlock || "—");
-        if (sel.useTags && combo.newsTagList && combo.newsTagList.length) {
-          blockOrTags +=
-            " · " +
-            combo.newsTagList
-              .map(function (t) {
-                return t.tagCode;
-              })
-              .join(", ");
-        }
+        var tagsStat =
+          combo.newsTagList && combo.newsTagList.length
+            ? combo.newsTagList
+                .map(function (t) {
+                  return t.tagCode;
+                })
+                .join(", ")
+            : "—";
 
         setStats({
           tone: consecutiveExhaustedFails >= 1 ? "retry2" : "run",
           phase: (ci + 1) + "/" + combos.length,
           status: String(combo.newsStatus),
           blockOrTags: blockOrTags,
+          tags: tagsStat,
           progress: ci + " / " + combos.length + " завершено",
           page: "pageNum=1…",
           news: String(newsTotal),
@@ -1854,7 +1875,8 @@ function createDevToolsTrace(opts) {
               pageNum +
               (totalPages != null ? "/" + totalPages : ""),
             status: String(combo.newsStatus),
-            blockOrTags: blockOrTags
+            blockOrTags: blockOrTags,
+            tags: tagsStat
           });
 
           log(
@@ -1942,6 +1964,7 @@ function createDevToolsTrace(opts) {
                 phase: "ошибка — стоп",
                 status: String(combo.newsStatus),
                 blockOrTags: blockOrTags,
+                tags: tagsStat,
                 page:
                   "pageNum=" +
                   pageNum +
@@ -2134,12 +2157,17 @@ function createDevToolsTrace(opts) {
             : "—",
           status: fatalErrorInfo ? String((fatalErrorInfo.payload && fatalErrorInfo.payload.newsStatus) || "—") : "—",
           blockOrTags: fatalErrorInfo
-            ? String(
-                (fatalErrorInfo.payload && fatalErrorInfo.payload.businessBlock) ||
-                  (fatalErrorInfo.payload && fatalErrorInfo.payload.newsTagList
-                    ? "теги"
-                    : "—")
-              )
+            ? String((fatalErrorInfo.payload && fatalErrorInfo.payload.businessBlock) || "—")
+            : "—",
+          tags: fatalErrorInfo &&
+            fatalErrorInfo.payload &&
+            Array.isArray(fatalErrorInfo.payload.newsTagList) &&
+            fatalErrorInfo.payload.newsTagList.length
+            ? fatalErrorInfo.payload.newsTagList
+                .map(function (t) {
+                  return t.tagCode;
+                })
+                .join(", ")
             : "—"
         });
         log(
@@ -2388,8 +2416,6 @@ function createDevToolsTrace(opts) {
     btnClose.addEventListener("click", function () {
       root.remove();
     });
-
-    root.appendChild(logWrap);
 
     document.body.appendChild(root);
     devTrace.attachPanel(root);
