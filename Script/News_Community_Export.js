@@ -1110,6 +1110,7 @@ function createDevToolsTrace(opts) {
 
     /** Блок живой статистики текущего запроса */
     const statsBox = document.createElement("div");
+    statsBox.style.cssText = "flex-shrink:0;";
     const statsTitle = document.createElement("div");
     statsTitle.textContent = "Статистика";
     statsBox.appendChild(statsTitle);

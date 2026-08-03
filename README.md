@@ -74,6 +74,7 @@
 
 | Дата | Описание |
 |------|----------|
+| 2026-08-03 | **`News_Community_Export.js`:** журнал/трейс сразу под параметрами (выше); теги в статистике; Docs v2.9. |
 | 2026-08-03 | **`News_Community_Export.js`:** запуск только при ≥1 status и ≥1 businessBlock; теги опциональны; Docs v2.8, справочник v1.27. |
 | 2026-08-03 | **`News_Community_Export.js`:** параметры вынесены в блок **`NEWS_CFG`** вверху скрипта; Docs v2.1, справочник v1.26. |
 | 2026-08-03 | **`News_Community_Export.js` v2:** обход `newsStatus × businessBlock`, опциональный `newsTagList` + custom TEXT, паузы 500/100, статистика на панели, CSV по новостям; Docs v2.0, справочник v1.25, ROADMAP § 6. |
