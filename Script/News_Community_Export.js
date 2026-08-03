@@ -550,6 +550,9 @@ function createDevToolsTrace(opts) {
       newsStatus: String(c.newsStatus || "published"),
       pageNum: Math.max(1, Math.floor(Number(pageNum) || 1))
     };
+    if (c.businessBlock) {
+      payload.businessBlock = String(c.businessBlock);
+    }
     var tags = Array.isArray(c.newsTagList) ? c.newsTagList : [];
     if (tags.length > 0) {
       payload.newsTagList = tags.map(function (t) {
@@ -558,8 +561,6 @@ function createDevToolsTrace(opts) {
           tagCode: String(t.tagCode || "").trim()
         };
       });
-    } else if (c.businessBlock) {
-      payload.businessBlock = String(c.businessBlock);
     }
     return payload;
   }
@@ -573,6 +574,10 @@ function createDevToolsTrace(opts) {
    * }} combo
    */
   function formatComboForLog(combo) {
+    var parts = [
+      "newsStatus=" + combo.newsStatus,
+      "businessBlock=" + (combo.businessBlock || "—")
+    ];
     var tags = combo.newsTagList || [];
     if (tags.length > 0) {
       var tagTxt = tags
@@ -580,14 +585,9 @@ function createDevToolsTrace(opts) {
           return t.tagCode + "/" + t.tagType;
         })
         .join(", ");
-      return "newsStatus=" + combo.newsStatus + " | tags[" + tags.length + "]: " + tagTxt;
+      parts.push("tags[" + tags.length + "]: " + tagTxt);
     }
-    return (
-      "newsStatus=" +
-      combo.newsStatus +
-      " | businessBlock=" +
-      (combo.businessBlock || "—")
-    );
+    return parts.join(" | ");
   }
 
   /**
@@ -1268,7 +1268,8 @@ function createDevToolsTrace(opts) {
     payloadTitle.textContent = "Параметры";
     const payloadHint = document.createElement("div");
     payloadHint.style.cssText = "font-size:10px;color:#64748b;";
-    payloadHint.textContent = "теги → без businessBlock · status × block последовательно";
+    payloadHint.textContent =
+      "обязательны status и businessBlock (≥1) · теги опциональны · status × block";
     payloadHead.appendChild(payloadTitle);
     payloadHead.appendChild(payloadHint);
     payloadBox.appendChild(payloadHead);
@@ -1367,7 +1368,7 @@ function createDevToolsTrace(opts) {
       "display:grid;grid-template-columns:minmax(0,0.9fr) minmax(0,1.1fr) minmax(0,1.2fr);gap:8px;margin-bottom:8px;";
 
     const statusCtl = makeCompactCheckCol(
-      "Статус",
+      "Статус *",
       NEWS_STATUS_OPTIONS.map(function (opt) {
         return {
           key: opt.value,
@@ -1378,7 +1379,7 @@ function createDevToolsTrace(opts) {
     );
 
     const blockCtl = makeCompactCheckCol(
-      "Блок",
+      "Блок *",
       NEWS_BUSINESS_BLOCK_OPTIONS.map(function (opt) {
         return {
           key: opt.value,
@@ -1392,7 +1393,7 @@ function createDevToolsTrace(opts) {
     tagColWrap.style.cssText =
       "min-width:0;padding:8px;border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc;display:flex;flex-direction:column;gap:6px;";
     const tagCtlInner = makeCompactCheckCol(
-      "Теги NEWS_TYPE",
+      "Теги (опц.)",
       NEWS_TAG_OPTIONS.map(function (opt, idx) {
         return {
           key: String(idx),
@@ -1563,7 +1564,7 @@ function createDevToolsTrace(opts) {
     }
 
     log(
-      "Панель v2. status×block или теги. Паузы/повторы — в блоке параметров."
+      "Панель v2. Обязательны status и businessBlock; теги опциональны. Паузы/повторы — в блоке параметров."
     );
 
     /**
@@ -1612,23 +1613,14 @@ function createDevToolsTrace(opts) {
     function buildCombos(sel) {
       /** @type {{ newsStatus: string, businessBlock?: string|null, newsTagList?: { tagType: string, tagCode: string }[] }[]} */
       var combos = [];
-      if (sel.useTags) {
-        for (var i = 0; i < sel.newsStatuses.length; i++) {
+      var tags = sel.useTags && sel.newsTagList ? sel.newsTagList.slice() : [];
+      for (var si = 0; si < sel.newsStatuses.length; si++) {
+        for (var bi = 0; bi < sel.businessBlocks.length; bi++) {
           combos.push({
-            newsStatus: sel.newsStatuses[i],
-            businessBlock: null,
-            newsTagList: sel.newsTagList.slice()
+            newsStatus: sel.newsStatuses[si],
+            businessBlock: sel.businessBlocks[bi],
+            newsTagList: tags.slice()
           });
-        }
-      } else {
-        for (var si = 0; si < sel.newsStatuses.length; si++) {
-          for (var bi = 0; bi < sel.businessBlocks.length; bi++) {
-            combos.push({
-              newsStatus: sel.newsStatuses[si],
-              businessBlock: sel.businessBlocks[bi],
-              newsTagList: []
-            });
-          }
         }
       }
       return combos;
@@ -1644,18 +1636,23 @@ function createDevToolsTrace(opts) {
      */
     function validateSelection(sel) {
       if (!sel.newsStatuses || sel.newsStatuses.length === 0) {
-        log("Остановка: не выбран ни один newsStatus.");
+        log("Остановка: выберите хотя бы один newsStatus.");
+        setStats({
+          tone: "done_err",
+          phase: "нет status",
+          status: "—",
+          blockOrTags: "—"
+        });
         return false;
       }
-      if (sel.useTags) {
-        if (!sel.newsTagList || sel.newsTagList.length === 0) {
-          log("Остановка: режим тегов, но список newsTagList пуст.");
-          return false;
-        }
-        return true;
-      }
       if (!sel.businessBlocks || sel.businessBlocks.length === 0) {
-        log("Остановка: не выбран ни один businessBlock (и не заданы теги).");
+        log("Остановка: выберите хотя бы один businessBlock.");
+        setStats({
+          tone: "done_err",
+          phase: "нет businessBlock",
+          status: sel.newsStatuses.join(", "),
+          blockOrTags: "—"
+        });
         return false;
       }
       return true;
@@ -1755,8 +1752,8 @@ function createDevToolsTrace(opts) {
           env.contour +
           " | комбинаций: " +
           combos.length +
-          " | режим: " +
-          (sel.useTags ? "теги" : "businessBlock") +
+          " | режим: status×block" +
+          (sel.useTags ? "+теги" : "") +
           " | пауза payload " +
           payloadGapMs +
           " / страницы " +
@@ -1809,13 +1806,16 @@ function createDevToolsTrace(opts) {
 
         var combo = combos[ci];
         var comboLabel = formatComboForLog(combo);
-        var blockOrTags = sel.useTags
-          ? (combo.newsTagList || [])
+        var blockOrTags = String(combo.businessBlock || "—");
+        if (sel.useTags && combo.newsTagList && combo.newsTagList.length) {
+          blockOrTags +=
+            " · " +
+            combo.newsTagList
               .map(function (t) {
                 return t.tagCode;
               })
-              .join(", ")
-          : String(combo.businessBlock || "—");
+              .join(", ");
+        }
 
         setStats({
           tone: consecutiveExhaustedFails >= 1 ? "retry2" : "run",
@@ -2183,10 +2183,10 @@ function createDevToolsTrace(opts) {
           retryMax: retryMax,
           retryPauseMs: retryPauseMs,
           maxPagesPerCombo: maxPagesPerCombo > 0 ? maxPagesPerCombo : null,
-          mode: sel.useTags ? "tags" : "businessBlock",
+          mode: sel.useTags ? "businessBlock+tags" : "businessBlock",
           selection: {
             newsStatuses: sel.newsStatuses,
-            businessBlocks: sel.useTags ? [] : sel.businessBlocks,
+            businessBlocks: sel.businessBlocks,
             newsTagList: sel.useTags ? sel.newsTagList : []
           },
           newsItemsFlat: newsTotal,

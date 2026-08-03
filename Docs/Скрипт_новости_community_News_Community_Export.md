@@ -10,7 +10,7 @@
 
 ## Режимы payload
 
-### 1. Без тегов (по умолчанию)
+### 1. Базовый (status × businessBlock)
 
 Последовательный обход комбинаций **newsStatus × businessBlock**. Пример тела:
 
@@ -22,26 +22,29 @@
 }
 ```
 
+**Обязательно** выбрать ≥1 `newsStatus` и ≥1 `businessBlock` — иначе выгрузка не запускается.
+
 Списки допустимых значений и паузы задаются в блоке **`NEWS_CFG`** вверху скрипта (удобно править):
 
 | Ключ `NEWS_CFG` | Назначение |
 |-----------------|------------|
 | `STATUS_OPTIONS` | варианты `newsStatus` (по умолчанию отмечен `published`) |
 | `BUSINESS_BLOCK_OPTIONS` | варианты `businessBlock` (по умолчанию `KMKKSB`) |
-| `TAG_OPTIONS` | теги `NEWS_TYPE` (по умолчанию все выкл.) |
+| `TAG_OPTIONS` | теги `NEWS_TYPE` (по умолчанию все выкл., опционально) |
 | `CUSTOM_TAG_TYPE` | тип своих тегов (`TEXT`) |
 | `PAYLOAD_GAP_MS` / `PAGE_GAP_MS` | паузы 500 / 100 мс |
 | `RETRY_MAX` / `RETRY_PAUSE_MS` / `CONSECUTIVE_FAIL_ABORT` | повторы при ошибке (3×2000 мс); стоп после 2 подряд |
 | `CSV_DATA_KEYS` | колонки CSV после параметров запроса |
 | `ORIGINS` / `NEWS_PATH` | стенды и путь API |
 
-### 2. С фильтром по тегам
+### 2. С опциональным фильтром по тегам
 
-Если выбран ≥1 тег `NEWS_TYPE` **или** задан свой TEXT-тег — запросы идут по каждому `newsStatus` с общим `newsTagList` (**без** `businessBlock`):
+Теги **не обязательны**. Если выбран ≥1 тег `NEWS_TYPE` **или** задан свой TEXT-тег — в payload каждой комбинации `status × block` дополнительно добавляется `newsTagList`:
 
 ```json
 {
   "newsStatus": "published",
+  "businessBlock": "KMKKSB",
   "newsTagList": [
     { "tagType": "NEWS_TYPE", "tagCode": "bestPractice" },
     { "tagType": "TEXT", "tagCode": "Гарантии" }
@@ -52,7 +55,7 @@
 
 Теги `NEWS_TYPE` (по умолчанию все выключены): `bestPractice`, `achievement`, `publication`.  
 Свои теги — textarea (разделители `;` и перевод строки), в запрос уходят как `{ "tagType": "TEXT", "tagCode": "…" }`.  
-Несколько тегов = **один** запрос с расширенным `newsTagList`.
+Несколько тегов = **один** `newsTagList` на каждую комбинацию status×block.
 
 ## Пагинация
 
