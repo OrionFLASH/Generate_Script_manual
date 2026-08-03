@@ -365,5 +365,6 @@
 | **1.23** | § **11** `Pulse_export_OE.js`: пагинация строго по `totalPages`; фазы Search/mainInfo по галочкам; employeeId/ФИО/должность в статусе и trace. |
 | **1.24** | § **11** `Pulse_export_OE.js`: `PULSE_CFG`, пауза 1500+джиттер, Full/CSV зависят от Search+mainInfo, маскирование PII в Trace. |
 | **1.25** | § **6** `News_Community_Export.js` v2: обход `newsStatus × businessBlock`, опциональный `newsTagList` + custom TEXT, паузы 500/100, статистика, CSV по новостям. |
+| **1.26** | § **6** `News_Community_Export.js`: параметры собраны в блок **`NEWS_CFG`** вверху скрипта. |
 
 *Актуальность проверяйте по скриптам в `Script/`.*
