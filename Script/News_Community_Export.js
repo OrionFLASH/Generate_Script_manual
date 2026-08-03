@@ -2554,6 +2554,11 @@ function createDevToolsTrace(opts) {
         log("Выгрузка уже выполняется.");
         return;
       }
+      if (!hasRequiredSelection()) {
+        refreshRequiredSelectionUi();
+        log("Остановка: выберите хотя бы один newsStatus и один businessBlock.");
+        return;
+      }
       fetchBusy = true;
       stopRequested = false;
       setExportButtonsBusy(true);
@@ -2617,6 +2622,11 @@ function createDevToolsTrace(opts) {
     async function runNewsCsvExport() {
       if (fetchBusy) {
         log("Выгрузка уже выполняется.");
+        return;
+      }
+      if (!hasRequiredSelection()) {
+        refreshRequiredSelectionUi();
+        log("Остановка: выберите хотя бы один newsStatus и один businessBlock.");
         return;
       }
       fetchBusy = true;
