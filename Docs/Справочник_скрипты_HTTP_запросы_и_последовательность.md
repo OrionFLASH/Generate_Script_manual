@@ -243,7 +243,7 @@
 5. Кнопка **Стоп** — прерывает цикл после текущего POST; уже загруженные страницы сохраняются в файлы (`exportMeta.stoppedByUser`).
 6. Ретраи: при ошибке HTTP/JSON — пауза 2000 мс, до 3 попыток; пропуск запроса; два подряд исчерпанных → авария с сохранением (`exportMeta.abortedByErrors`, `fatalError`).
 
-На панели — блок **статистики** (комбинация, страница, прогресс). Подробности: [Docs/Скрипт_новости_community_News_Community_Export.md](Скрипт_новости_community_News_Community_Export.md) (**v2.8**).
+На панели — блок **статистики** (status, block, **теги**, страница, прогресс) и **журнал/трейс** сразу под параметрами. Подробности: [Docs/Скрипт_новости_community_News_Community_Export.md](Скрипт_новости_community_News_Community_Export.md) (**v2.9**).
 
 ---
 
@@ -369,5 +369,6 @@
 | **1.25** | § **6** `News_Community_Export.js` v2: обход `newsStatus × businessBlock`, опциональный `newsTagList` + custom TEXT, паузы 500/100, статистика, CSV по новостям. |
 | **1.26** | § **6** `News_Community_Export.js`: параметры собраны в блок **`NEWS_CFG`** вверху скрипта. |
 | **1.27** | § **6** `News_Community_Export.js`: обязательны status+block; теги опциональны в том же payload. |
+| **1.28** | § **6** `News_Community_Export.js`: журнал/трейс под параметрами; в статистике отдельная ячейка «теги» (Docs v2.9). |
 
 *Актуальность проверяйте по скриптам в `Script/`.*

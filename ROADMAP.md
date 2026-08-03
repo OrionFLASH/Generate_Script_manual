@@ -330,7 +330,7 @@
 - `[v]` **Опциональные теги:** если выбран ≥1 NEWS_TYPE или custom TEXT — в тот же payload добавляется `newsTagList[]` (обход по-прежнему `newsStatus × businessBlock`).
 - `[v]` **Custom-теги:** textarea (`;` / перевод строки); `tagType: TEXT`.
 - `[v]` **Паузы с панели:** между комбинациями payload (default 500) и между страницами (default 100).
-- `[v]` **Статистика на панели:** текущая комбинация, статус, businessBlock/теги, страница `N/total`, прогресс комбинаций, счётчики новостей/ошибок.
+- `[v]` **Статистика на панели:** фаза, status, block, отдельная ячейка **теги**, страница `N/total`, прогресс, счётчики новостей/ошибок.
 - `[v]` **UI:** секции выбора, чекбоксы, две паузы, журнал, кнопки JSON / JSON+CSV.
 - `[v]` **CSV:** колонки `newsStatus, businessBlock, pageNum, total` + поля новости (по одной строке на новость).
 - `[v]` **JSON:** единый файл `exportMeta` + `comboResults` + `pages` + `merged`.
@@ -343,7 +343,7 @@
 
 ### 6.2 POST `/proxy/v1/news`
 
-- `[v]` Пагинация: `pageNum`, остановка по `isLast` и `total`; обход комбинаций status×block или status+теги.
+- `[v]` Пагинация: `pageNum`, остановка по `isLast` и `total`; обход комбинаций `newsStatus × businessBlock` (+ опциональный `newsTagList`).
 - `[v]` Объединение `timePeriod[].news` в `merged`.
 - `[v]` Корректный skip при отсутствии ответа по комбинации.
 
