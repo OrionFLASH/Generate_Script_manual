@@ -980,7 +980,7 @@ function createDevToolsTrace(opts) {
     const titleSub = document.createElement("div");
     titleSub.style.cssText = "font-size:11px;color:#475569;margin-bottom:10px;line-height:1.45;";
     titleSub.textContent =
-      "POST /proxy/v1/news · комбинации newsStatus × businessBlock (или фильтр по тегам) · пагинация pageNum · JSON + CSV. Куки сессии вкладки (credentials: include).";
+      "POST /proxy/v1/news · status×block (≥1 каждый) · теги опциональны · пагинация pageNum · JSON + CSV. Куки сессии вкладки (credentials: include).";
     root.appendChild(titleSub);
 
     const stRow = document.createElement("div");
