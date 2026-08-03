@@ -357,7 +357,8 @@
 - `[v]` IIFE, журнал, статистика текущего запроса, кнопки JSON / JSON+CSV / **Стоп**, блокировка повторного запуска.
 - `[v]` Валидация: ≥1 `newsStatus`; без тегов — ≥1 `businessBlock`; с тегами — ≥1 тег.
 - `[v]` **Стоп:** флаг `stopRequested`; выход после текущего POST; сохранение частичных JSON/CSV; `exportMeta.stoppedByUser`.
-- `[v]` **Ретраи:** `RETRY_MAX`×`RETRY_PAUSE_MS` при HTTP/JSON-ошибке; пропуск запроса; 2 подряд исчерпанных → `abortedByErrors` + `fatalError` в статусе/meta.
+- `[v]` **Ретраи:** `RETRY_MAX`×`RETRY_PAUSE_MS` при HTTP/JSON-ошибке (поля на панели); пропуск запроса; 2 подряд исчерпанных → `abortedByErrors` + `fatalError`.
+- `[v]` **UI v2.5:** компактная сетка статус/блок/теги + ряд таймингов (payload/страницы/повтор/попытки).
 
 ---
 
