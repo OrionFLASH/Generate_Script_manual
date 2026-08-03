@@ -685,7 +685,9 @@ function createDevToolsTrace(opts) {
    * @param {{
    *   log: function(string): void,
    *   onAttempt?: function(number, number, string|null): void,
-   *   shouldStop?: function(): boolean
+   *   shouldStop?: function(): boolean,
+   *   retryMax?: number,
+   *   retryPauseMs?: number
    * }} hooks
    * @returns {Promise<{
    *   ok: boolean,
@@ -702,8 +704,14 @@ function createDevToolsTrace(opts) {
     var shouldStop = typeof h.shouldStop === "function" ? h.shouldStop : function () {
       return false;
     };
-    var maxAttempts = Math.max(1, Number(NEWS_CFG.RETRY_MAX) || 3);
-    var pauseMs = Math.max(0, Number(NEWS_CFG.RETRY_PAUSE_MS) || 2000);
+    var maxAttempts = Math.max(
+      1,
+      Number(h.retryMax != null ? h.retryMax : NEWS_CFG.RETRY_MAX) || 3
+    );
+    var pauseMs = Math.max(
+      0,
+      Number(h.retryPauseMs != null ? h.retryPauseMs : NEWS_CFG.RETRY_PAUSE_MS) || 2000
+    );
     /** @type {*} */
     var lastFr = null;
     /** @type {string|null} */
@@ -1043,12 +1051,12 @@ function createDevToolsTrace(opts) {
     /** Блок живой статистики текущего запроса */
     const statsBox = document.createElement("div");
     statsBox.style.cssText =
-      "margin-bottom:10px;padding:10px 12px;border:1px solid #86efac;border-radius:10px;" +
-      "background:rgba(240,253,244,.92);display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 14px;";
+      "margin-bottom:8px;padding:8px 10px;border:1px solid #86efac;border-radius:8px;" +
+      "background:rgba(240,253,244,.92);display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px 10px;";
     const statsTitle = document.createElement("div");
     statsTitle.style.cssText =
-      "grid-column:1/-1;font-weight:700;font-size:11px;color:#166534;margin-bottom:2px;letter-spacing:0.02em;";
-    statsTitle.textContent = "Статистика работы";
+      "grid-column:1/-1;font-weight:700;font-size:10px;color:#166534;letter-spacing:0.03em;text-transform:uppercase;";
+    statsTitle.textContent = "Статистика";
     statsBox.appendChild(statsTitle);
 
     /** @type {Record<string, HTMLElement>} */
@@ -1057,12 +1065,12 @@ function createDevToolsTrace(opts) {
       var wrap = document.createElement("div");
       wrap.style.cssText = "min-width:0;";
       var lab = document.createElement("div");
-      lab.style.cssText = "font-size:10px;color:#64748b;margin-bottom:1px;";
+      lab.style.cssText = "font-size:9px;color:#64748b;margin-bottom:0;";
       lab.textContent = label;
       var val = document.createElement("div");
       val.style.cssText =
-        "font-size:12px;font-weight:600;color:#0f172a;font-family:ui-monospace,Menlo,monospace;" +
-        "word-break:break-word;line-height:1.35;";
+        "font-size:11px;font-weight:600;color:#0f172a;font-family:ui-monospace,Menlo,monospace;" +
+        "word-break:break-word;line-height:1.3;";
       val.textContent = "—";
       wrap.appendChild(lab);
       wrap.appendChild(val);
@@ -1110,64 +1118,80 @@ function createDevToolsTrace(opts) {
 
     const payloadBox = document.createElement("div");
     payloadBox.style.cssText =
-      "margin-bottom:10px;padding:12px;border:1px solid #cbd5e1;border-radius:10px;background:rgba(255,255,255,.88);";
+      "margin-bottom:10px;padding:10px 12px;border:1px solid #cbd5e1;border-radius:10px;background:rgba(255,255,255,.9);";
+
+    const payloadHead = document.createElement("div");
+    payloadHead.style.cssText =
+      "display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:8px;flex-wrap:wrap;";
     const payloadTitle = document.createElement("div");
-    payloadTitle.style.cssText = "font-weight:700;font-size:12px;color:#1e293b;margin-bottom:8px;";
-    payloadTitle.textContent = "Параметры POST";
-    payloadBox.appendChild(payloadTitle);
+    payloadTitle.style.cssText = "font-weight:700;font-size:12px;color:#1e293b;";
+    payloadTitle.textContent = "Параметры";
+    const payloadHint = document.createElement("div");
+    payloadHint.style.cssText = "font-size:10px;color:#64748b;";
+    payloadHint.textContent = "теги → без businessBlock · status × block последовательно";
+    payloadHead.appendChild(payloadTitle);
+    payloadHead.appendChild(payloadHint);
+    payloadBox.appendChild(payloadHead);
 
     /**
-     * @param {HTMLElement} parent
-     * @param {string} blockTitle
-     * @param {{ key: string, label: string, defaultChecked?: boolean }[]} items
-     * @param {string} [hint]
-     * @returns {{ getSelectedKeys: function(): string[], setAll: function(boolean): void }}
+     * Компактная колонка чекбоксов.
+     * @param {string} title
+     * @param {{ key: string, label: string, short?: string, defaultChecked?: boolean }[]} items
+     * @returns {{ el: HTMLElement, getSelectedKeys: function(): string[], setAll: function(boolean): void }}
      */
-    function appendCheckboxBlock(parent, blockTitle, items, hint) {
-      const block = document.createElement("div");
-      block.style.cssText = "margin-bottom:12px;";
+    function makeCompactCheckCol(title, items) {
+      const col = document.createElement("div");
+      col.style.cssText =
+        "min-width:0;padding:8px;border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc;";
+
       const head = document.createElement("div");
       head.style.cssText =
-        "display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;flex-wrap:wrap;";
+        "display:flex;align-items:center;justify-content:space-between;gap:4px;margin-bottom:6px;";
       const lab = document.createElement("div");
-      lab.style.cssText = "font-weight:600;font-size:11px;color:#334155;";
-      lab.textContent = blockTitle;
+      lab.style.cssText =
+        "font-weight:700;font-size:10px;color:#475569;text-transform:uppercase;letter-spacing:0.04em;";
+      lab.textContent = title;
       head.appendChild(lab);
+
       const btnRow = document.createElement("div");
-      btnRow.style.cssText = "display:flex;gap:4px;";
+      btnRow.style.cssText = "display:flex;gap:3px;";
       function mkTiny(txt, on) {
         var b = document.createElement("button");
         b.type = "button";
         b.textContent = txt;
         b.style.cssText =
-          "padding:2px 7px;font-size:10px;cursor:pointer;border:1px solid #94a3b8;border-radius:4px;background:#f8fafc;color:#334155;";
+          "padding:1px 5px;font-size:9px;cursor:pointer;border:1px solid #cbd5e1;border-radius:3px;" +
+          "background:#fff;color:#64748b;line-height:1.2;";
         b.addEventListener("click", on);
         return b;
       }
-      block.appendChild(head);
+      head.appendChild(btnRow);
+      col.appendChild(head);
 
-      const grid = document.createElement("div");
-      grid.style.cssText =
-        "display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:4px 12px;align-items:center;";
+      const list = document.createElement("div");
+      list.style.cssText = "display:flex;flex-direction:column;gap:3px;";
       /** @type {Record<string, HTMLInputElement>} */
       const checks = {};
       items.forEach(function (item) {
         const row = document.createElement("label");
         row.style.cssText =
-          "margin:0;color:#111827;line-height:1.35;display:flex;align-items:center;gap:6px;min-width:0;cursor:pointer;font-size:11px;" +
-          "padding:4px 6px;border-radius:6px;background:#f8fafc;border:1px solid #e2e8f0;";
+          "margin:0;display:flex;align-items:center;gap:5px;cursor:pointer;font-size:11px;" +
+          "padding:3px 5px;border-radius:5px;background:#fff;border:1px solid #e2e8f0;line-height:1.25;";
+        row.title = item.label || item.key;
         const c = document.createElement("input");
         c.type = "checkbox";
         c.checked = !!item.defaultChecked;
+        c.style.cssText = "margin:0;flex-shrink:0;";
         checks[item.key] = c;
-        row.appendChild(c);
         const sp = document.createElement("span");
-        sp.style.cssText = "color:#334155;word-break:break-word;";
-        sp.textContent = item.label;
+        sp.style.cssText =
+          "color:#334155;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;";
+        sp.textContent = item.short || item.label || item.key;
+        row.appendChild(c);
         row.appendChild(sp);
-        grid.appendChild(row);
+        list.appendChild(row);
       });
-      block.appendChild(grid);
+      col.appendChild(list);
 
       function setAll(v) {
         Object.keys(checks).forEach(function (k) {
@@ -1175,26 +1199,18 @@ function createDevToolsTrace(opts) {
         });
       }
       btnRow.appendChild(
-        mkTiny("Все", function () {
+        mkTiny("все", function () {
           setAll(true);
         })
       );
       btnRow.appendChild(
-        mkTiny("Сброс", function () {
+        mkTiny("сброс", function () {
           setAll(false);
         })
       );
-      head.appendChild(btnRow);
-
-      if (hint) {
-        var hintEl = document.createElement("div");
-        hintEl.style.cssText = "font-size:10px;color:#64748b;margin-top:4px;line-height:1.35;";
-        hintEl.textContent = hint;
-        block.appendChild(hintEl);
-      }
-      parent.appendChild(block);
 
       return {
+        el: col,
         getSelectedKeys: function () {
           const out = [];
           Object.keys(checks).forEach(function (k) {
@@ -1206,107 +1222,166 @@ function createDevToolsTrace(opts) {
       };
     }
 
-    const statusCtl = appendCheckboxBlock(
-      payloadBox,
-      "newsStatus (запрашиваются последовательно)",
+    const selectGrid = document.createElement("div");
+    selectGrid.style.cssText =
+      "display:grid;grid-template-columns:minmax(0,0.9fr) minmax(0,1.1fr) minmax(0,1.2fr);gap:8px;margin-bottom:8px;";
+
+    const statusCtl = makeCompactCheckCol(
+      "Статус",
       NEWS_STATUS_OPTIONS.map(function (opt) {
+        var short =
+          opt.value === "published"
+            ? "published"
+            : opt.value === "planned"
+              ? "planned"
+              : opt.value === "draft"
+                ? "draft"
+                : opt.value;
         return {
           key: opt.value,
           label: opt.label || opt.value,
+          short: short,
           defaultChecked: !!opt.defaultChecked
         };
-      }),
-      "По умолчанию: published."
+      })
     );
 
-    const blockCtl = appendCheckboxBlock(
-      payloadBox,
-      "businessBlock (запрашиваются последовательно × каждый status)",
+    const blockCtl = makeCompactCheckCol(
+      "Блок",
       NEWS_BUSINESS_BLOCK_OPTIONS.map(function (opt) {
         return {
           key: opt.value,
           label: opt.label || opt.value,
+          short: opt.value,
           defaultChecked: !!opt.defaultChecked
         };
-      }),
-      "По умолчанию: KMKKSB. Игнорируется, если выбран хотя бы один тег."
+      })
     );
 
-    const tagCtl = appendCheckboxBlock(
-      payloadBox,
-      "Фильтр по тегам NEWS_TYPE (необязательно)",
+    const tagColWrap = document.createElement("div");
+    tagColWrap.style.cssText =
+      "min-width:0;padding:8px;border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc;display:flex;flex-direction:column;gap:6px;";
+    const tagCtlInner = makeCompactCheckCol(
+      "Теги NEWS_TYPE",
       NEWS_TAG_OPTIONS.map(function (opt, idx) {
+        var shortMap = {
+          bestPractice: "bestPractice",
+          achievement: "achievement",
+          publication: "publication"
+        };
         return {
           key: String(idx),
-          label: opt.label || opt.tagCode + " · " + opt.tagType,
+          label: opt.label || opt.tagCode,
+          short: shortMap[opt.tagCode] || opt.tagCode,
           defaultChecked: !!opt.defaultChecked
         };
-      }),
-      "Если отмечен ≥1 тег (или задан свой TEXT) — payload с newsTagList, без businessBlock; все теги в одном запросе."
+      })
     );
+    // Вложим список тегов без внешней рамки makeCompactCheckCol — переиспользуем el
+    tagCtlInner.el.style.cssText =
+      "min-width:0;padding:0;border:none;border-radius:0;background:transparent;";
+    tagColWrap.appendChild(tagCtlInner.el);
 
-    const customTagLab = document.createElement("label");
-    customTagLab.style.cssText =
-      "display:block;font-weight:600;font-size:11px;color:#334155;margin:4px 0 4px;";
-    customTagLab.textContent =
-      "Свои TEXT-теги (через ; или с новой строки) — tagType: TEXT";
-    payloadBox.appendChild(customTagLab);
     const inpCustomTags = document.createElement("textarea");
-    inpCustomTags.rows = 3;
+    inpCustomTags.rows = 2;
     inpCustomTags.placeholder = NEWS_CFG.CUSTOM_TAGS_PLACEHOLDER;
+    inpCustomTags.title = "Свои TEXT-теги: ; или перевод строки";
     inpCustomTags.style.cssText =
-      "width:100%;box-sizing:border-box;padding:8px;font-size:11px;border:1px solid #64748b;border-radius:6px;" +
-      "resize:vertical;min-height:56px;font-family:ui-monospace,Menlo,monospace;color-scheme:light;margin-bottom:10px;";
-    payloadBox.appendChild(inpCustomTags);
+      "width:100%;box-sizing:border-box;padding:5px 6px;font-size:10px;border:1px solid #94a3b8;border-radius:5px;" +
+      "resize:vertical;min-height:40px;max-height:72px;font-family:ui-monospace,Menlo,monospace;color-scheme:light;background:#fff;";
+    const customHint = document.createElement("div");
+    customHint.style.cssText = "font-size:9px;color:#94a3b8;margin-top:-2px;";
+    customHint.textContent = "свои TEXT (; / Enter)";
+    tagColWrap.appendChild(inpCustomTags);
+    tagColWrap.appendChild(customHint);
 
-    const optsRow = document.createElement("div");
-    optsRow.style.cssText =
-      "display:flex;align-items:center;flex-wrap:wrap;gap:10px 16px;margin-top:4px;" +
-      "padding-top:10px;border-top:1px solid #e2e8f0;";
+    const tagCtl = {
+      getSelectedKeys: tagCtlInner.getSelectedKeys,
+      setAll: tagCtlInner.setAll
+    };
+
+    selectGrid.appendChild(statusCtl.el);
+    selectGrid.appendChild(blockCtl.el);
+    selectGrid.appendChild(tagColWrap);
+    payloadBox.appendChild(selectGrid);
+
+    /** Компактное числовое поле настройки */
+    function mkNumField(labelText, value, title) {
+      const lab = document.createElement("label");
+      lab.style.cssText =
+        "display:flex;flex-direction:column;gap:2px;font-size:10px;color:#64748b;min-width:0;";
+      lab.title = title || labelText;
+      const cap = document.createElement("span");
+      cap.textContent = labelText;
+      cap.style.cssText = "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;";
+      const inp = document.createElement("input");
+      inp.type = "number";
+      inp.min = "0";
+      inp.value = String(value);
+      inp.style.cssText =
+        "width:100%;box-sizing:border-box;padding:4px 6px;font-size:11px;border:1px solid #94a3b8;" +
+        "border-radius:5px;color-scheme:light;background:#fff;color:#0f172a;";
+      lab.appendChild(cap);
+      lab.appendChild(inp);
+      return { lab: lab, inp: inp };
+    }
+
+    const timingBox = document.createElement("div");
+    timingBox.style.cssText =
+      "display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px;align-items:end;" +
+      "padding-top:8px;border-top:1px solid #e2e8f0;";
+
+    const fPayloadGap = mkNumField(
+      "Пауза payload, мс",
+      DEFAULT_PAYLOAD_GAP_MS,
+      "Пауза между комбинациями newsStatus×businessBlock"
+    );
+    fPayloadGap.inp.max = String(GAP_MAX_MS);
+    const inpPayloadGapMs = fPayloadGap.inp;
+
+    const fPageGap = mkNumField(
+      "Пауза страниц, мс",
+      DEFAULT_PAGE_GAP_MS,
+      "Пауза между pageNum внутри комбинации"
+    );
+    fPageGap.inp.max = String(GAP_MAX_MS);
+    const inpPageGapMs = fPageGap.inp;
+
+    const fRetryPause = mkNumField(
+      "Пауза повтора, мс",
+      NEWS_CFG.RETRY_PAUSE_MS,
+      "Пауза перед повтором при ошибке HTTP/JSON"
+    );
+    fRetryPause.inp.max = String(GAP_MAX_MS);
+    const inpRetryPauseMs = fRetryPause.inp;
+
+    const fRetryMax = mkNumField(
+      "Попыток",
+      NEWS_CFG.RETRY_MAX,
+      "Число попыток одного запроса при ошибке"
+    );
+    fRetryMax.inp.min = "1";
+    fRetryMax.inp.max = "20";
+    const inpRetryMax = fRetryMax.inp;
 
     const labPrefix = document.createElement("label");
     labPrefix.style.cssText =
-      "display:inline-flex;align-items:center;gap:6px;color:#111827;white-space:nowrap;font-size:11px;";
-    labPrefix.appendChild(document.createTextNode("Префикс файла:"));
+      "display:flex;flex-direction:column;gap:2px;font-size:10px;color:#64748b;grid-column:span 2;min-width:0;";
+    labPrefix.appendChild(document.createTextNode("Префикс файла"));
     const inpFnamePrefix = document.createElement("input");
     inpFnamePrefix.type = "text";
     inpFnamePrefix.placeholder = DEFAULT_EXPORT_FILENAME_PREFIX_PLACEHOLDER;
     inpFnamePrefix.style.cssText =
-      "width:min(220px,40vw);padding:4px 8px;font-size:11px;border:1px solid #64748b;border-radius:6px;color-scheme:light;";
+      "width:100%;box-sizing:border-box;padding:4px 6px;font-size:11px;border:1px solid #94a3b8;" +
+      "border-radius:5px;color-scheme:light;background:#fff;";
     labPrefix.appendChild(inpFnamePrefix);
-    optsRow.appendChild(labPrefix);
 
-    const labPayloadGap = document.createElement("label");
-    labPayloadGap.style.cssText =
-      "display:inline-flex;align-items:center;gap:6px;color:#111827;white-space:nowrap;font-size:11px;";
-    labPayloadGap.appendChild(document.createTextNode("Пауза между payload, мс:"));
-    const inpPayloadGapMs = document.createElement("input");
-    inpPayloadGapMs.type = "number";
-    inpPayloadGapMs.min = "0";
-    inpPayloadGapMs.max = String(GAP_MAX_MS);
-    inpPayloadGapMs.value = String(DEFAULT_PAYLOAD_GAP_MS);
-    inpPayloadGapMs.title = "Пауза между разными комбинациями newsStatus×businessBlock (или status+теги)";
-    inpPayloadGapMs.style.cssText =
-      "width:72px;padding:4px 6px;font-size:11px;border:1px solid #64748b;border-radius:6px;color-scheme:light;";
-    labPayloadGap.appendChild(inpPayloadGapMs);
-    optsRow.appendChild(labPayloadGap);
-
-    const labPageGap = document.createElement("label");
-    labPageGap.style.cssText =
-      "display:inline-flex;align-items:center;gap:6px;color:#111827;white-space:nowrap;font-size:11px;";
-    labPageGap.appendChild(document.createTextNode("Пауза между страницами, мс:"));
-    const inpPageGapMs = document.createElement("input");
-    inpPageGapMs.type = "number";
-    inpPageGapMs.min = "0";
-    inpPageGapMs.max = String(GAP_MAX_MS);
-    inpPageGapMs.value = String(DEFAULT_PAGE_GAP_MS);
-    inpPageGapMs.title = "Пауза между pageNum внутри одной комбинации";
-    inpPageGapMs.style.cssText =
-      "width:72px;padding:4px 6px;font-size:11px;border:1px solid #64748b;border-radius:6px;color-scheme:light;";
-    labPageGap.appendChild(inpPageGapMs);
-    optsRow.appendChild(labPageGap);
-
-    payloadBox.appendChild(optsRow);
+    timingBox.appendChild(fPayloadGap.lab);
+    timingBox.appendChild(fPageGap.lab);
+    timingBox.appendChild(fRetryPause.lab);
+    timingBox.appendChild(fRetryMax.lab);
+    timingBox.appendChild(labPrefix);
+    payloadBox.appendChild(timingBox);
     panelScroll.appendChild(payloadBox);
 
     const LOG_MAX_LINES = NEWS_CFG.LOG_MAX_LINES;
@@ -1354,11 +1429,7 @@ function createDevToolsTrace(opts) {
     }
 
     log(
-      "Панель v2. Без тегов: status×businessBlock. С тегами: status + newsTagList. Паузы: payload " +
-        DEFAULT_PAYLOAD_GAP_MS +
-        " мс / страницы " +
-        DEFAULT_PAGE_GAP_MS +
-        " мс."
+      "Панель v2. status×block или теги. Паузы/повторы — в блоке параметров."
     );
 
     /**
@@ -1463,6 +1534,17 @@ function createDevToolsTrace(opts) {
       return n;
     }
 
+    function readRetryMax() {
+      const n = parseInt(String(inpRetryMax.value || "").trim(), 10);
+      if (!Number.isFinite(n) || n < 1) return NEWS_CFG.RETRY_MAX || 3;
+      if (n > 20) return 20;
+      return n;
+    }
+
+    function readRetryPauseMs() {
+      return readGapMs(inpRetryPauseMs, NEWS_CFG.RETRY_PAUSE_MS || 2000);
+    }
+
     function buildExportFilenamePrefix(standKey, contourKey) {
       var custom = sanitizeExportFilenamePrefix(inpFnamePrefix.value);
       if (custom) return custom.endsWith("_") ? custom : custom + "_";
@@ -1508,6 +1590,8 @@ function createDevToolsTrace(opts) {
       var env = getNewsEnv();
       var payloadGapMs = readGapMs(inpPayloadGapMs, DEFAULT_PAYLOAD_GAP_MS);
       var pageGapMs = readGapMs(inpPageGapMs, DEFAULT_PAGE_GAP_MS);
+      var retryMax = readRetryMax();
+      var retryPauseMs = readRetryPauseMs();
       var sel = readPanelSelection();
       if (!validateSelection(sel)) {
         return null;
@@ -1529,9 +1613,12 @@ function createDevToolsTrace(opts) {
           (sel.useTags ? "теги" : "businessBlock") +
           " | пауза payload " +
           payloadGapMs +
-          " мс / страницы " +
+          " / страницы " +
           pageGapMs +
-          " мс"
+          " | повтор " +
+          retryPauseMs +
+          " мс × " +
+          retryMax
       );
 
       setStats({
@@ -1631,6 +1718,8 @@ function createDevToolsTrace(opts) {
             payload,
             {
               log: log,
+              retryMax: retryMax,
+              retryPauseMs: retryPauseMs,
               shouldStop: function () {
                 return !!stopRequested;
               },
@@ -1682,7 +1771,7 @@ function createDevToolsTrace(opts) {
               fatalErrorInfo = {
                 message:
                   "Два запроса подряд исчерпали " +
-                  (NEWS_CFG.RETRY_MAX || 3) +
+                  retryMax +
                   " попыток — аварийная остановка",
                 combo: comboLabel,
                 pageNum: pageNum,
@@ -1909,8 +1998,8 @@ function createDevToolsTrace(opts) {
           abortedByErrors: !!abortedByErrors,
           fatalError: fatalErrorInfo,
           lastExhaustedFail: lastExhaustedFail,
-          retryMax: NEWS_CFG.RETRY_MAX,
-          retryPauseMs: NEWS_CFG.RETRY_PAUSE_MS,
+          retryMax: retryMax,
+          retryPauseMs: retryPauseMs,
           mode: sel.useTags ? "tags" : "businessBlock",
           selection: {
             newsStatuses: sel.newsStatuses,
