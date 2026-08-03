@@ -56,6 +56,11 @@
     PAYLOAD_GAP_MS: 500,
     /** Пауза между страницами внутри одной комбинации (мс) */
     PAGE_GAP_MS: 100,
+    /**
+     * Макс. число страниц внутри одной комбинации (0 = все по total/isLast).
+     * Пример: 3 → запросить не больше pageNum 1..3.
+     */
+    MAX_PAGES_PER_COMBO: 0,
     /** Верхний предел пауз на панели (мс) */
     GAP_MAX_MS: 60000,
 
@@ -1048,6 +1053,60 @@ function createDevToolsTrace(opts) {
       "flex:1 1 0;min-height:0;overflow-y:auto;overflow-x:hidden;box-sizing:border-box;-webkit-overflow-scrolling:touch;";
     root.appendChild(panelScroll);
 
+    /** Компактная кнопка с Unicode-иконкой (без тяжёлых картинок). */
+    function mkActionBtn(icon, label, bg, opts) {
+      var o = opts || {};
+      var b = document.createElement("button");
+      b.type = "button";
+      b.title = o.title || label;
+      b.disabled = !!o.disabled;
+      b.style.cssText =
+        "display:inline-flex;align-items:center;justify-content:center;gap:4px;" +
+        "padding:5px 8px;font-size:11px;font-weight:700;line-height:1.2;cursor:pointer;" +
+        "border:none;border-radius:6px;color:#fff;box-sizing:border-box;white-space:nowrap;" +
+        "background:" +
+        bg +
+        ";" +
+        (o.disabled ? "opacity:0.55;cursor:not-allowed;" : "") +
+        (o.extra || "");
+      var ic = document.createElement("span");
+      ic.setAttribute("aria-hidden", "true");
+      ic.style.cssText = "font-size:12px;line-height:1;flex-shrink:0;";
+      ic.textContent = icon;
+      var tx = document.createElement("span");
+      tx.textContent = label;
+      b.appendChild(ic);
+      b.appendChild(tx);
+      return b;
+    }
+
+    const actionBar = document.createElement("div");
+    actionBar.style.cssText =
+      "display:flex;flex-wrap:wrap;gap:5px;align-items:center;margin:0 0 8px 0;" +
+      "padding:6px;background:rgba(255,255,255,.85);border:1px solid #cbd5e1;border-radius:8px;" +
+      "position:sticky;top:0;z-index:2;";
+
+    const btnJson = mkActionBtn("⬇", "JSON", "#2563eb", {
+      title: "Загрузить новости → JSON"
+    });
+    const btnCsv = mkActionBtn("▦", "JSON+CSV", "#059669", {
+      title: "Выгрузить JSON + CSV"
+    });
+    const btnStop = mkActionBtn("⏹", "Стоп", "#dc2626", {
+      title: "Остановить после текущего POST и сохранить уже загруженное",
+      disabled: true
+    });
+    const btnClose = mkActionBtn("✕", "Закрыть", "#64748b", {
+      title: "Закрыть панель",
+      extra: "margin-left:auto;"
+    });
+
+    actionBar.appendChild(btnJson);
+    actionBar.appendChild(btnCsv);
+    actionBar.appendChild(btnStop);
+    actionBar.appendChild(btnClose);
+    panelScroll.appendChild(actionBar);
+
     /** Блок живой статистики текущего запроса */
     const statsBox = document.createElement("div");
     const statsTitle = document.createElement("div");
@@ -1393,7 +1452,7 @@ function createDevToolsTrace(opts) {
 
     const timingBox = document.createElement("div");
     timingBox.style.cssText =
-      "display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px;align-items:end;" +
+      "display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px;align-items:end;" +
       "padding-top:8px;border-top:1px solid #e2e8f0;";
 
     const fPayloadGap = mkNumField(
@@ -1411,6 +1470,15 @@ function createDevToolsTrace(opts) {
     );
     fPageGap.inp.max = String(GAP_MAX_MS);
     const inpPageGapMs = fPageGap.inp;
+
+    const fMaxPages = mkNumField(
+      "Макс. страниц",
+      NEWS_CFG.MAX_PAGES_PER_COMBO,
+      "Лимит pageNum внутри комбинации: 0 = все; 3 = только первые 3 страницы (или меньше, если total меньше)"
+    );
+    fMaxPages.inp.min = "0";
+    fMaxPages.inp.max = "9999";
+    const inpMaxPagesPerCombo = fMaxPages.inp;
 
     const fRetryPause = mkNumField(
       "Пауза повтора, мс",
@@ -1443,6 +1511,7 @@ function createDevToolsTrace(opts) {
 
     timingBox.appendChild(fPayloadGap.lab);
     timingBox.appendChild(fPageGap.lab);
+    timingBox.appendChild(fMaxPages.lab);
     timingBox.appendChild(fRetryPause.lab);
     timingBox.appendChild(fRetryMax.lab);
     timingBox.appendChild(labPrefix);
@@ -1610,6 +1679,17 @@ function createDevToolsTrace(opts) {
       return readGapMs(inpRetryPauseMs, NEWS_CFG.RETRY_PAUSE_MS || 2000);
     }
 
+    /**
+     * Макс. страниц на комбинацию: 0 = без лимита (все).
+     * @returns {number}
+     */
+    function readMaxPagesPerCombo() {
+      const n = parseInt(String(inpMaxPagesPerCombo.value || "").trim(), 10);
+      if (!Number.isFinite(n) || n < 0) return 0;
+      if (n > 9999) return 9999;
+      return n;
+    }
+
     function buildExportFilenamePrefix(standKey, contourKey) {
       var custom = sanitizeExportFilenamePrefix(inpFnamePrefix.value);
       if (custom) return custom.endsWith("_") ? custom : custom + "_";
@@ -1657,6 +1737,7 @@ function createDevToolsTrace(opts) {
       var pageGapMs = readGapMs(inpPageGapMs, DEFAULT_PAGE_GAP_MS);
       var retryMax = readRetryMax();
       var retryPauseMs = readRetryPauseMs();
+      var maxPagesPerCombo = readMaxPagesPerCombo();
       var sel = readPanelSelection();
       if (!validateSelection(sel)) {
         return null;
@@ -1683,7 +1764,9 @@ function createDevToolsTrace(opts) {
           " | повтор " +
           retryPauseMs +
           " мс × " +
-          retryMax
+          retryMax +
+          " | макс. страниц: " +
+          (maxPagesPerCombo > 0 ? String(maxPagesPerCombo) : "все")
       );
 
       setStats({
@@ -1878,7 +1961,11 @@ function createDevToolsTrace(opts) {
             }
 
             // Пропуск текущего запроса → следующий pageNum или следующая комбинация
-            if (totalPages != null && pageNum < totalPages) {
+            if (
+              totalPages != null &&
+              pageNum < totalPages &&
+              !(maxPagesPerCombo > 0 && pageNum >= maxPagesPerCombo)
+            ) {
               pageNum++;
               if (pageGapMs > 0) await delay(pageGapMs);
               continue;
@@ -1950,6 +2037,14 @@ function createDevToolsTrace(opts) {
           if (isLast) break;
           if (totalPages != null && pageNum >= totalPages) break;
           if (totalPages === 0) break;
+          if (maxPagesPerCombo > 0 && pageNum >= maxPagesPerCombo) {
+            log(
+              "  Лимит страниц комбинации: " +
+                maxPagesPerCombo +
+                (totalPages != null ? " (total=" + totalPages + ")" : "")
+            );
+            break;
+          }
 
           pageNum++;
           if (pageGapMs > 0) {
@@ -2087,6 +2182,7 @@ function createDevToolsTrace(opts) {
           lastExhaustedFail: lastExhaustedFail,
           retryMax: retryMax,
           retryPauseMs: retryPauseMs,
+          maxPagesPerCombo: maxPagesPerCombo > 0 ? maxPagesPerCombo : null,
           mode: sel.useTags ? "tags" : "businessBlock",
           selection: {
             newsStatuses: sel.newsStatuses,
@@ -2273,40 +2369,12 @@ function createDevToolsTrace(opts) {
       }
     }
 
-    const btnBase =
-      "padding:11px 12px;font-size:12px;cursor:pointer;border:none;border-radius:8px;font-weight:700;" +
-      "color:#fff;text-align:center;line-height:1.35;box-sizing:border-box;width:100%;" +
-      "box-shadow:0 2px 8px rgba(15,23,42,.12);";
-
-    const actionGrid = document.createElement("div");
-    actionGrid.style.cssText =
-      "display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:12px 0 10px;";
-
-    const btnJson = document.createElement("button");
-    btnJson.type = "button";
-    btnJson.textContent = "Загрузить → JSON";
-    btnJson.style.cssText = btnBase + "background:#2563eb;";
     btnJson.addEventListener("click", function () {
       void runNewsJsonExport();
     });
-    actionGrid.appendChild(btnJson);
-
-    const btnCsv = document.createElement("button");
-    btnCsv.type = "button";
-    btnCsv.textContent = "Выгрузить JSON + CSV";
-    btnCsv.style.cssText = btnBase + "background:#059669;";
     btnCsv.addEventListener("click", function () {
       void runNewsCsvExport();
     });
-    actionGrid.appendChild(btnCsv);
-
-    const btnStop = document.createElement("button");
-    btnStop.type = "button";
-    btnStop.textContent = "Стоп";
-    btnStop.title =
-      "Остановить запросы после текущего POST и сохранить уже успешно загруженные данные в файлы";
-    btnStop.disabled = true;
-    btnStop.style.cssText = btnBase + "background:#dc2626;opacity:0.55;cursor:not-allowed;";
     btnStop.addEventListener("click", function () {
       if (!fetchBusy) return;
       if (stopRequested) {
@@ -2317,21 +2385,11 @@ function createDevToolsTrace(opts) {
       setStats({ tone: "stop", phase: "стоп… (ждём POST)" });
       log("Стоп запрошен: после текущего запроса сохраним уже загруженное.");
     });
-    actionGrid.appendChild(btnStop);
-    panelScroll.appendChild(actionGrid);
-
-    root.appendChild(logWrap);
-
-    const btnClose = document.createElement("button");
-    btnClose.type = "button";
-    btnClose.textContent = "Закрыть панель";
-    btnClose.style.cssText =
-      "margin-top:8px;width:100%;padding:8px;cursor:pointer;background:#f1f5f9;color:rgb(15,23,42);" +
-      "border:1px solid #94a3b8;border-radius:6px;font-size:12px;flex-shrink:0;";
     btnClose.addEventListener("click", function () {
       root.remove();
     });
-    root.appendChild(btnClose);
+
+    root.appendChild(logWrap);
 
     document.body.appendChild(root);
     devTrace.attachPanel(root);
