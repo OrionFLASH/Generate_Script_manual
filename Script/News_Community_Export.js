@@ -1186,7 +1186,7 @@ function createDevToolsTrace(opts) {
         const sp = document.createElement("span");
         sp.style.cssText =
           "color:#334155;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;";
-        sp.textContent = item.short || item.label || item.key;
+        sp.textContent = item.label || item.short || item.key;
         row.appendChild(c);
         row.appendChild(sp);
         list.appendChild(row);
@@ -1229,18 +1229,9 @@ function createDevToolsTrace(opts) {
     const statusCtl = makeCompactCheckCol(
       "Статус",
       NEWS_STATUS_OPTIONS.map(function (opt) {
-        var short =
-          opt.value === "published"
-            ? "published"
-            : opt.value === "planned"
-              ? "planned"
-              : opt.value === "draft"
-                ? "draft"
-                : opt.value;
         return {
           key: opt.value,
           label: opt.label || opt.value,
-          short: short,
           defaultChecked: !!opt.defaultChecked
         };
       })
@@ -1252,7 +1243,6 @@ function createDevToolsTrace(opts) {
         return {
           key: opt.value,
           label: opt.label || opt.value,
-          short: opt.value,
           defaultChecked: !!opt.defaultChecked
         };
       })
@@ -1264,15 +1254,9 @@ function createDevToolsTrace(opts) {
     const tagCtlInner = makeCompactCheckCol(
       "Теги NEWS_TYPE",
       NEWS_TAG_OPTIONS.map(function (opt, idx) {
-        var shortMap = {
-          bestPractice: "bestPractice",
-          achievement: "achievement",
-          publication: "publication"
-        };
         return {
           key: String(idx),
           label: opt.label || opt.tagCode,
-          short: shortMap[opt.tagCode] || opt.tagCode,
           defaultChecked: !!opt.defaultChecked
         };
       })
