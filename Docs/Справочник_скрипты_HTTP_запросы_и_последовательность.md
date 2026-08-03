@@ -240,6 +240,7 @@
 2. Нет ответа по комбинации → лог и следующая комбинация (частичные страницы сохраняются).
 3. Паузы: между payload (default **500** мс) и между страницами (default **100** мс).
 4. JSON (`exportMeta`, `comboResults`, `pages`, `merged`) и/или CSV (`newsStatus, businessBlock, pageNum, total` + поля новости).
+5. Кнопка **Стоп** — прерывает цикл после текущего POST; уже загруженные страницы сохраняются в файлы (`exportMeta.stoppedByUser`).
 
 На панели — блок **статистики** (комбинация, страница, прогресс). Подробности: [Docs/Скрипт_новости_community_News_Community_Export.md](Скрипт_новости_community_News_Community_Export.md) (**v2.0**).
 
