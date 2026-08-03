@@ -74,9 +74,9 @@
      * value → в payload; label → подпись; defaultChecked → отмечен при открытии.
      */
     STATUS_OPTIONS: [
-      { value: "published", label: "published (Опубликована)", defaultChecked: true },
-      { value: "planned", label: "planned (Запланирована)", defaultChecked: false },
-      { value: "draft", label: "draft (Черновик)", defaultChecked: false }
+      { value: "published", label: "Опубликована (published)", defaultChecked: true },
+      { value: "planned", label: "Запланирована (planned)", defaultChecked: false },
+      { value: "draft", label: "Черновик (draft)", defaultChecked: false }
     ],
 
     /**
@@ -98,19 +98,19 @@
       {
         tagType: "NEWS_TYPE",
         tagCode: "bestPractice",
-        label: "bestPractice (Лучшие практики)",
+        label: "Лучшие практики (bestPractice)",
         defaultChecked: false
       },
       {
         tagType: "NEWS_TYPE",
         tagCode: "achievement",
-        label: "achievement (Достижения)",
+        label: "Достижения (achievement)",
         defaultChecked: false
       },
       {
         tagType: "NEWS_TYPE",
         tagCode: "publication",
-        label: "publication (Новости проекта)",
+        label: "Новости проекта (publication)",
         defaultChecked: false
       }
     ],
