@@ -67,11 +67,13 @@
     /**
      * Повторы при ошибке HTTP / содержимого JSON:
      * пауза RETRY_PAUSE_MS, до RETRY_MAX попыток на один запрос.
-     * Два подряд запроса с исчерпанными попытками → аварийная остановка с сохранением.
+     * После исчерпания — пропуск страницы и переход к следующей, пока есть страницы.
+     * Авария (стоп выгрузки): два подряд исчерпанных запроса, когда следующей страницы уже нет
+     * (конец комбинации / total неизвестен).
      */
     RETRY_MAX: 3,
     RETRY_PAUSE_MS: 2000,
-    /** Сколько подряд «исчерпанных» запросов до аварийной остановки */
+    /** Сколько подряд «исчерпанных» запросов до аварии, когда пагинацию продолжать нельзя */
     CONSECUTIVE_FAIL_ABORT: 2,
 
     /**
@@ -1925,6 +1927,30 @@ function createDevToolsTrace(opts) {
               payload: payload
             };
 
+            var hitMaxPages =
+              maxPagesPerCombo > 0 && pageNum >= maxPagesPerCombo;
+            /**
+             * Пока известны оставшиеся страницы — всегда идём дальше (не рвём выгрузку
+             * посреди total из‑за двух подряд skip). Если total неизвестен — не
+             * уходим в бесконечный pageNum++: после abortLimit останавливаемся.
+             */
+            var canTryNextPage =
+              !hitMaxPages &&
+              ((totalPages != null && pageNum < totalPages) ||
+                (totalPages == null && consecutiveExhaustedFails < abortLimit));
+
+            if (canTryNextPage) {
+              log(
+                "  Переход к pageNum=" +
+                  (pageNum + 1) +
+                  (totalPages != null ? "/" + totalPages : "") +
+                  " после пропуска"
+              );
+              pageNum++;
+              if (pageGapMs > 0) await delay(pageGapMs);
+              continue;
+            }
+
             if (consecutiveExhaustedFails >= abortLimit) {
               abortedByErrors = true;
               fatalErrorInfo = {
@@ -1960,16 +1986,6 @@ function createDevToolsTrace(opts) {
               break;
             }
 
-            // Пропуск текущего запроса → следующий pageNum или следующая комбинация
-            if (
-              totalPages != null &&
-              pageNum < totalPages &&
-              !(maxPagesPerCombo > 0 && pageNum >= maxPagesPerCombo)
-            ) {
-              pageNum++;
-              if (pageGapMs > 0) await delay(pageGapMs);
-              continue;
-            }
             comboAborted = true;
             break;
           }
@@ -2198,20 +2214,37 @@ function createDevToolsTrace(opts) {
       };
       lastExportBundle = bundle;
 
+      var finishTone = abortedByErrors
+        ? "done_err"
+        : stoppedByUser
+          ? "stop"
+          : errors > 0
+            ? "done_err"
+            : "done_ok";
+      var finishPhase = abortedByErrors
+        ? "ошибка — сохранено"
+        : stoppedByUser
+          ? "стоп — сохранено"
+          : errors > 0
+            ? "готово с ошибками"
+            : "готово";
+
       setStats({
-        tone: abortedByErrors ? "done_err" : stoppedByUser ? "stop" : "done_ok",
-        phase: abortedByErrors
-          ? "ошибка — сохранено"
-          : stoppedByUser
-            ? "стоп — сохранено"
-            : "готово",
+        tone: finishTone,
+        phase: finishPhase,
         progress:
           combosOk +
           " OK / " +
           combosSkip +
           " skip / " +
           combos.length +
-          (abortedByErrors ? " · авария" : stoppedByUser ? " · стоп" : ""),
+          (abortedByErrors
+            ? " · авария"
+            : stoppedByUser
+              ? " · стоп"
+              : errors > 0
+                ? " · ошибки"
+                : ""),
         news: String(newsTotal),
         errors: String(errors),
         page: fatalErrorInfo
@@ -2219,7 +2252,12 @@ function createDevToolsTrace(opts) {
             fatalErrorInfo.pageNum +
             " · " +
             String(fatalErrorInfo.error).slice(0, 70)
-          : "—"
+          : lastExhaustedFail
+            ? "pageNum=" +
+              lastExhaustedFail.pageNum +
+              " · " +
+              String(lastExhaustedFail.error).slice(0, 70)
+            : "—"
       });
 
       return {
@@ -2269,7 +2307,9 @@ function createDevToolsTrace(opts) {
             ? "Авария — JSON сохранён. "
             : result.stopped
               ? "Остановлено — JSON сохранён. "
-              : "JSON готов. ") +
+              : result.errors > 0
+                ? "JSON сохранён с ошибками. "
+                : "JSON готов. ") +
             "Страниц: " +
             result.pagesCount +
             " | новостей: " +
@@ -2278,6 +2318,8 @@ function createDevToolsTrace(opts) {
             result.combosOk +
             " | skip: " +
             result.combosSkip +
+            " | ошибок: " +
+            result.errors +
             " | файл: " +
             fname
         );
@@ -2331,11 +2373,15 @@ function createDevToolsTrace(opts) {
             ? "Авария — файлы сохранены. "
             : result.stopped
               ? "Остановлено — файлы сохранены. "
-              : "Готово (JSON+CSV). ") +
+              : result.errors > 0
+                ? "Файлы сохранены с ошибками. "
+                : "Готово (JSON+CSV). ") +
             "Страниц: " +
             result.pagesCount +
             " | новостей: " +
             result.newsTotal +
+            " | ошибок: " +
+            result.errors +
             " | JSON: " +
             fnameJson
         );
