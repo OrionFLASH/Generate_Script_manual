@@ -1704,12 +1704,18 @@ function createDevToolsTrace(opts) {
       btnJson.disabled = busy;
       btnCsv.disabled = busy;
       btnStop.disabled = !busy;
+      btnClose.disabled = busy;
+      btnClose.title = busy
+        ? "Закрыть недоступно во время выгрузки — сначала Стоп или дождитесь окончания"
+        : "Закрыть панель";
       var op = busy ? "0.55" : "1";
       var cur = busy ? "wait" : "pointer";
       btnJson.style.opacity = op;
       btnCsv.style.opacity = op;
+      btnClose.style.opacity = op;
       btnJson.style.cursor = cur;
       btnCsv.style.cursor = cur;
+      btnClose.style.cursor = busy ? "not-allowed" : "pointer";
       btnStop.style.opacity = busy ? "1" : "0.55";
       btnStop.style.cursor = busy ? "pointer" : "not-allowed";
     }
@@ -2386,6 +2392,7 @@ function createDevToolsTrace(opts) {
       log("Стоп запрошен: после текущего запроса сохраним уже загруженное.");
     });
     btnClose.addEventListener("click", function () {
+      if (fetchBusy || btnClose.disabled) return;
       root.remove();
     });
 
