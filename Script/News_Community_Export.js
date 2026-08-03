@@ -1050,46 +1050,123 @@ function createDevToolsTrace(opts) {
 
     /** Блок живой статистики текущего запроса */
     const statsBox = document.createElement("div");
-    statsBox.style.cssText =
-      "margin-bottom:8px;padding:8px 10px;border:1px solid #86efac;border-radius:8px;" +
-      "background:rgba(240,253,244,.92);display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px 10px;";
     const statsTitle = document.createElement("div");
-    statsTitle.style.cssText =
-      "grid-column:1/-1;font-weight:700;font-size:10px;color:#166534;letter-spacing:0.03em;text-transform:uppercase;";
     statsTitle.textContent = "Статистика";
     statsBox.appendChild(statsTitle);
 
     /** @type {Record<string, HTMLElement>} */
     var statCells = {};
+    /** @type {Record<string, HTMLElement>} */
+    var statLabs = {};
+    var statsTone = "idle";
+
+    /**
+     * Цвета акцента по тону статуса.
+     * idle | run | retry1 | retry2 | done_ok | done_err | stop
+     * @param {string} tone
+     */
+    function applyStatsTone(tone) {
+      var t = tone || "idle";
+      statsTone = t;
+      /** @type {Record<string, { box: string, title: string, lab: string, val: string }>} */
+      var themes = {
+        idle: {
+          box: "border:1px solid #cbd5e1;background:#f1f5f9;",
+          title: "#64748b",
+          lab: "#94a3b8",
+          val: "#475569"
+        },
+        run: {
+          box: "border:1px solid #93c5fd;background:#eff6ff;",
+          title: "#1d4ed8",
+          lab: "#64748b",
+          val: "#0f172a"
+        },
+        retry1: {
+          box: "border:1px solid #fbbf24;background:#fffbeb;",
+          title: "#b45309",
+          lab: "#a16207",
+          val: "#78350f"
+        },
+        retry2: {
+          box: "border:1px solid #fb923c;background:#fff7ed;",
+          title: "#c2410c",
+          lab: "#c2410c",
+          val: "#7c2d12"
+        },
+        done_ok: {
+          box: "border:1px solid #86efac;background:#f0fdf4;",
+          title: "#166534",
+          lab: "#4d7c0f",
+          val: "#14532d"
+        },
+        done_err: {
+          box: "border:1px solid #f87171;background:#fef2f2;",
+          title: "#b91c1c",
+          lab: "#b91c1c",
+          val: "#7f1d1d"
+        },
+        stop: {
+          box: "border:1px solid #c4b5fd;background:#f5f3ff;",
+          title: "#6d28d9",
+          lab: "#7c3aed",
+          val: "#4c1d95"
+        }
+      };
+      var th = themes[t] || themes.idle;
+      statsBox.style.cssText =
+        "margin-bottom:6px;padding:5px 8px;border-radius:6px;" +
+        "display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px 8px;" +
+        th.box;
+      statsTitle.style.cssText =
+        "grid-column:1/-1;font-weight:700;font-size:9px;letter-spacing:0.04em;text-transform:uppercase;" +
+        "color:" +
+        th.title +
+        ";margin:0 0 1px 0;line-height:1.2;";
+      Object.keys(statLabs).forEach(function (k) {
+        if (statLabs[k]) statLabs[k].style.color = th.lab;
+      });
+      Object.keys(statCells).forEach(function (k) {
+        if (statCells[k]) statCells[k].style.color = th.val;
+      });
+    }
+
+    /**
+     * @param {string} key
+     * @param {string} label
+     */
     function addStatCell(key, label) {
       var wrap = document.createElement("div");
-      wrap.style.cssText = "min-width:0;";
-      var lab = document.createElement("div");
-      lab.style.cssText = "font-size:9px;color:#64748b;margin-bottom:0;";
-      lab.textContent = label;
-      var val = document.createElement("div");
+      wrap.style.cssText =
+        "min-width:0;display:flex;align-items:baseline;gap:4px;line-height:1.25;padding:1px 0;";
+      var lab = document.createElement("span");
+      lab.style.cssText =
+        "font-size:9px;flex-shrink:0;white-space:nowrap;";
+      lab.textContent = label + ":";
+      var val = document.createElement("span");
       val.style.cssText =
-        "font-size:11px;font-weight:600;color:#0f172a;font-family:ui-monospace,Menlo,monospace;" +
-        "word-break:break-word;line-height:1.3;";
+        "font-size:10px;font-weight:600;font-family:ui-monospace,Menlo,monospace;" +
+        "word-break:break-word;min-width:0;";
       val.textContent = "—";
       wrap.appendChild(lab);
       wrap.appendChild(val);
       statsBox.appendChild(wrap);
       statCells[key] = val;
+      statLabs[key] = lab;
     }
-    addStatCell("phase", "Фаза");
-    addStatCell("combo", "Комбинация");
-    addStatCell("status", "newsStatus");
-    addStatCell("blockOrTags", "businessBlock / теги");
-    addStatCell("page", "Страница");
-    addStatCell("progress", "Прогресс комбинаций");
-    addStatCell("news", "Новостей собрано");
-    addStatCell("errors", "Ошибок / пропусков");
+
+    addStatCell("phase", "фаза");
+    addStatCell("status", "status");
+    addStatCell("blockOrTags", "block/теги");
+    addStatCell("page", "стр.");
+    addStatCell("progress", "прогресс");
+    addStatCell("news", "новостей");
+    addStatCell("errors", "ошибок");
 
     /**
      * @param {Partial<{
+     *   tone: string,
      *   phase: string,
-     *   combo: string,
      *   status: string,
      *   blockOrTags: string,
      *   page: string,
@@ -1100,13 +1177,17 @@ function createDevToolsTrace(opts) {
      */
     function setStats(patch) {
       if (!patch) return;
+      if (patch.tone) applyStatsTone(String(patch.tone));
       Object.keys(patch).forEach(function (k) {
+        if (k === "tone") return;
         if (statCells[k] && patch[k] != null) statCells[k].textContent = String(patch[k]);
       });
     }
+
+    applyStatsTone("idle");
     setStats({
+      tone: "idle",
       phase: "ожидание",
-      combo: "—",
       status: "—",
       blockOrTags: "—",
       page: "—",
@@ -1606,11 +1687,14 @@ function createDevToolsTrace(opts) {
       );
 
       setStats({
+        tone: "run",
         phase: "выгрузка",
         progress: "0 / " + combos.length,
         news: "0",
         errors: "0",
-        page: "—"
+        page: "—",
+        status: "—",
+        blockOrTags: "—"
       });
 
       /** @type {*[]} */
@@ -1651,12 +1735,12 @@ function createDevToolsTrace(opts) {
           : String(combo.businessBlock || "—");
 
         setStats({
-          phase: "комбинация " + (ci + 1) + "/" + combos.length,
-          combo: comboLabel,
+          tone: consecutiveExhaustedFails >= 1 ? "retry2" : "run",
+          phase: (ci + 1) + "/" + combos.length,
           status: String(combo.newsStatus),
           blockOrTags: blockOrTags,
           progress: ci + " / " + combos.length + " завершено",
-          page: "запрос pageNum=1…",
+          page: "pageNum=1…",
           news: String(newsTotal),
           errors: String(errors)
         });
@@ -1680,13 +1764,14 @@ function createDevToolsTrace(opts) {
           var payload = buildNewsPayload(pageNum, combo);
           var reqLabel = comboLabel + " | pageNum=" + pageNum;
           setStats({
+            tone: consecutiveExhaustedFails >= 1 ? "retry2" : "run",
+            phase: (ci + 1) + "/" + combos.length,
             page:
               "pageNum=" +
               pageNum +
-              (totalPages != null ? " / total=" + totalPages : " (ожидаем total)"),
+              (totalPages != null ? "/" + totalPages : ""),
             status: String(combo.newsStatus),
-            blockOrTags: blockOrTags,
-            combo: comboLabel
+            blockOrTags: blockOrTags
           });
 
           log(
@@ -1709,13 +1794,20 @@ function createDevToolsTrace(opts) {
               },
               onAttempt: function (attempt, maxAttempts, err) {
                 setStats({
+                  tone: err
+                    ? consecutiveExhaustedFails >= 1
+                      ? "retry2"
+                      : "retry1"
+                    : consecutiveExhaustedFails >= 1
+                      ? "retry2"
+                      : "run",
                   phase: err
                     ? "повтор " + attempt + "/" + maxAttempts
-                    : "комбинация " + (ci + 1) + "/" + combos.length,
+                    : (ci + 1) + "/" + combos.length,
                   page:
                     "pageNum=" +
                     pageNum +
-                    (err ? " | ошибка: " + String(err).slice(0, 80) : "")
+                    (err ? " · " + String(err).slice(0, 60) : "")
                 });
               }
             }
@@ -1763,13 +1855,15 @@ function createDevToolsTrace(opts) {
                 payload: payload
               };
               setStats({
+                tone: "done_err",
                 phase: "ошибка — стоп",
-                combo: comboLabel,
+                status: String(combo.newsStatus),
+                blockOrTags: blockOrTags,
                 page:
                   "pageNum=" +
                   pageNum +
-                  " | " +
-                  String(failErr).slice(0, 100),
+                  " · " +
+                  String(failErr).slice(0, 70),
                 errors: String(errors)
               });
               log(
@@ -1824,15 +1918,14 @@ function createDevToolsTrace(opts) {
           newsTotal = flatRows.length;
 
           setStats({
+            tone: "run",
             page:
-              "page.num=" +
-              num +
-              (totalPages != null ? " / total=" + totalPages : "") +
-              " | isLast=" +
-              (isLast ? "true" : "false"),
+              pageNum +
+              (totalPages != null ? "/" + totalPages : "") +
+              (isLast ? " last" : ""),
             news: String(newsTotal),
             errors: String(errors),
-            phase: "комбинация " + (ci + 1) + "/" + combos.length
+            phase: (ci + 1) + "/" + combos.length
           });
 
           log(
@@ -1915,7 +2008,8 @@ function createDevToolsTrace(opts) {
         }
 
         setStats({
-          progress: ci + 1 + " / " + combos.length + " завершено",
+          tone: consecutiveExhaustedFails >= 1 ? "retry2" : "run",
+          progress: ci + 1 + "/" + combos.length,
           news: String(newsTotal),
           errors: String(errors)
         });
@@ -1934,15 +2028,24 @@ function createDevToolsTrace(opts) {
 
       if (rawPages.length === 0) {
         setStats({
+          tone: abortedByErrors ? "done_err" : stoppedByUser ? "stop" : "done_err",
           phase: abortedByErrors
             ? "ошибка (нет данных)"
             : stoppedByUser
               ? "стоп (нет данных)"
               : "нет данных",
           page: fatalErrorInfo
-            ? "pageNum=" + fatalErrorInfo.pageNum + " | " + fatalErrorInfo.error
+            ? "pageNum=" + fatalErrorInfo.pageNum + " · " + fatalErrorInfo.error
             : "—",
-          combo: fatalErrorInfo ? fatalErrorInfo.combo : "—"
+          status: fatalErrorInfo ? String((fatalErrorInfo.payload && fatalErrorInfo.payload.newsStatus) || "—") : "—",
+          blockOrTags: fatalErrorInfo
+            ? String(
+                (fatalErrorInfo.payload && fatalErrorInfo.payload.businessBlock) ||
+                  (fatalErrorInfo.payload && fatalErrorInfo.payload.newsTagList
+                    ? "теги"
+                    : "—")
+              )
+            : "—"
         });
         log(
           (abortedByErrors
@@ -2000,10 +2103,11 @@ function createDevToolsTrace(opts) {
       lastExportBundle = bundle;
 
       setStats({
+        tone: abortedByErrors ? "done_err" : stoppedByUser ? "stop" : "done_ok",
         phase: abortedByErrors
-          ? "ошибка — данные сохранены"
+          ? "ошибка — сохранено"
           : stoppedByUser
-            ? "стоп — сохранение"
+            ? "стоп — сохранено"
             : "готово",
         progress:
           combosOk +
@@ -2011,17 +2115,15 @@ function createDevToolsTrace(opts) {
           combosSkip +
           " skip / " +
           combos.length +
-          " всего" +
-          (abortedByErrors ? " (авария)" : stoppedByUser ? " (прервано)" : ""),
+          (abortedByErrors ? " · авария" : stoppedByUser ? " · стоп" : ""),
         news: String(newsTotal),
         errors: String(errors),
         page: fatalErrorInfo
           ? "pageNum=" +
             fatalErrorInfo.pageNum +
-            " | " +
-            String(fatalErrorInfo.error).slice(0, 90)
-          : "—",
-        combo: fatalErrorInfo ? fatalErrorInfo.combo : undefined
+            " · " +
+            String(fatalErrorInfo.error).slice(0, 70)
+          : "—"
       });
 
       return {
@@ -2212,7 +2314,7 @@ function createDevToolsTrace(opts) {
         return;
       }
       stopRequested = true;
-      setStats({ phase: "стоп… (ждём текущий POST)" });
+      setStats({ tone: "stop", phase: "стоп… (ждём POST)" });
       log("Стоп запрошен: после текущего запроса сохраним уже загруженное.");
     });
     actionGrid.appendChild(btnStop);
