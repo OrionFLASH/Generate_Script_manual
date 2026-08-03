@@ -60,6 +60,16 @@
     GAP_MAX_MS: 60000,
 
     /**
+     * Повторы при ошибке HTTP / содержимого JSON:
+     * пауза RETRY_PAUSE_MS, до RETRY_MAX попыток на один запрос.
+     * Два подряд запроса с исчерпанными попытками → аварийная остановка с сохранением.
+     */
+    RETRY_MAX: 3,
+    RETRY_PAUSE_MS: 2000,
+    /** Сколько подряд «исчерпанных» запросов до аварийной остановки */
+    CONSECUTIVE_FAIL_ABORT: 2,
+
+    /**
      * Допустимые newsStatus — чекбоксы на панели.
      * value → в payload; label → подпись; defaultChecked → отмечен при открытии.
      */
@@ -623,6 +633,125 @@ function createDevToolsTrace(opts) {
       return null;
     });
     return { ok: res.ok, status: res.status, data: data, payload: payload };
+  }
+
+  /**
+   * Ошибка HTTP или содержимого JSON (null = ответ пригоден).
+   * @param {{ ok?: boolean, status?: number, data?: *, _exception?: string }|null} fr
+   * @returns {string|null}
+   */
+  function getNewsResponseError(fr) {
+    if (!fr) return "нет ответа";
+    if (fr._exception) return "исключение: " + String(fr._exception);
+    if (!fr.ok) return "HTTP " + String(fr.status != null ? fr.status : "?");
+    var data = fr.data;
+    if (data == null || typeof data !== "object") return "нет/невалидный JSON";
+    if (data.success === false) {
+      var apiTxt = "";
+      if (data.error && typeof data.error === "object") {
+        apiTxt = String(data.error.text || data.error.message || "").trim();
+      } else if (data.error != null) {
+        apiTxt = String(data.error).trim();
+      }
+      return "API success=false" + (apiTxt ? ": " + apiTxt : "");
+    }
+    if (data.error != null && data.error !== "") {
+      var errTxt = "";
+      if (typeof data.error === "object") {
+        errTxt = String(data.error.text || data.error.message || "").trim();
+        if (!errTxt) {
+          try {
+            errTxt = JSON.stringify(data.error);
+          } catch (_e) {
+            errTxt = String(data.error);
+          }
+        }
+      } else {
+        errTxt = String(data.error);
+      }
+      return "JSON.error: " + errTxt;
+    }
+    if (data.success === true && data.body == null) {
+      return "JSON: success=true, но body отсутствует";
+    }
+    return null;
+  }
+
+  /**
+   * POST с повторами при ошибке HTTP/JSON.
+   * @param {string} origin
+   * @param {string} contourKey
+   * @param {Record<string, unknown>} payload
+   * @param {{
+   *   log: function(string): void,
+   *   onAttempt?: function(number, number, string|null): void,
+   *   shouldStop?: function(): boolean
+   * }} hooks
+   * @returns {Promise<{
+   *   ok: boolean,
+   *   stopped?: boolean,
+   *   fr: *,
+   *   error: string|null,
+   *   attempts: number
+   * }>}
+   */
+  async function fetchNewsPageWithRetry(origin, contourKey, payload, hooks) {
+    var h = hooks || {};
+    var logFn = typeof h.log === "function" ? h.log : function () {};
+    var onAttempt = typeof h.onAttempt === "function" ? h.onAttempt : null;
+    var shouldStop = typeof h.shouldStop === "function" ? h.shouldStop : function () {
+      return false;
+    };
+    var maxAttempts = Math.max(1, Number(NEWS_CFG.RETRY_MAX) || 3);
+    var pauseMs = Math.max(0, Number(NEWS_CFG.RETRY_PAUSE_MS) || 2000);
+    /** @type {*} */
+    var lastFr = null;
+    /** @type {string|null} */
+    var lastErr = null;
+
+    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (shouldStop()) {
+        return { ok: false, stopped: true, fr: lastFr, error: lastErr || "стоп", attempts: attempt - 1 };
+      }
+      try {
+        lastFr = await fetchNewsPage(origin, contourKey, payload);
+        lastErr = getNewsResponseError(lastFr);
+      } catch (ex) {
+        lastFr = {
+          ok: false,
+          status: 0,
+          data: null,
+          payload: payload,
+          _exception: ex && ex.message ? ex.message : String(ex)
+        };
+        lastErr = getNewsResponseError(lastFr);
+      }
+
+      if (onAttempt) onAttempt(attempt, maxAttempts, lastErr);
+
+      if (!lastErr) {
+        return { ok: true, fr: lastFr, error: null, attempts: attempt };
+      }
+
+      logFn(
+        "  ошибка (попытка " +
+          attempt +
+          "/" +
+          maxAttempts +
+          "): " +
+          lastErr
+      );
+
+      if (attempt < maxAttempts) {
+        if (shouldStop()) {
+          return { ok: false, stopped: true, fr: lastFr, error: lastErr, attempts: attempt };
+        }
+        logFn("  пауза " + pauseMs + " мс перед повтором…");
+        if (pauseMs > 0) await delay(pauseMs);
+      }
+    }
+
+    return { ok: false, fr: lastFr, error: lastErr, attempts: maxAttempts };
   }
 
   /**
@@ -1425,6 +1554,13 @@ function createDevToolsTrace(opts) {
       var combosSkip = 0;
       var newsTotal = 0;
       var stoppedByUser = false;
+      var abortedByErrors = false;
+      var consecutiveExhaustedFails = 0;
+      var abortLimit = Math.max(1, Number(NEWS_CFG.CONSECUTIVE_FAIL_ABORT) || 2);
+      /** @type {{ message: string, combo: string, pageNum: number, error: string, payload: * }|null} */
+      var fatalErrorInfo = null;
+      /** @type {{ combo: string, pageNum: number, error: string, payload: * }|null} */
+      var lastExhaustedFail = null;
 
       for (var ci = 0; ci < combos.length; ci++) {
         if (stopRequested) {
@@ -1471,6 +1607,7 @@ function createDevToolsTrace(opts) {
           }
 
           var payload = buildNewsPayload(pageNum, combo);
+          var reqLabel = comboLabel + " | pageNum=" + pageNum;
           setStats({
             page:
               "pageNum=" +
@@ -1488,68 +1625,103 @@ function createDevToolsTrace(opts) {
               JSON.stringify(payload)
           );
 
-          var fr;
-          try {
-            fr = await fetchNewsPage(env.origin, env.contour, payload);
-          } catch (ex) {
-            log(
-              "  [исключение] pageNum=" +
-                pageNum +
-                ": " +
-                (ex && ex.message ? ex.message : ex) +
-                (comboHadSuccess
-                  ? " — остановка пагинации (частичные данные сохранены)"
-                  : " — пропуск комбинации")
-            );
+          var retryResult = await fetchNewsPageWithRetry(
+            env.origin,
+            env.contour,
+            payload,
+            {
+              log: log,
+              shouldStop: function () {
+                return !!stopRequested;
+              },
+              onAttempt: function (attempt, maxAttempts, err) {
+                setStats({
+                  phase: err
+                    ? "повтор " + attempt + "/" + maxAttempts
+                    : "комбинация " + (ci + 1) + "/" + combos.length,
+                  page:
+                    "pageNum=" +
+                    pageNum +
+                    (err ? " | ошибка: " + String(err).slice(0, 80) : "")
+                });
+              }
+            }
+          );
+
+          if (retryResult.stopped || stopRequested) {
+            stoppedByUser = true;
+            log("  Стоп во время запроса/повторов.");
+            break;
+          }
+
+          if (!retryResult.ok) {
             errors++;
+            consecutiveExhaustedFails++;
+            var failErr = retryResult.error || "неизвестная ошибка";
+            log(
+              "  Исчерпаны " +
+                retryResult.attempts +
+                " попыток: " +
+                failErr +
+                " → пропуск этого запроса (" +
+                consecutiveExhaustedFails +
+                "/" +
+                abortLimit +
+                " подряд)"
+            );
+
+            lastExhaustedFail = {
+              combo: comboLabel,
+              pageNum: pageNum,
+              error: failErr,
+              payload: payload
+            };
+
+            if (consecutiveExhaustedFails >= abortLimit) {
+              abortedByErrors = true;
+              fatalErrorInfo = {
+                message:
+                  "Два запроса подряд исчерпали " +
+                  (NEWS_CFG.RETRY_MAX || 3) +
+                  " попыток — аварийная остановка",
+                combo: comboLabel,
+                pageNum: pageNum,
+                error: failErr,
+                payload: payload
+              };
+              setStats({
+                phase: "ошибка — стоп",
+                combo: comboLabel,
+                page:
+                  "pageNum=" +
+                  pageNum +
+                  " | " +
+                  String(failErr).slice(0, 100),
+                errors: String(errors)
+              });
+              log(
+                "АВАРИЯ: " +
+                  fatalErrorInfo.message +
+                  " | " +
+                  reqLabel +
+                  " | " +
+                  failErr
+              );
+              break;
+            }
+
+            // Пропуск текущего запроса → следующий pageNum или следующая комбинация
+            if (totalPages != null && pageNum < totalPages) {
+              pageNum++;
+              if (pageGapMs > 0) await delay(pageGapMs);
+              continue;
+            }
             comboAborted = true;
             break;
           }
 
-          if (!fr.ok) {
-            log(
-              "  [HTTP " +
-                fr.status +
-                "] pageNum=" +
-                pageNum +
-                (comboHadSuccess
-                  ? " — остановка пагинации (частичные данные сохранены)"
-                  : " — нет ответа, пропуск комбинации")
-            );
-            errors++;
-            comboAborted = true;
-            break;
-          }
-
-          if (!fr.data || typeof fr.data !== "object") {
-            log(
-              "  pageNum=" +
-                pageNum +
-                ": нет JSON — " +
-                (comboHadSuccess ? "остановка пагинации" : "пропуск комбинации")
-            );
-            errors++;
-            comboAborted = true;
-            break;
-          }
-
-          if (fr.data.success === false) {
-            var errTxt =
-              fr.data.error && fr.data.error.text
-                ? String(fr.data.error.text)
-                : "success=false";
-            log(
-              "  pageNum=" +
-                pageNum +
-                ": API ERROR — " +
-                errTxt +
-                " — " +
-                (comboHadSuccess ? "остановка пагинации" : "пропуск комбинации")
-            );
-            errors++;
-            comboAborted = true;
-            break;
-          }
+          consecutiveExhaustedFails = 0;
+          var fr = retryResult.fr;
 
           comboHadSuccess = true;
           rawPages.push(fr.data);
@@ -1564,7 +1736,6 @@ function createDevToolsTrace(opts) {
           var num = pageInfo && pageInfo.num != null ? pageInfo.num : pageNum;
           var newsOnPage = fr.data.body ? countNewsInBody(fr.data.body) : 0;
 
-          // Строки CSV: параметры запроса этой страницы + новости только с этой страницы
           var pageTotalVal = totalPages != null ? totalPages : total != null ? total : "";
           if (fr.data.body) {
             forEachNewsInBody(fr.data.body, function (newsItem) {
@@ -1587,11 +1758,16 @@ function createDevToolsTrace(opts) {
               " | isLast=" +
               (isLast ? "true" : "false"),
             news: String(newsTotal),
-            errors: String(errors)
+            errors: String(errors),
+            phase: "комбинация " + (ci + 1) + "/" + combos.length
           });
 
           log(
-            "  → OK | page.num=" +
+            "  → OK" +
+              (retryResult.attempts > 1
+                ? " (с " + retryResult.attempts + " попытки)"
+                : "") +
+              " | page.num=" +
               num +
               (totalPages != null ? " | total=" + totalPages : "") +
               " | isLast=" +
@@ -1600,7 +1776,6 @@ function createDevToolsTrace(opts) {
               newsOnPage
           );
 
-          // Пустой ответ (нет новостей и total=0 / нет page) — считаем ок, но дальше не листаем
           if (!fr.data.body || (!pageInfo && newsOnPage === 0)) {
             log("  Пустое тело / нет page — завершение комбинации");
             break;
@@ -1619,6 +1794,26 @@ function createDevToolsTrace(opts) {
               break;
             }
           }
+        }
+
+        if (abortedByErrors) {
+          if (comboHadSuccess) {
+            combosOk++;
+            comboResults.push({
+              combo: {
+                newsStatus: combo.newsStatus,
+                businessBlock: combo.businessBlock || null,
+                newsTagList: combo.newsTagList || []
+              },
+              pagesFetched: comboPages.length,
+              newsCount: mergedCombo ? countNewsInBody(mergedCombo.body) : 0,
+              partial: true,
+              merged: mergedCombo
+            });
+          } else if (comboAborted) {
+            combosSkip++;
+          }
+          break;
         }
 
         if (comboHadSuccess) {
@@ -1652,7 +1847,7 @@ function createDevToolsTrace(opts) {
           errors: String(errors)
         });
 
-        if (stoppedByUser) break;
+        if (stoppedByUser || abortedByErrors) break;
 
         if (ci < combos.length - 1 && payloadGapMs > 0) {
           await delay(payloadGapMs);
@@ -1666,15 +1861,36 @@ function createDevToolsTrace(opts) {
 
       if (rawPages.length === 0) {
         setStats({
-          phase: stoppedByUser ? "стоп (нет данных)" : "нет данных",
-          page: "—"
+          phase: abortedByErrors
+            ? "ошибка (нет данных)"
+            : stoppedByUser
+              ? "стоп (нет данных)"
+              : "нет данных",
+          page: fatalErrorInfo
+            ? "pageNum=" + fatalErrorInfo.pageNum + " | " + fatalErrorInfo.error
+            : "—",
+          combo: fatalErrorInfo ? fatalErrorInfo.combo : "—"
         });
         log(
-          (stoppedByUser ? "Остановлено пользователем. " : "") +
+          (abortedByErrors
+            ? "Аварийная остановка. "
+            : stoppedByUser
+              ? "Остановлено пользователем. "
+              : "") +
             "Выгрузка не завершена: нет успешных страниц. Ошибок/пропусков: " +
             errors +
             "."
         );
+        if (fatalErrorInfo) {
+          log(
+            "Последний сбой: " +
+              fatalErrorInfo.combo +
+              " | pageNum=" +
+              fatalErrorInfo.pageNum +
+              " | " +
+              fatalErrorInfo.error
+          );
+        }
         console.log("[News community] Файлы не созданы.");
         return null;
       }
@@ -1690,6 +1906,11 @@ function createDevToolsTrace(opts) {
           combosOk: combosOk,
           combosSkip: combosSkip,
           stoppedByUser: !!stoppedByUser,
+          abortedByErrors: !!abortedByErrors,
+          fatalError: fatalErrorInfo,
+          lastExhaustedFail: lastExhaustedFail,
+          retryMax: NEWS_CFG.RETRY_MAX,
+          retryPauseMs: NEWS_CFG.RETRY_PAUSE_MS,
           mode: sel.useTags ? "tags" : "businessBlock",
           selection: {
             newsStatuses: sel.newsStatuses,
@@ -1706,7 +1927,11 @@ function createDevToolsTrace(opts) {
       lastExportBundle = bundle;
 
       setStats({
-        phase: stoppedByUser ? "стоп — сохранение" : "готово",
+        phase: abortedByErrors
+          ? "ошибка — данные сохранены"
+          : stoppedByUser
+            ? "стоп — сохранение"
+            : "готово",
         progress:
           combosOk +
           " OK / " +
@@ -1714,10 +1939,16 @@ function createDevToolsTrace(opts) {
           " skip / " +
           combos.length +
           " всего" +
-          (stoppedByUser ? " (прервано)" : ""),
+          (abortedByErrors ? " (авария)" : stoppedByUser ? " (прервано)" : ""),
         news: String(newsTotal),
         errors: String(errors),
-        page: "—"
+        page: fatalErrorInfo
+          ? "pageNum=" +
+            fatalErrorInfo.pageNum +
+            " | " +
+            String(fatalErrorInfo.error).slice(0, 90)
+          : "—",
+        combo: fatalErrorInfo ? fatalErrorInfo.combo : undefined
       });
 
       return {
@@ -1730,15 +1961,12 @@ function createDevToolsTrace(opts) {
         errors: errors,
         combosOk: combosOk,
         combosSkip: combosSkip,
-        stopped: !!stoppedByUser
+        stopped: !!stoppedByUser,
+        abortedByErrors: !!abortedByErrors,
+        fatalError: fatalErrorInfo
       };
     }
 
-    /**
-     * @param {object[]} flatRows
-     * @param {string} prefix
-     * @param {string} ts
-     */
     function saveCsvFromFlatRows(flatRows, prefix, ts) {
       var table = buildNewsFlatCsv(flatRows);
       var fname = prefix + ts + "_news.csv";
@@ -1766,7 +1994,11 @@ function createDevToolsTrace(opts) {
         var fname = result.prefix + result.ts + ".json";
         downloadJson(fname, result.bundle);
         log(
-          (result.stopped ? "Остановлено — JSON сохранён. " : "JSON готов. ") +
+          (result.abortedByErrors
+            ? "Авария — JSON сохранён. "
+            : result.stopped
+              ? "Остановлено — JSON сохранён. "
+              : "JSON готов. ") +
             "Страниц: " +
             result.pagesCount +
             " | новостей: " +
@@ -1778,6 +2010,16 @@ function createDevToolsTrace(opts) {
             " | файл: " +
             fname
         );
+        if (result.fatalError) {
+          log(
+            "  Сбой: " +
+              result.fatalError.combo +
+              " | pageNum=" +
+              result.fatalError.pageNum +
+              " | " +
+              result.fatalError.error
+          );
+        }
         console.log(
           "[News community] JSON: " +
             fname +
@@ -1785,6 +2027,7 @@ function createDevToolsTrace(opts) {
             result.pagesCount +
             " | новостей: " +
             result.newsTotal +
+            (result.abortedByErrors ? " | ABORTED_BY_ERRORS" : "") +
             (result.stopped ? " | STOPPED" : "")
         );
       } finally {
@@ -1813,7 +2056,11 @@ function createDevToolsTrace(opts) {
 
         var csvInfo = saveCsvFromFlatRows(result.flatRows, result.prefix, result.ts);
         log(
-          (result.stopped ? "Остановлено — файлы сохранены. " : "Готово (JSON+CSV). ") +
+          (result.abortedByErrors
+            ? "Авария — файлы сохранены. "
+            : result.stopped
+              ? "Остановлено — файлы сохранены. "
+              : "Готово (JSON+CSV). ") +
             "Страниц: " +
             result.pagesCount +
             " | новостей: " +
@@ -1821,6 +2068,16 @@ function createDevToolsTrace(opts) {
             " | JSON: " +
             fnameJson
         );
+        if (result.fatalError) {
+          log(
+            "  Сбой: " +
+              result.fatalError.combo +
+              " | pageNum=" +
+              result.fatalError.pageNum +
+              " | " +
+              result.fatalError.error
+          );
+        }
         if (csvInfo.saved) {
           log("  CSV: " + csvInfo.fname + " | строк: " + csvInfo.rowCount);
         } else {
@@ -1831,6 +2088,7 @@ function createDevToolsTrace(opts) {
             fnameJson +
             " | CSV: " +
             (csvInfo.saved ? csvInfo.fname + " (" + csvInfo.rowCount + " строк)" : "нет строк") +
+            (result.abortedByErrors ? " | ABORTED_BY_ERRORS" : "") +
             (result.stopped ? " | STOPPED" : "")
         );
       } finally {

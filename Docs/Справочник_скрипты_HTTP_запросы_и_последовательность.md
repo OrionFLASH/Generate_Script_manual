@@ -241,6 +241,7 @@
 3. Паузы: между payload (default **500** мс) и между страницами (default **100** мс).
 4. JSON (`exportMeta`, `comboResults`, `pages`, `merged`) и/или CSV (`newsStatus, businessBlock, pageNum, total` + поля новости).
 5. Кнопка **Стоп** — прерывает цикл после текущего POST; уже загруженные страницы сохраняются в файлы (`exportMeta.stoppedByUser`).
+6. Ретраи: при ошибке HTTP/JSON — пауза 2000 мс, до 3 попыток; пропуск запроса; два подряд исчерпанных → авария с сохранением (`exportMeta.abortedByErrors`, `fatalError`).
 
 На панели — блок **статистики** (комбинация, страница, прогресс). Подробности: [Docs/Скрипт_новости_community_News_Community_Export.md](Скрипт_новости_community_News_Community_Export.md) (**v2.0**).
 
