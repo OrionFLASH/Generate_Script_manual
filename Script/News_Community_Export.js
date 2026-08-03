@@ -2,7 +2,7 @@
 // News_Community_Export.js — выгрузка списка новостей community (POST /proxy/v1/news)
 // =============================================================================
 // DevTools на странице стенда gamification. POST JSON с пагинацией pageNum.
-// Комбинации newsStatus × businessBlock (или фильтр newsTagList); JSON + CSV.
+// Комбинации newsStatus × businessBlock (+ опциональный newsTagList); JSON + CSV.
 // Куки сессии вкладки: credentials: "include".
 // =============================================================================
 (function () {
