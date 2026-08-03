@@ -71,7 +71,7 @@
      * Авария: два запроса подряд исчерпали все попытки с ошибкой.
      * Успех на любой попытке сбрасывает счётчик «подряд» — следующий сбой снова считается первым.
      */
-    RETRY_MAX: 3,
+    RETRY_MAX: 2,
     RETRY_PAUSE_MS: 2000,
     /** Сколько подряд запросов с исчерпанными попытками до аварийной остановки */
     CONSECUTIVE_FAIL_ABORT: 2,
@@ -717,7 +717,7 @@ function createDevToolsTrace(opts) {
     };
     var maxAttempts = Math.max(
       1,
-      Number(h.retryMax != null ? h.retryMax : NEWS_CFG.RETRY_MAX) || 3
+      Number(h.retryMax != null ? h.retryMax : NEWS_CFG.RETRY_MAX) || 2
     );
     var pauseMs = Math.max(
       0,
@@ -1797,7 +1797,7 @@ function createDevToolsTrace(opts) {
 
     function readRetryMax() {
       const n = parseInt(String(inpRetryMax.value || "").trim(), 10);
-      if (!Number.isFinite(n) || n < 1) return NEWS_CFG.RETRY_MAX || 3;
+      if (!Number.isFinite(n) || n < 1) return NEWS_CFG.RETRY_MAX || 2;
       if (n > 20) return 20;
       return n;
     }
