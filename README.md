@@ -74,6 +74,7 @@
 
 | Дата | Описание |
 |------|----------|
+| 2026-08-03 | **`News_Community_Export.js`:** кнопка **Закрыть** неактивна во время выгрузки; Docs v2.8. |
 | 2026-08-03 | **`News_Community_Export.js`:** параметры вынесены в блок **`NEWS_CFG`** вверху скрипта; Docs v2.1, справочник v1.26. |
 | 2026-08-03 | **`News_Community_Export.js` v2:** обход `newsStatus × businessBlock`, опциональный `newsTagList` + custom TEXT, паузы 500/100, статистика на панели, CSV по новостям; Docs v2.0, справочник v1.25, ROADMAP § 6. |
 | 2026-07-31 | **`Pulse_export_OE.js`:** `PULSE_CFG`, пауза 1500+джиттер, Full/CSV ← Search+mainInfo, маскирование Trace (`X***xxx`), дефолт query. Docs v1.2, справочник v1.24. |
