@@ -119,6 +119,7 @@
      * Колонки новости в CSV после параметров запроса
      * (newsStatus, businessBlock, pageNum, total).
      * newsItemStatus → поле newsStatus объекта новости.
+     * Пока без полей 6–9: tbCode, gosbCode, contests, rewards.
      */
     CSV_DATA_KEYS: [
       "newsId",
@@ -126,10 +127,6 @@
       "summary",
       "newsText",
       "newsItemStatus",
-      "tbCode",
-      "gosbCode",
-      "contests",
-      "rewards",
       "createDate",
       "updateDate",
       "plannedDate",

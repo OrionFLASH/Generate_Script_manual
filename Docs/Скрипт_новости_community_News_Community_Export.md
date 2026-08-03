@@ -91,9 +91,11 @@
 Колонки:
 
 1. Параметры запроса: `newsStatus`, `businessBlock`, `pageNum`, `total`
-2. Данные новости: `newsId`, `newsType`, `summary`, `newsText`, `newsItemStatus` (поле `newsStatus` новости), `tbCode`, `gosbCode`, `contests`, `rewards`, `createDate`, `updateDate`, `plannedDate`, `date`, `businessBlocks`
+2. Данные новости: `newsId`, `newsType`, `summary`, `newsText`, `newsItemStatus` (поле `newsStatus` новости), `createDate`, `updateDate`, `plannedDate`, `date`, `businessBlocks`
 
-Массивы/объекты (`contests`, `rewards`, `businessBlocks`, коды) сериализуются в JSON-строку. В режиме тегов колонка `businessBlock` пустая.
+Пока **не** включаются поля 6–9: `tbCode`, `gosbCode`, `contests`, `rewards` (список колонок — `NEWS_CFG.CSV_DATA_KEYS`).
+
+Массивы/объекты (`businessBlocks` и т.п.) сериализуются в JSON-строку. В режиме тегов колонка `businessBlock` пустая.
 
 ## Панель
 
@@ -114,3 +116,4 @@
 | 1.1 | Множественный выбор newsStatus и newsTagList через чекбоксы |
 | **2.0** | UI v2; обход `newsStatus × businessBlock`; пагинация по `page.total`; паузы 500/100; статистика; CSV по новостям + параметры запроса; опциональный фильтр тегов + custom TEXT |
 | **2.1** | Все параметры вынесены в блок **`NEWS_CFG`** вверху скрипта (паузы, статусы, блоки, теги, CSV, origins) |
+| **2.2** | CSV: временно без полей 6–9 (`tbCode`, `gosbCode`, `contests`, `rewards`) |
