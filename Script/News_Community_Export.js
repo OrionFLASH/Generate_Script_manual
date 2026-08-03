@@ -66,14 +66,14 @@
 
     /**
      * Повторы при ошибке HTTP / содержимого JSON:
-     * пауза RETRY_PAUSE_MS, до RETRY_MAX попыток на один запрос.
-     * После исчерпания — пропуск страницы и переход к следующей, пока есть страницы.
-     * Авария (стоп выгрузки): два подряд исчерпанных запроса, когда следующей страницы уже нет
-     * (конец комбинации / total неизвестен).
+     * пауза RETRY_PAUSE_MS, до RETRY_MAX попыток на один запрос (1-я + повторы).
+     * После исчерпания — пропуск страницы/комбинации и продолжение.
+     * Авария: два запроса подряд исчерпали все попытки с ошибкой.
+     * Успех на любой попытке сбрасывает счётчик «подряд» — следующий сбой снова считается первым.
      */
     RETRY_MAX: 3,
     RETRY_PAUSE_MS: 2000,
-    /** Сколько подряд «исчерпанных» запросов до аварии, когда пагинацию продолжать нельзя */
+    /** Сколько подряд запросов с исчерпанными попытками до аварийной остановки */
     CONSECUTIVE_FAIL_ABORT: 2,
 
     /**
@@ -2126,11 +2126,10 @@ function createDevToolsTrace(opts) {
                 (retryResult.retries || 0) +
                 "): " +
                 failErr +
-                " → пропуск этого запроса (" +
+                " → подряд исчерпанных: " +
                 consecutiveExhaustedFails +
                 "/" +
-                abortLimit +
-                " подряд)"
+                abortLimit
             );
 
             lastExhaustedFail = {
@@ -2140,45 +2139,10 @@ function createDevToolsTrace(opts) {
               payload: payload
             };
 
-            var hitMaxPages =
-              maxPagesPerCombo > 0 && pageNum >= maxPagesPerCombo;
             /**
-             * Пока известны оставшиеся страницы — всегда идём дальше (не рвём выгрузку
-             * посреди total из‑за двух подряд skip). Если total неизвестен — не
-             * уходим в бесконечный pageNum++: после abortLimit останавливаемся.
+             * Стоп только если два запроса подряд исчерпали все попытки.
+             * Успех (даже с N-й попытки) сбрасывает consecutiveExhaustedFails ниже.
              */
-            var canTryNextPage =
-              !hitMaxPages &&
-              ((totalPages != null && pageNum < totalPages) ||
-                (totalPages == null && consecutiveExhaustedFails < abortLimit));
-
-            if (canTryNextPage) {
-              log(
-                "  Переход к pageNum=" +
-                  (pageNum + 1) +
-                  (totalPages != null ? "/" + totalPages : "") +
-                  " после ошибки (повторов всего: " +
-                  retriesTotal +
-                  ", ошибок: " +
-                  errors +
-                  ")"
-              );
-              setStats({
-                tone: "retry2",
-                phase: "ошибка → след. стр.",
-                retries: String(retriesTotal),
-                errors: String(errors),
-                page:
-                  "pageNum=" +
-                  pageNum +
-                  " пропуск → " +
-                  (pageNum + 1)
-              });
-              pageNum++;
-              if (pageGapMs > 0) await delay(pageGapMs);
-              continue;
-            }
-
             if (consecutiveExhaustedFails >= abortLimit) {
               abortedByErrors = true;
               fatalErrorInfo = {
@@ -2217,10 +2181,48 @@ function createDevToolsTrace(opts) {
               break;
             }
 
+            // Один подряд исчерпанный — продолжаем со следующей страницы / комбинации
+            var hitMaxPages =
+              maxPagesPerCombo > 0 && pageNum >= maxPagesPerCombo;
+            var canTryNextPage =
+              !hitMaxPages &&
+              (totalPages == null || pageNum < totalPages);
+
+            if (canTryNextPage) {
+              log(
+                "  Пропуск pageNum=" +
+                  pageNum +
+                  " → переход к " +
+                  (pageNum + 1) +
+                  (totalPages != null ? "/" + totalPages : "") +
+                  " (1 исчерпанный подряд; стоп будет после второго подряд)"
+              );
+              setStats({
+                tone: "retry1",
+                phase: "ошибка → след. стр.",
+                retries: String(retriesTotal),
+                errors: String(errors),
+                page:
+                  "pageNum=" +
+                  pageNum +
+                  " пропуск → " +
+                  (pageNum + 1)
+              });
+              pageNum++;
+              if (pageGapMs > 0) await delay(pageGapMs);
+              continue;
+            }
+
+            log(
+              "  Пропуск pageNum=" +
+                pageNum +
+                " → конец комбинации (1 исчерпанный подряд; следующая комбинация)"
+            );
             comboAborted = true;
             break;
           }
 
+          // Успех (в т.ч. после повторов) — сбрасываем цепочку «подряд исчерпанных»
           consecutiveExhaustedFails = 0;
           var fr = retryResult.fr;
 
