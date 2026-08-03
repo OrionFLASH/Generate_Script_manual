@@ -67,11 +67,13 @@
     /**
      * Повторы при ошибке HTTP / содержимого JSON:
      * пауза RETRY_PAUSE_MS, до RETRY_MAX попыток на один запрос.
-     * Два подряд запроса с исчерпанными попытками → аварийная остановка с сохранением.
+     * После исчерпания — пропуск страницы и переход к следующей, пока есть страницы.
+     * Авария (стоп выгрузки): два подряд исчерпанных запроса, когда следующей страницы уже нет
+     * (конец комбинации / total неизвестен).
      */
     RETRY_MAX: 3,
     RETRY_PAUSE_MS: 2000,
-    /** Сколько подряд «исчерпанных» запросов до аварийной остановки */
+    /** Сколько подряд «исчерпанных» запросов до аварии, когда пагинацию продолжать нельзя */
     CONSECUTIVE_FAIL_ABORT: 2,
 
     /**
@@ -1233,7 +1235,8 @@ function createDevToolsTrace(opts) {
     addStatCell("tags", "теги");
     addStatCell("page", "стр.");
     addStatCell("progress", "прогресс");
-    addStatCell("news", "новостей");
+    addStatCell("news", "собрано");
+    addStatCell("newsCount", "newsCount");
     addStatCell("errors", "ошибок");
 
     /**
@@ -1246,6 +1249,7 @@ function createDevToolsTrace(opts) {
      *   page: string,
      *   progress: string,
      *   news: string,
+     *   newsCount: string,
      *   errors: string
      * }>} patch
      */
@@ -1268,6 +1272,7 @@ function createDevToolsTrace(opts) {
       page: "—",
       progress: "—",
       news: "0",
+      newsCount: "—",
       errors: "0"
     });
     panelScroll.appendChild(statsBox);
@@ -1727,12 +1732,18 @@ function createDevToolsTrace(opts) {
       btnJson.disabled = busy;
       btnCsv.disabled = busy;
       btnStop.disabled = !busy;
+      btnClose.disabled = busy;
+      btnClose.title = busy
+        ? "Закрыть недоступно во время выгрузки — сначала Стоп или дождитесь окончания"
+        : "Закрыть панель";
       var op = busy ? "0.55" : "1";
       var cur = busy ? "wait" : "pointer";
       btnJson.style.opacity = op;
       btnCsv.style.opacity = op;
+      btnClose.style.opacity = op;
       btnJson.style.cursor = cur;
       btnCsv.style.cursor = cur;
+      btnClose.style.cursor = busy ? "not-allowed" : "pointer";
       btnStop.style.opacity = busy ? "1" : "0.55";
       btnStop.style.cursor = busy ? "pointer" : "not-allowed";
     }
@@ -1797,6 +1808,7 @@ function createDevToolsTrace(opts) {
         phase: "выгрузка",
         progress: "0 / " + combos.length,
         news: "0",
+        newsCount: "—",
         errors: "0",
         page: "—",
         status: "—",
@@ -1858,6 +1870,7 @@ function createDevToolsTrace(opts) {
           progress: ci + " / " + combos.length + " завершено",
           page: "pageNum=1…",
           news: String(newsTotal),
+          newsCount: "—",
           errors: String(errors)
         });
 
@@ -1865,6 +1878,8 @@ function createDevToolsTrace(opts) {
 
         var pageNum = 1;
         var totalPages = null;
+        /** Общее число новостей в комбинации из body.newsCount (первый ответ). */
+        var comboNewsCount = null;
         var mergedCombo = null;
         var comboPages = [];
         var comboHadSuccess = false;
@@ -1888,7 +1903,8 @@ function createDevToolsTrace(opts) {
               (totalPages != null ? "/" + totalPages : ""),
             status: String(combo.newsStatus),
             blockOrTags: blockOrTags,
-            tags: tagsStat
+            tags: tagsStat,
+            newsCount: comboNewsCount != null ? String(comboNewsCount) : "—"
           });
 
           log(
@@ -1959,6 +1975,30 @@ function createDevToolsTrace(opts) {
               payload: payload
             };
 
+            var hitMaxPages =
+              maxPagesPerCombo > 0 && pageNum >= maxPagesPerCombo;
+            /**
+             * Пока известны оставшиеся страницы — всегда идём дальше (не рвём выгрузку
+             * посреди total из‑за двух подряд skip). Если total неизвестен — не
+             * уходим в бесконечный pageNum++: после abortLimit останавливаемся.
+             */
+            var canTryNextPage =
+              !hitMaxPages &&
+              ((totalPages != null && pageNum < totalPages) ||
+                (totalPages == null && consecutiveExhaustedFails < abortLimit));
+
+            if (canTryNextPage) {
+              log(
+                "  Переход к pageNum=" +
+                  (pageNum + 1) +
+                  (totalPages != null ? "/" + totalPages : "") +
+                  " после пропуска"
+              );
+              pageNum++;
+              if (pageGapMs > 0) await delay(pageGapMs);
+              continue;
+            }
+
             if (consecutiveExhaustedFails >= abortLimit) {
               abortedByErrors = true;
               fatalErrorInfo = {
@@ -1977,6 +2017,7 @@ function createDevToolsTrace(opts) {
                 status: String(combo.newsStatus),
                 blockOrTags: blockOrTags,
                 tags: tagsStat,
+                newsCount: comboNewsCount != null ? String(comboNewsCount) : "—",
                 page:
                   "pageNum=" +
                   pageNum +
@@ -1995,16 +2036,6 @@ function createDevToolsTrace(opts) {
               break;
             }
 
-            // Пропуск текущего запроса → следующий pageNum или следующая комбинация
-            if (
-              totalPages != null &&
-              pageNum < totalPages &&
-              !(maxPagesPerCombo > 0 && pageNum >= maxPagesPerCombo)
-            ) {
-              pageNum++;
-              if (pageGapMs > 0) await delay(pageGapMs);
-              continue;
-            }
             comboAborted = true;
             break;
           }
@@ -2024,6 +2055,15 @@ function createDevToolsTrace(opts) {
           if (Number.isFinite(total) && total > 0) totalPages = total;
           var num = pageInfo && pageInfo.num != null ? pageInfo.num : pageNum;
           var newsOnPage = fr.data.body ? countNewsInBody(fr.data.body) : 0;
+
+          if (
+            comboNewsCount == null &&
+            fr.data.body &&
+            fr.data.body.newsCount != null
+          ) {
+            var nc = Number(fr.data.body.newsCount);
+            if (Number.isFinite(nc)) comboNewsCount = nc;
+          }
 
           var pageTotalVal = totalPages != null ? totalPages : total != null ? total : "";
           if (fr.data.body) {
@@ -2046,6 +2086,7 @@ function createDevToolsTrace(opts) {
               (totalPages != null ? "/" + totalPages : "") +
               (isLast ? " last" : ""),
             news: String(newsTotal),
+            newsCount: comboNewsCount != null ? String(comboNewsCount) : "—",
             errors: String(errors),
             phase: (ci + 1) + "/" + combos.length
           });
@@ -2058,6 +2099,7 @@ function createDevToolsTrace(opts) {
               " | page.num=" +
               num +
               (totalPages != null ? " | total=" + totalPages : "") +
+              (comboNewsCount != null ? " | newsCount=" + comboNewsCount : "") +
               " | isLast=" +
               (isLast ? "true" : "false") +
               " | новостей на странице: " +
@@ -2141,6 +2183,7 @@ function createDevToolsTrace(opts) {
           tone: consecutiveExhaustedFails >= 1 ? "retry2" : "run",
           progress: ci + 1 + "/" + combos.length,
           news: String(newsTotal),
+          newsCount: comboNewsCount != null ? String(comboNewsCount) : "—",
           errors: String(errors)
         });
 
@@ -2238,20 +2281,37 @@ function createDevToolsTrace(opts) {
       };
       lastExportBundle = bundle;
 
+      var finishTone = abortedByErrors
+        ? "done_err"
+        : stoppedByUser
+          ? "stop"
+          : errors > 0
+            ? "done_err"
+            : "done_ok";
+      var finishPhase = abortedByErrors
+        ? "ошибка — сохранено"
+        : stoppedByUser
+          ? "стоп — сохранено"
+          : errors > 0
+            ? "готово с ошибками"
+            : "готово";
+
       setStats({
-        tone: abortedByErrors ? "done_err" : stoppedByUser ? "stop" : "done_ok",
-        phase: abortedByErrors
-          ? "ошибка — сохранено"
-          : stoppedByUser
-            ? "стоп — сохранено"
-            : "готово",
+        tone: finishTone,
+        phase: finishPhase,
         progress:
           combosOk +
           " OK / " +
           combosSkip +
           " skip / " +
           combos.length +
-          (abortedByErrors ? " · авария" : stoppedByUser ? " · стоп" : ""),
+          (abortedByErrors
+            ? " · авария"
+            : stoppedByUser
+              ? " · стоп"
+              : errors > 0
+                ? " · ошибки"
+                : ""),
         news: String(newsTotal),
         errors: String(errors),
         page: fatalErrorInfo
@@ -2259,7 +2319,12 @@ function createDevToolsTrace(opts) {
             fatalErrorInfo.pageNum +
             " · " +
             String(fatalErrorInfo.error).slice(0, 70)
-          : "—"
+          : lastExhaustedFail
+            ? "pageNum=" +
+              lastExhaustedFail.pageNum +
+              " · " +
+              String(lastExhaustedFail.error).slice(0, 70)
+            : "—"
       });
 
       return {
@@ -2309,7 +2374,9 @@ function createDevToolsTrace(opts) {
             ? "Авария — JSON сохранён. "
             : result.stopped
               ? "Остановлено — JSON сохранён. "
-              : "JSON готов. ") +
+              : result.errors > 0
+                ? "JSON сохранён с ошибками. "
+                : "JSON готов. ") +
             "Страниц: " +
             result.pagesCount +
             " | новостей: " +
@@ -2318,6 +2385,8 @@ function createDevToolsTrace(opts) {
             result.combosOk +
             " | skip: " +
             result.combosSkip +
+            " | ошибок: " +
+            result.errors +
             " | файл: " +
             fname
         );
@@ -2371,11 +2440,15 @@ function createDevToolsTrace(opts) {
             ? "Авария — файлы сохранены. "
             : result.stopped
               ? "Остановлено — файлы сохранены. "
-              : "Готово (JSON+CSV). ") +
+              : result.errors > 0
+                ? "Файлы сохранены с ошибками. "
+                : "Готово (JSON+CSV). ") +
             "Страниц: " +
             result.pagesCount +
             " | новостей: " +
             result.newsTotal +
+            " | ошибок: " +
+            result.errors +
             " | JSON: " +
             fnameJson
         );
@@ -2426,6 +2499,7 @@ function createDevToolsTrace(opts) {
       log("Стоп запрошен: после текущего запроса сохраним уже загруженное.");
     });
     btnClose.addEventListener("click", function () {
+      if (fetchBusy || btnClose.disabled) return;
       root.remove();
     });
 
