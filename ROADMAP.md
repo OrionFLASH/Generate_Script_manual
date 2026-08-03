@@ -322,25 +322,40 @@
 
 **Сопутствующий файл документации:** [Docs/Скрипт_новости_community_News_Community_Export.md](Docs/Скрипт_новости_community_News_Community_Export.md)
 
+### 6.0 Доработка v2 (пагинация × businessBlock, UI, CSV, теги) — ToDo_news
+
+- `[v]` **План и декомпозиция** (этот подраздел): режимы payload, UI, CSV-колонки, паузы, статистика.
+- `[v]` **Константы:** блок **`NEWS_CFG`** вверху скрипта — `STATUS_OPTIONS`, `BUSINESS_BLOCK_OPTIONS`, `TAG_OPTIONS`, паузы 500/100, CSV, origins, path.
+- `[v]` **Режим без тегов:** последовательные комбинации `newsStatus × businessBlock`; payload `{ newsStatus, businessBlock, pageNum }`; пагинация по `body.page.total` / `isLast`; пустой/ошибочный ответ — лог и переход к следующей комбинации.
+- `[v]` **Режим с тегами:** если выбран ≥1 NEWS_TYPE или custom TEXT — payload `{ newsStatus, newsTagList[], pageNum }` (без businessBlock); все выбранные теги в одном `newsTagList`; обход по каждому `newsStatus`.
+- `[v]` **Custom-теги:** textarea (`;` / перевод строки); `tagType: TEXT`.
+- `[v]` **Паузы с панели:** между комбинациями payload (default 500) и между страницами (default 100).
+- `[v]` **Статистика на панели:** текущая комбинация, статус, businessBlock/теги, страница `N/total`, прогресс комбинаций, счётчики новостей/ошибок.
+- `[v]` **UI:** секции выбора, чекбоксы, две паузы, журнал, кнопки JSON / JSON+CSV.
+- `[v]` **CSV:** колонки `newsStatus, businessBlock, pageNum, total` + поля новости (по одной строке на новость).
+- `[v]` **JSON:** единый файл `exportMeta` + `comboResults` + `pages` + `merged`.
+- `[v]` **Документация:** Docs профиля, справочник HTTP § 6, README, ROADMAP.
+
 ### 6.1 Конфигурация
 
 - `[v]` `NEWS_ORIGINS`, стенды/контуры, автоопределение по `window.location.origin`.
-- `[v]` Справочники `NEWS_STATUS_OPTIONS` и `NEWS_TAG_OPTIONS` (чекбоксы на панели, без ручного ввода).
+- `[v]` Справочники `NEWS_STATUS_OPTIONS`, `NEWS_BUSINESS_BLOCK_OPTIONS`, `NEWS_TAG_OPTIONS` (+ custom TEXT).
 
 ### 6.2 POST `/proxy/v1/news`
 
-- `[v]` Пагинация: `pageNum`, остановка по `isLast` и `total`.
+- `[v]` Пагинация: `pageNum`, остановка по `isLast` и `total`; обход комбинаций status×block или status+теги.
 - `[v]` Объединение `timePeriod[].news` в `merged`.
+- `[v]` Корректный skip при отсутствии ответа по комбинации.
 
 ### 6.3 Экспорт
 
-- `[v]` JSON: `exportMeta`, `pages`, `merged`.
-- `[v]` CSV: строки `leaders` / `authors` + поля новости, без `colorCode` / `tags`.
+- `[v]` JSON: `exportMeta`, `comboResults`, `pages`, `merged`.
+- `[v]` CSV: строка на новость + параметры запроса.
 
 ### 6.4 UI-панель
 
-- `[v]` IIFE, журнал, две кнопки (JSON / JSON+CSV), блокировка повторного запуска.
-- `[v]` Валидация: хотя бы один `newsStatus` и одна пара `newsTagList` перед POST.
+- `[v]` IIFE, журнал, статистика текущего запроса, две кнопки (JSON / JSON+CSV), блокировка повторного запуска.
+- `[v]` Валидация: ≥1 `newsStatus`; без тегов — ≥1 `businessBlock`; с тегами — ≥1 тег.
 
 ---
 

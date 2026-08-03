@@ -224,24 +224,24 @@
 
 ## 6. `News_Community_Export.js`
 
-**Назначение:** выгрузка списка новостей community с пагинацией и экспорт JSON / CSV (leaders + authors).
+**Назначение:** выгрузка списка новостей community с пагинацией; экспорт JSON и CSV (одна строка на новость + параметры запроса).
 
-**Origin:** `NEWS_ORIGINS[стенд][контур]` — путь **`/bo/rmkib.gamification/proxy/v1/news`** (через proxy). Стенды: `PROM` | `PSI` | `IFT-SB` | `IFT-GF`; контуры: `ALPHA` | `SIGMA`. Автоопределение по `window.location.origin`.
+**Origin:** `NEWS_ORIGINS[стенд][контур]` — путь **`/bo/rmkib.gamification/proxy/v1/news`** (через proxy). Стенды: `PROM` | `PSI` | `IFT-SB` | `IFT-GF`; контуры: `ALPHA` | `SIGMA`. Автоопределение по `window.location.origin`. Куки сессии: `credentials: "include"`.
 
 | Шаг | Метод | Путь | Payload (JSON) |
 |-----|--------|------|----------------|
-| 1..N | **POST** | `/bo/rmkib.gamification/proxy/v1/news` | `{ "newsStatus": "<строка или массив>", "newsTagList": [ { "tagType", "tagCode" }, … ], "pageNum": 1..total }` |
+| 1..N | **POST** | `/bo/rmkib.gamification/proxy/v1/news` | Без тегов: `{ "newsStatus", "businessBlock", "pageNum" }`. С тегами: `{ "newsStatus", "newsTagList": [ { "tagType", "tagCode" }, … ], "pageNum" }` |
 
-**Параметры payload** задаются чекбоксами на панели; допустимые значения — константы **`NEWS_STATUS_OPTIONS`** и **`NEWS_TAG_OPTIONS`** в скрипте. Один отмеченный `newsStatus` → строка в JSON; несколько → массив. В `newsTagList` — только выбранные пары `tagType` + `tagCode`.
+**Параметры** — блок **`NEWS_CFG`** вверху скрипта + чекбоксы на панели: **`STATUS_OPTIONS`** (`published` / `planned` / `draft`), **`BUSINESS_BLOCK_OPTIONS`** (`KMKKSB`, `CSM`, `AKMKKSB`, `MNS`, `KMFACTORING`), опционально **`TAG_OPTIONS`** + custom TEXT. По умолчанию отмечены `published` и `KMKKSB`; теги выключены. Паузы: `PAYLOAD_GAP_MS` / `PAGE_GAP_MS`.
 
 **Последовательность:**
 
-1. Пользователь отмечает `newsStatus` и теги, задаёт паузу между страницами.
-2. Цикл **POST** с `pageNum = 1, 2, …` до `body.page.isLast === true` или `pageNum >= body.page.total`.
-3. Ответы объединяются в `merged` (`timePeriod[].news` по имени периода).
-4. Сохранение: только JSON (**«Загрузить новости → JSON»**) или JSON + CSV leaders/authors (**«Выгрузить JSON + CSV»**) с одним таймштампом в имени.
+1. Без тегов: для каждой пары `newsStatus × businessBlock` — цикл POST `pageNum = 1…total` (по `body.page`). С тегами: для каждого `newsStatus` — один `newsTagList` (все выбранные теги) и та же пагинация.
+2. Нет ответа по комбинации → лог и следующая комбинация (частичные страницы сохраняются).
+3. Паузы: между payload (default **500** мс) и между страницами (default **100** мс).
+4. JSON (`exportMeta`, `comboResults`, `pages`, `merged`) и/или CSV (`newsStatus, businessBlock, pageNum, total` + поля новости).
 
-Для контура **SIGMA** в заголовках — `Origin` и `Referer` (первая выбранная пара тега). Подробности: [Docs/Скрипт_новости_community_News_Community_Export.md](Скрипт_новости_community_News_Community_Export.md).
+На панели — блок **статистики** (комбинация, страница, прогресс). Подробности: [Docs/Скрипт_новости_community_News_Community_Export.md](Скрипт_новости_community_News_Community_Export.md) (**v2.0**).
 
 ---
 
@@ -327,7 +327,7 @@
 | `AddressBook_export_OE.js` | POST JSON + GET | как v1 + departments: GET `/departments/{id}` |
 | `Parameters_Actual_Export.js` | POST JSON | `{ status }`, `{ objectIds }`, create body, update body |
 | `Tournament_LeadersForAdmin.js` | GET JSON | — |
-| `News_Community_Export.js` | POST JSON | `{ newsStatus, newsTagList[], pageNum }` |
+| `News_Community_Export.js` | POST JSON | без тегов: `{ newsStatus, businessBlock, pageNum }`; с тегами: `{ newsStatus, newsTagList[], pageNum }` |
 | `UI_AutoTest.js` | — | — (клики по меню, без `fetch`) |
 | `UI_AutoTest_LinksCrawler.js` | — | — (клики по ссылкам этапов, без `fetch`) |
 | `SUP_Config_Update.js` | POST JSON + GET | list/export/bundle/add; `cfg-rn`, `x-cfga-location` |
@@ -364,5 +364,7 @@
 | **1.22** | Добавлен § **11** `Pulse_export_OE.js` (multiSearch PERSONS size=20 → mainInfo_v1); сводная таблица и введение (12 скриптов). |
 | **1.23** | § **11** `Pulse_export_OE.js`: пагинация строго по `totalPages`; фазы Search/mainInfo по галочкам; employeeId/ФИО/должность в статусе и trace. |
 | **1.24** | § **11** `Pulse_export_OE.js`: `PULSE_CFG`, пауза 1500+джиттер, Full/CSV зависят от Search+mainInfo, маскирование PII в Trace. |
+| **1.25** | § **6** `News_Community_Export.js` v2: обход `newsStatus × businessBlock`, опциональный `newsTagList` + custom TEXT, паузы 500/100, статистика, CSV по новостям. |
+| **1.26** | § **6** `News_Community_Export.js`: параметры собраны в блок **`NEWS_CFG`** вверху скрипта. |
 
 *Актуальность проверяйте по скриптам в `Script/`.*

@@ -6,70 +6,114 @@
 
 `POST {origin}/bo/rmkib.gamification/proxy/v1/news`
 
-Тело запроса собирается с панели (чекбоксы). Пример с несколькими тегами:
+Куки берутся из сессии вкладки (`credentials: "include"`).
+
+## Режимы payload
+
+### 1. Без тегов (по умолчанию)
+
+Последовательный обход комбинаций **newsStatus × businessBlock**. Пример тела:
+
+```json
+{
+  "newsStatus": "published",
+  "businessBlock": "KMKKSB",
+  "pageNum": 1
+}
+```
+
+Списки допустимых значений и паузы задаются в блоке **`NEWS_CFG`** вверху скрипта (удобно править):
+
+| Ключ `NEWS_CFG` | Назначение |
+|-----------------|------------|
+| `STATUS_OPTIONS` | варианты `newsStatus` (по умолчанию отмечен `published`) |
+| `BUSINESS_BLOCK_OPTIONS` | варианты `businessBlock` (по умолчанию `KMKKSB`) |
+| `TAG_OPTIONS` | теги `NEWS_TYPE` (по умолчанию все выкл.) |
+| `CUSTOM_TAG_TYPE` | тип своих тегов (`TEXT`) |
+| `PAYLOAD_GAP_MS` / `PAGE_GAP_MS` | паузы 500 / 100 мс |
+| `CSV_DATA_KEYS` | колонки CSV после параметров запроса |
+| `ORIGINS` / `NEWS_PATH` | стенды и путь API |
+
+### 2. С фильтром по тегам
+
+Если выбран ≥1 тег `NEWS_TYPE` **или** задан свой TEXT-тег — запросы идут по каждому `newsStatus` с общим `newsTagList` (**без** `businessBlock`):
 
 ```json
 {
   "newsStatus": "published",
   "newsTagList": [
     { "tagType": "NEWS_TYPE", "tagCode": "bestPractice" },
-    { "tagType": "NEWS_TYPE", "tagCode": "achievement" }
+    { "tagType": "TEXT", "tagCode": "Гарантии" }
   ],
   "pageNum": 1
 }
 ```
 
-Списки допустимых значений задаются в скрипте:
+Теги `NEWS_TYPE` (по умолчанию все выключены): `bestPractice`, `achievement`, `publication`.  
+Свои теги — textarea (разделители `;` и перевод строки), в запрос уходят как `{ "tagType": "TEXT", "tagCode": "…" }`.  
+Несколько тегов = **один** запрос с расширенным `newsTagList`.
 
-- `NEWS_STATUS_OPTIONS` — варианты `newsStatus` (по умолчанию отмечен `published`);
-- `NEWS_TAG_OPTIONS` — пары `tagType` + `tagCode` (по умолчанию `bestPractice`; также `achievement`, `publication`).
+## Пагинация
 
-Если отмечён один `newsStatus`, в JSON уходит строка; если несколько — массив строк.
+В ответе `body.page`: `total`, `isLast`, `num`.  
+Для каждой комбинации скрипт запрашивает страницы `pageNum = 1 … total` (остановка также по `isLast`).
 
-Пагинация: в ответе `body.page` — поля `total`, `isLast`, `num`. Скрипт увеличивает `pageNum`, пока `isLast !== true` и пока `pageNum < total`.
+Если по комбинации ответа нет (HTTP-ошибка, нет JSON, `success: false`) — запись в журнал и переход к **следующей** комбинации. Частично полученные страницы сохраняются.
 
-## Файлы
+## Паузы (панель)
 
-- Скрипт: `Script/News_Community_Export.js` (IIFE — повторная вставка в консоль без SyntaxError).
-- Запуск: вставить скрипт в консоль на вкладке нужного стенда; откроется панель.
+| Параметр | По умолчанию | Назначение |
+|----------|--------------|------------|
+| Пауза между payload | **500** мс | между разными комбинациями |
+| Пауза между страницами | **100** мс | внутри одной комбинации |
+
+## Статистика на панели
+
+Живой блок «Статистика работы»: фаза, текущая комбинация, `newsStatus`, `businessBlock`/теги, страница `pageNum/total`, прогресс комбинаций, число новостей, ошибки/пропуски.
 
 ## Выгрузка JSON
 
-Кнопка **«Загрузить новости → JSON»** сохраняет объект:
+Кнопка **«Загрузить → JSON»** сохраняет объект:
 
 | Ключ | Содержимое |
 |------|------------|
-| `exportMeta` | стенд, контур, origin, время, число страниц, параметры payload, число новостей после merge |
-| `pages` | массив сырых ответов API по страницам |
-| `merged` | один объединённый ответ (`timePeriod[].news` склеены по имени периода) |
-
-Имя файла: `news_community_{стенд}_{контур}_{дата}.json` или пользовательский префикс на панели.
+| `exportMeta` | стенд, контур, origin, режим, selection, счётчики |
+| `comboResults` | результат по каждой успешной комбинации (`merged` комбинации) |
+| `pages` | сырые ответы API по страницам |
+| `merged` | объединённый ответ по всем комбинациям |
 
 ## Выгрузка CSV
 
-Кнопка **«Выгрузить JSON + CSV (leaders + authors)»** сразу активна: выполняет те же POST по всем страницам, затем сохраняет **полный JSON** и **CSV** с одним таймштампом в имени файлов (например `…20260522-120000.json` и `…20260522-120000_leaders_authors.csv`).
+Кнопка **«Выгрузить JSON + CSV»** — те же POST, затем JSON и CSV с одним таймштампом.
 
-Кнопка **«Загрузить новости → JSON»** — только JSON без CSV.
+Имя CSV: `…_news.csv`. **Одна строка = одна новость.**
 
-Каждая строка — один человек из `leaders` или `authors` плюс поля связанной новости:
+Колонки:
 
-- `personRole`: `leaders` или `authors`
-- `timePeriodName` — имя блока `timePeriod`
-- поля person: `employeeNumber`, `lastName`, `firstName`, `terDivisionName`, `gosbCode`, `tbCode` (без `colorCode`, `tags`)
-- поля новости: `newsId`, `createDate`, `updateDate`, `plannedDate`, `plannedDateTime`, `date`, `newsStatus`, `newsType`, `summary` (без `imageList`)
+1. Параметры запроса: `newsStatus`, `businessBlock`, `pageNum`, `total`
+2. Данные новости: `newsId`, `newsType`, `summary`, `newsText`, `newsItemStatus` (поле `newsStatus` новости), `createDate`, `updateDate`, `plannedDate`, `date`, `businessBlocks`
+
+Пока **не** включаются поля 6–9: `tbCode`, `gosbCode`, `contests`, `rewards` (список колонок — `NEWS_CFG.CSV_DATA_KEYS`).
+
+Массивы/объекты (`businessBlocks` и т.п.) сериализуются в JSON-строку. В режиме тегов колонка `businessBlock` пустая.
 
 ## Панель
 
-- Выбор стенда и контура, автоопределение по `window.location.origin`
-- Чекбоксы `newsStatus` и `newsTagList` (без ручного ввода)
-- Пауза между страницами (мс), префикс имени файла
-- **Журнал работы** (лента)
+- Стенд / контур, автоопределение по `window.location.origin`
+- Чекбоксы status / businessBlock / теги (+ «Все» / «Сброс»)
+- Textarea своих TEXT-тегов
+- Две паузы, префикс имени файла
+- Статистика + журнал работы
+- Trace (DevToolsTrace)
 
-Сводка HTTP и порядок шагов: [Справочник_скрипты_HTTP_запросы_и_последовательность.md](Справочник_скрипты_HTTP_запросы_и_последовательность.md) (§ 6).
+Сводка HTTP: [Справочник_скрипты_HTTP_запросы_и_последовательность.md](Справочник_скрипты_HTTP_запросы_и_последовательность.md) (§ 6).
 
 ## История версий
 
 | Версия | Изменения |
 |--------|-----------|
 | 1.0 | Первая версия: POST news, пагинация, JSON + CSV leaders/authors |
-| 1.1 | Множественный выбор newsStatus и newsTagList через чекбоксы; справочники в константах скрипта |
+| 1.1 | Множественный выбор newsStatus и newsTagList через чекбоксы |
+| **2.0** | UI v2; обход `newsStatus × businessBlock`; пагинация по `page.total`; паузы 500/100; статистика; CSV по новостям + параметры запроса; опциональный фильтр тегов + custom TEXT |
+| **2.1** | Все параметры вынесены в блок **`NEWS_CFG`** вверху скрипта (паузы, статусы, блоки, теги, CSV, origins) |
+| **2.2** | CSV: временно без полей 6–9 (`tbCode`, `gosbCode`, `contests`, `rewards`) |
