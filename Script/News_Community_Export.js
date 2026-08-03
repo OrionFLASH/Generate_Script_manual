@@ -1053,6 +1053,60 @@ function createDevToolsTrace(opts) {
       "flex:1 1 0;min-height:0;overflow-y:auto;overflow-x:hidden;box-sizing:border-box;-webkit-overflow-scrolling:touch;";
     root.appendChild(panelScroll);
 
+    /** Компактная кнопка с Unicode-иконкой (без тяжёлых картинок). */
+    function mkActionBtn(icon, label, bg, opts) {
+      var o = opts || {};
+      var b = document.createElement("button");
+      b.type = "button";
+      b.title = o.title || label;
+      b.disabled = !!o.disabled;
+      b.style.cssText =
+        "display:inline-flex;align-items:center;justify-content:center;gap:4px;" +
+        "padding:5px 8px;font-size:11px;font-weight:700;line-height:1.2;cursor:pointer;" +
+        "border:none;border-radius:6px;color:#fff;box-sizing:border-box;white-space:nowrap;" +
+        "background:" +
+        bg +
+        ";" +
+        (o.disabled ? "opacity:0.55;cursor:not-allowed;" : "") +
+        (o.extra || "");
+      var ic = document.createElement("span");
+      ic.setAttribute("aria-hidden", "true");
+      ic.style.cssText = "font-size:12px;line-height:1;flex-shrink:0;";
+      ic.textContent = icon;
+      var tx = document.createElement("span");
+      tx.textContent = label;
+      b.appendChild(ic);
+      b.appendChild(tx);
+      return b;
+    }
+
+    const actionBar = document.createElement("div");
+    actionBar.style.cssText =
+      "display:flex;flex-wrap:wrap;gap:5px;align-items:center;margin:0 0 8px 0;" +
+      "padding:6px;background:rgba(255,255,255,.85);border:1px solid #cbd5e1;border-radius:8px;" +
+      "position:sticky;top:0;z-index:2;";
+
+    const btnJson = mkActionBtn("⬇", "JSON", "#2563eb", {
+      title: "Загрузить новости → JSON"
+    });
+    const btnCsv = mkActionBtn("▦", "JSON+CSV", "#059669", {
+      title: "Выгрузить JSON + CSV"
+    });
+    const btnStop = mkActionBtn("⏹", "Стоп", "#dc2626", {
+      title: "Остановить после текущего POST и сохранить уже загруженное",
+      disabled: true
+    });
+    const btnClose = mkActionBtn("✕", "Закрыть", "#64748b", {
+      title: "Закрыть панель",
+      extra: "margin-left:auto;"
+    });
+
+    actionBar.appendChild(btnJson);
+    actionBar.appendChild(btnCsv);
+    actionBar.appendChild(btnStop);
+    actionBar.appendChild(btnClose);
+    panelScroll.appendChild(actionBar);
+
     /** Блок живой статистики текущего запроса */
     const statsBox = document.createElement("div");
     const statsTitle = document.createElement("div");
@@ -2315,40 +2369,12 @@ function createDevToolsTrace(opts) {
       }
     }
 
-    const btnBase =
-      "padding:11px 12px;font-size:12px;cursor:pointer;border:none;border-radius:8px;font-weight:700;" +
-      "color:#fff;text-align:center;line-height:1.35;box-sizing:border-box;width:100%;" +
-      "box-shadow:0 2px 8px rgba(15,23,42,.12);";
-
-    const actionGrid = document.createElement("div");
-    actionGrid.style.cssText =
-      "display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:12px 0 10px;";
-
-    const btnJson = document.createElement("button");
-    btnJson.type = "button";
-    btnJson.textContent = "Загрузить → JSON";
-    btnJson.style.cssText = btnBase + "background:#2563eb;";
     btnJson.addEventListener("click", function () {
       void runNewsJsonExport();
     });
-    actionGrid.appendChild(btnJson);
-
-    const btnCsv = document.createElement("button");
-    btnCsv.type = "button";
-    btnCsv.textContent = "Выгрузить JSON + CSV";
-    btnCsv.style.cssText = btnBase + "background:#059669;";
     btnCsv.addEventListener("click", function () {
       void runNewsCsvExport();
     });
-    actionGrid.appendChild(btnCsv);
-
-    const btnStop = document.createElement("button");
-    btnStop.type = "button";
-    btnStop.textContent = "Стоп";
-    btnStop.title =
-      "Остановить запросы после текущего POST и сохранить уже успешно загруженные данные в файлы";
-    btnStop.disabled = true;
-    btnStop.style.cssText = btnBase + "background:#dc2626;opacity:0.55;cursor:not-allowed;";
     btnStop.addEventListener("click", function () {
       if (!fetchBusy) return;
       if (stopRequested) {
@@ -2359,21 +2385,11 @@ function createDevToolsTrace(opts) {
       setStats({ tone: "stop", phase: "стоп… (ждём POST)" });
       log("Стоп запрошен: после текущего запроса сохраним уже загруженное.");
     });
-    actionGrid.appendChild(btnStop);
-    panelScroll.appendChild(actionGrid);
-
-    root.appendChild(logWrap);
-
-    const btnClose = document.createElement("button");
-    btnClose.type = "button";
-    btnClose.textContent = "Закрыть панель";
-    btnClose.style.cssText =
-      "margin-top:8px;width:100%;padding:8px;cursor:pointer;background:#f1f5f9;color:rgb(15,23,42);" +
-      "border:1px solid #94a3b8;border-radius:6px;font-size:12px;flex-shrink:0;";
     btnClose.addEventListener("click", function () {
       root.remove();
     });
-    root.appendChild(btnClose);
+
+    root.appendChild(logWrap);
 
     document.body.appendChild(root);
     devTrace.attachPanel(root);
