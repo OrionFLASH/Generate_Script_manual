@@ -1777,6 +1777,7 @@ function createDevToolsTrace(opts) {
         phase: "выгрузка",
         progress: "0 / " + combos.length,
         news: "0",
+        newsCount: "—",
         errors: "0",
         page: "—",
         status: "—",
@@ -2124,6 +2125,7 @@ function createDevToolsTrace(opts) {
           tone: consecutiveExhaustedFails >= 1 ? "retry2" : "run",
           progress: ci + 1 + "/" + combos.length,
           news: String(newsTotal),
+          newsCount: comboNewsCount != null ? String(comboNewsCount) : "—",
           errors: String(errors)
         });
 
