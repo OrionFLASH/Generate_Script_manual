@@ -148,6 +148,8 @@
       "date",
       "businessBlocks"
     ],
+    /** Разделитель полей CSV */
+    CSV_DELIMITER: ";",
 
     /** Лимит строк журнала на панели */
     LOG_MAX_LINES: 1200,
@@ -442,6 +444,7 @@ function createDevToolsTrace(opts) {
   var NEWS_TAG_OPTIONS = NEWS_CFG.TAG_OPTIONS;
   var DEFAULT_EXPORT_FILENAME_PREFIX_PLACEHOLDER = NEWS_CFG.FILENAME_PREFIX_PLACEHOLDER;
   var NEWS_CSV_DATA_KEYS = NEWS_CFG.CSV_DATA_KEYS;
+  var NEWS_CSV_DELIMITER = NEWS_CFG.CSV_DELIMITER || ";";
 
   function detectNewsEnvFromLocation() {
     var origin = "";
@@ -851,7 +854,14 @@ function createDevToolsTrace(opts) {
 
   function escapeCsvField(s) {
     var t = String(s == null ? "" : s);
-    if (/[\r\n",]/.test(t)) {
+    var delim = NEWS_CSV_DELIMITER;
+    // Кавычки, если есть перевод строки, кавычка или разделитель
+    if (
+      t.indexOf("\r") >= 0 ||
+      t.indexOf("\n") >= 0 ||
+      t.indexOf('"') >= 0 ||
+      t.indexOf(delim) >= 0
+    ) {
       return '"' + t.replace(/"/g, '""') + '"';
     }
     return t;
@@ -914,14 +924,15 @@ function createDevToolsTrace(opts) {
    * @param {{ headers: string[], rows: string[][] }} table
    */
   function csvTableToText(table) {
-    var lines = [table.headers.map(escapeCsvField).join(",")];
+    var delim = NEWS_CSV_DELIMITER;
+    var lines = [table.headers.map(escapeCsvField).join(delim)];
     for (var i = 0; i < table.rows.length; i++) {
       lines.push(
         table.rows[i]
           .map(function (c) {
             return escapeCsvField(c);
           })
-          .join(",")
+          .join(delim)
       );
     }
     return lines.join("\r\n") + "\r\n";
