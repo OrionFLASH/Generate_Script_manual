@@ -37,6 +37,10 @@
     DEFAULT_NEWS_TYPE: "publication",
     NEWS_TYPES: ["achievement", "bestPractice", "publication"],
     DEFAULT_STATUS_TARGET: "published",
+    DEFAULT_CREATED_BY: "00673892",
+    STATUS_OPTIONS: ["published", "planned", "draft"],
+    BUSINESS_BLOCK_OPTIONS: ["KMKKSB", "CSM", "AKMKKSB", "MNS", "KMFACTORING"],
+    TAG_OPTIONS: ["achievement", "bestPractice", "publication"],
     LOG_MAX_LINES: 1200
   };
 
@@ -417,6 +421,10 @@
     return { ok: response.ok, status: response.status, data: data };
   }
 
+  async function fetchNewsListPage(origin, payload) {
+    return postJson(origin + NEWS_V2_CFG.NEWS_PATH, payload, origin + "/community");
+  }
+
   function downloadJson(filename, data) {
     var text = JSON.stringify(data, null, 2);
     var blob = new Blob([text], { type: "application/json;charset=utf-8" });
@@ -679,13 +687,20 @@
       var createdByInput = document.createElement("input");
       createdByInput.type = "text";
       createdByInput.placeholder = "createdBy по умолчанию";
+      createdByInput.value = NEWS_V2_CFG.DEFAULT_CREATED_BY;
       createdByInput.style.cssText = "padding:6px 8px;border:1px solid #94a3b8;border-radius:6px;width:220px;";
       top.appendChild(createdByInput);
 
       var fileInput = document.createElement("input");
       fileInput.type = "file";
       fileInput.accept = ".json,application/json";
+      fileInput.style.display = "none";
       top.appendChild(fileInput);
+      top.appendChild(
+        mkBtn("Выбрать файл JSON", function () {
+          fileInput.click();
+        })
+      );
 
       var manualInput = document.createElement("textarea");
       manualInput.placeholder = "Вставьте JSON вручную (объект или массив)";
@@ -720,11 +735,17 @@
           return;
         }
         var batchStartIso = nowIso();
+        var createdByValue = String(createdByInput.value || "").trim() || NEWS_V2_CFG.DEFAULT_CREATED_BY;
         candidates = extractCreateCandidatesFromAnyJson(
           parsed.value,
-          createdByInput.value,
+          createdByValue,
           batchStartIso
         );
+        for (var ci = 0; ci < candidates.length; ci++) {
+          if (!String(candidates[ci].payload.createdBy || "").trim()) {
+            candidates[ci].payload.createdBy = createdByValue;
+          }
+        }
         renderList();
         log("Загружено записей для создания: " + candidates.length);
       }
@@ -764,7 +785,11 @@
               }
 
               var errors = [];
+              var createdByValue = String(createdByInput.value || "").trim() || NEWS_V2_CFG.DEFAULT_CREATED_BY;
               for (var i = 0; i < selected.length; i++) {
+                if (!String(selected[i].payload.createdBy || "").trim()) {
+                  selected[i].payload.createdBy = createdByValue;
+                }
                 var err = validateCreatePayload(selected[i].payload);
                 if (err) {
                   errors.push("[" + (i + 1) + "] " + err + " :: " + compactNewsLabel(selected[i].payload));
@@ -862,7 +887,13 @@
       var fileInput = document.createElement("input");
       fileInput.type = "file";
       fileInput.accept = ".json,application/json";
+      fileInput.style.display = "none";
       top.appendChild(fileInput);
+      top.appendChild(
+        mkBtn("Выбрать файл JSON", function () {
+          fileInput.click();
+        })
+      );
 
       var idsInput = document.createElement("textarea");
       idsInput.rows = 5;
@@ -1006,7 +1037,13 @@
       var fileInput = document.createElement("input");
       fileInput.type = "file";
       fileInput.accept = ".json,application/json";
+      fileInput.style.display = "none";
       wrap.appendChild(fileInput);
+      wrap.appendChild(
+        mkBtn("Выбрать файл JSON", function () {
+          fileInput.click();
+        })
+      );
 
       var manualInput = document.createElement("textarea");
       manualInput.rows = 7;
@@ -1137,7 +1174,154 @@
       });
     }
 
+    function renderExportTab() {
+      clearContent();
+      var wrap = document.createElement("div");
+      wrap.style.cssText = "display:flex;flex-direction:column;gap:10px;";
+      content.appendChild(wrap);
+
+      var note = document.createElement("div");
+      note.style.cssText = "padding:8px;border:1px solid #93c5fd;border-radius:6px;background:#eff6ff;font-size:12px;color:#1e3a8a;";
+      note.textContent =
+        "Выгрузка как в старом скрипте: выбор status/block/tag, пагинация и скачивание JSON.";
+      wrap.appendChild(note);
+
+      function mkMulti(title, values, defaults) {
+        var box = document.createElement("div");
+        box.style.cssText = "padding:8px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;";
+        var cap = document.createElement("div");
+        cap.textContent = title;
+        cap.style.cssText = "font-size:11px;font-weight:700;margin-bottom:6px;";
+        box.appendChild(cap);
+        var checks = [];
+        for (var i = 0; i < values.length; i++) {
+          var row = document.createElement("label");
+          row.style.cssText = "display:inline-flex;align-items:center;gap:4px;margin-right:12px;margin-bottom:6px;font-size:12px;";
+          var c = document.createElement("input");
+          c.type = "checkbox";
+          c.value = values[i];
+          c.checked = defaults.indexOf(values[i]) >= 0;
+          checks.push(c);
+          row.appendChild(c);
+          row.appendChild(document.createTextNode(values[i]));
+          box.appendChild(row);
+        }
+        return {
+          el: box,
+          getSelected: function () {
+            return checks.filter(function (c) { return c.checked; }).map(function (c) { return c.value; });
+          }
+        };
+      }
+
+      var statusCtl = mkMulti("Status *", NEWS_V2_CFG.STATUS_OPTIONS, ["published"]);
+      var blockCtl = mkMulti("Business block *", NEWS_V2_CFG.BUSINESS_BLOCK_OPTIONS, ["KMKKSB"]);
+      var tagCtl = mkMulti("Теги NEWS_TYPE (опционально)", NEWS_V2_CFG.TAG_OPTIONS, []);
+      wrap.appendChild(statusCtl.el);
+      wrap.appendChild(blockCtl.el);
+      wrap.appendChild(tagCtl.el);
+
+      var maxPagesInput = document.createElement("input");
+      maxPagesInput.type = "number";
+      maxPagesInput.min = "0";
+      maxPagesInput.value = "0";
+      maxPagesInput.style.cssText = "padding:6px 8px;border:1px solid #94a3b8;border-radius:6px;width:180px;";
+      wrap.appendChild(maxPagesInput);
+      wrap.appendChild(document.createTextNode("Макс. страниц на комбинацию (0 = все)"));
+
+      var actions = document.createElement("div");
+      actions.style.cssText = "display:flex;flex-wrap:wrap;gap:8px;";
+      wrap.appendChild(actions);
+
+      actions.appendChild(
+        mkBtn(
+          "Выгрузить JSON",
+          function () {
+            void (async function () {
+              var statuses = statusCtl.getSelected();
+              var blocks = blockCtl.getSelected();
+              var tags = tagCtl.getSelected();
+              var maxPages = parseInt(String(maxPagesInput.value || "0"), 10);
+              if (!Number.isFinite(maxPages) || maxPages < 0) maxPages = 0;
+              if (!statuses.length || !blocks.length) {
+                log("Для выгрузки выберите минимум 1 status и 1 businessBlock.");
+                return;
+              }
+              var env = getEnv();
+              var comboResults = [];
+              var pages = [];
+              var errors = [];
+              for (var si = 0; si < statuses.length; si++) {
+                for (var bi = 0; bi < blocks.length; bi++) {
+                  var status = statuses[si];
+                  var block = blocks[bi];
+                  var pageNum = 1;
+                  var localPages = [];
+                  while (true) {
+                    if (maxPages > 0 && pageNum > maxPages) break;
+                    var payload = { newsStatus: status, businessBlock: block, pageNum: pageNum };
+                    if (tags.length) {
+                      payload.newsTagList = tags.map(function (tagCode) {
+                        return { tagType: "NEWS_TYPE", tagCode: tagCode };
+                      });
+                    }
+                    var res = await fetchNewsListPage(env.origin, payload);
+                    if (!(res.ok && res.data && res.data.success === true && res.data.body)) {
+                      errors.push({ payload: payload, response: res });
+                      log("Ошибка выгрузки: status=" + status + ", block=" + block + ", page=" + pageNum);
+                      break;
+                    }
+                    localPages.push(res.data);
+                    pages.push(res.data);
+                    var pageInfo = (res.data.body && res.data.body.page) || {};
+                    var isLast = pageInfo.isLast === true;
+                    var total = Number(pageInfo.total || 0);
+                    log("OK выгрузка: " + status + "/" + block + " page=" + pageNum + (total ? "/" + total : ""));
+                    if (isLast) break;
+                    if (total > 0 && pageNum >= total) break;
+                    pageNum++;
+                  }
+                  comboResults.push({
+                    combo: {
+                      newsStatus: status,
+                      businessBlock: block,
+                      newsTagList: tags.map(function (tagCode) {
+                        return { tagType: "NEWS_TYPE", tagCode: tagCode };
+                      })
+                    },
+                    pagesFetched: localPages.length,
+                    merged: localPages[localPages.length - 1] || null
+                  });
+                }
+              }
+              var bundle = {
+                exportMeta: {
+                  stand: env.stand,
+                  contour: env.contour,
+                  origin: env.origin,
+                  fetchedAt: nowIso(),
+                  statuses: statuses,
+                  businessBlocks: blocks,
+                  tags: tags,
+                  maxPagesPerCombo: maxPages || null,
+                  pagesFetched: pages.length,
+                  errorsCount: errors.length
+                },
+                comboResults: comboResults,
+                pages: pages,
+                errors: errors
+              };
+              downloadJson("news_export_v2_" + env.stand + "_" + env.contour + "_" + tsShort() + ".json", bundle);
+              log("Выгрузка завершена. Страниц: " + pages.length + ", ошибок: " + errors.length);
+            })();
+          },
+          "background:#0ea5e9;color:#fff;border-color:#0ea5e9;"
+        )
+      );
+    }
+
     var tabs = [
+      { key: "export", label: "Выгрузка (старый блок)", render: renderExportTab },
       { key: "create", label: "Создание", render: renderCreateTab },
       { key: "status", label: "Статусы", render: renderStatusTab },
       { key: "edit", label: "Редактирование (каркас)", render: renderEditTab }
@@ -1180,7 +1364,7 @@
     );
 
     document.body.appendChild(root);
-    switchTab("create");
+    switchTab("export");
     log("Панель запущена.");
   }
 
