@@ -1145,6 +1145,63 @@
       return b;
     }
 
+    /** Цветная кнопка с поддержкой disabled (активность). */
+    function mkToneBtn(text, onClick, tone) {
+      var tones = {
+        primary:
+          "background:#16a34a;color:#fff;border-color:#15803d;",
+        file:
+          "background:#2563eb;color:#fff;border-color:#1d4ed8;",
+        parse:
+          "background:#4f46e5;color:#fff;border-color:#4338ca;",
+        template:
+          "background:#0f766e;color:#fff;border-color:#0f766e;",
+        select:
+          "background:#0284c7;color:#fff;border-color:#0369a1;",
+        deselect:
+          "background:#64748b;color:#fff;border-color:#475569;",
+        warn:
+          "background:#ea580c;color:#fff;border-color:#c2410c;",
+        muted:
+          "background:#f8fafc;color:#334155;border-color:#cbd5e1;"
+      };
+      var base =
+        "padding:7px 11px;border-radius:7px;border:1px solid;cursor:pointer;" +
+        "font-size:12px;font-weight:700;line-height:1.2;transition:opacity .12s ease;";
+      var b = document.createElement("button");
+      b.type = "button";
+      b.textContent = text;
+      b.setAttribute("data-tone", tone || "muted");
+      b.style.cssText = base + (tones[tone] || tones.muted);
+      b.addEventListener("click", function (ev) {
+        if (b.disabled) return;
+        onClick(ev);
+      });
+      b._setActive = function (active, titleWhenOff) {
+        var on = !!active;
+        b.disabled = !on;
+        b.style.opacity = on ? "1" : "0.45";
+        b.style.cursor = on ? "pointer" : "not-allowed";
+        if (!on && titleWhenOff) b.title = titleWhenOff;
+        else if (on) b.removeAttribute("title");
+      };
+      return b;
+    }
+
+    function mkActionRow(labelText) {
+      var row = document.createElement("div");
+      row.style.cssText = "display:flex;flex-wrap:wrap;gap:6px;align-items:center;";
+      if (labelText) {
+        var lab = document.createElement("span");
+        lab.textContent = labelText;
+        lab.style.cssText =
+          "font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;" +
+          "letter-spacing:0.04em;margin-right:4px;min-width:64px;";
+        row.appendChild(lab);
+      }
+      return row;
+    }
+
     function clearContent() {
       content.innerHTML = "";
     }
@@ -1243,11 +1300,11 @@
       fileInput.accept = ".json,application/json";
       fileInput.style.display = "none";
       top.appendChild(fileInput);
-      top.appendChild(
-        mkBtn("Выбрать файл JSON", function () {
-          fileInput.click();
-        })
-      );
+
+      var btnPickFile = mkToneBtn("Выбрать файл JSON", function () {
+        fileInput.click();
+      }, "file");
+      top.appendChild(btnPickFile);
 
       var manualInput = document.createElement("textarea");
       manualInput.placeholder = "Вставьте JSON вручную (объект или массив)";
@@ -1256,8 +1313,17 @@
       wrap.appendChild(manualInput);
 
       var actions = document.createElement("div");
-      actions.style.cssText = "display:flex;flex-wrap:wrap;gap:8px;";
+      actions.style.cssText =
+        "display:flex;flex-direction:column;gap:8px;padding:8px;" +
+        "border:1px solid #e2e8f0;border-radius:8px;background:rgba(255,255,255,.72);";
       wrap.appendChild(actions);
+
+      var rowLoad = mkActionRow("Файл");
+      var rowSelect = mkActionRow("Выбор");
+      var rowRun = mkActionRow("Запуск");
+      actions.appendChild(rowLoad);
+      actions.appendChild(rowSelect);
+      actions.appendChild(rowRun);
 
       var tableHost = document.createElement("div");
       wrap.appendChild(tableHost);
@@ -1272,10 +1338,109 @@
       selectionInfo.style.cssText = "font-size:11px;color:#475569;";
       wrap.appendChild(selectionInfo);
 
+      var btnTemplate = mkToneBtn("Шаблон JSON", function () {
+        downloadJson("news_create_template_" + tsShort() + ".json", buildCreateTemplate());
+        log("Скачан шаблон создания.");
+      }, "template");
+      var btnParseField = mkToneBtn("Разобрать JSON из поля", function () {
+        void parseFromText(manualInput.value);
+      }, "parse");
+      var btnSelectAll = mkToneBtn("Отметить всё", function () {
+        setAllSelected(true);
+      }, "select");
+      var btnSelectFiltered = mkToneBtn("Отметить в фильтре", function () {
+        setFilteredSelected(true);
+      }, "select");
+      var btnDeselectAll = mkToneBtn("Снять всё", function () {
+        setAllSelected(false);
+      }, "deselect");
+      var btnDeselectFiltered = mkToneBtn("Снять в фильтре", function () {
+        setFilteredSelected(false);
+      }, "deselect");
+      var btnClear = mkToneBtn("Очистить загруженное", function () {
+        clearLoadedSelection();
+      }, "warn");
+      var btnCreate = mkToneBtn("Создать выбранные", function () {
+        void runCreateSelected();
+      }, "primary");
+
+      rowLoad.appendChild(btnTemplate);
+      rowLoad.appendChild(btnParseField);
+      rowSelect.appendChild(btnSelectAll);
+      rowSelect.appendChild(btnSelectFiltered);
+      rowSelect.appendChild(btnDeselectAll);
+      rowSelect.appendChild(btnDeselectFiltered);
+      rowSelect.appendChild(btnClear);
+      rowRun.appendChild(btnCreate);
+
+      function getCreateSelectionStats() {
+        var selectedCount = 0;
+        for (var i = 0; i < candidates.length; i++) {
+          if (candidates[i].selected !== false) selectedCount++;
+        }
+        var q = String(searchInput.value || "").trim().toLowerCase();
+        var filteredCount = 0;
+        if (!q) {
+          filteredCount = candidates.length;
+        } else {
+          for (var fi = 0; fi < candidates.length; fi++) {
+            var hay = [
+              ensureString(candidates[fi].sourceType || candidates[fi].type),
+              ensureString(candidates[fi].summary),
+              ensureString(candidates[fi].sourceNewsId || candidates[fi].newsId)
+            ]
+              .join(" ")
+              .toLowerCase();
+            if (hay.indexOf(q) >= 0) filteredCount++;
+          }
+        }
+        return {
+          total: candidates.length,
+          selected: selectedCount,
+          filtered: filteredCount,
+          hasFilter: !!q,
+          hasManual: !!String(manualInput.value || "").trim()
+        };
+      }
+
+      function refreshCreateActions() {
+        var st = getCreateSelectionStats();
+        var hasList = st.total > 0;
+        btnParseField._setActive(
+          st.hasManual,
+          "Вставьте JSON в поле выше"
+        );
+        btnSelectAll._setActive(hasList, "Сначала загрузите записи");
+        btnDeselectAll._setActive(hasList, "Сначала загрузите записи");
+        btnClear._setActive(hasList || st.hasManual, "Нечего очищать");
+        btnSelectFiltered._setActive(
+          hasList && st.hasFilter && st.filtered > 0,
+          hasList ? "Задайте текст поиска" : "Сначала загрузите записи"
+        );
+        btnDeselectFiltered._setActive(
+          hasList && st.hasFilter && st.filtered > 0,
+          hasList ? "Задайте текст поиска" : "Сначала загрузите записи"
+        );
+        var canCreate = hasList && st.selected > 0 && !opBusy;
+        btnCreate._setActive(
+          canCreate,
+          opBusy
+            ? "Идёт другая операция"
+            : hasList
+              ? "Отметьте хотя бы одну запись"
+              : "Сначала загрузите записи"
+        );
+        btnCreate.textContent =
+          st.selected > 0
+            ? "Создать выбранные (" + st.selected + ")"
+            : "Создать выбранные";
+      }
+
       function renderList() {
         tableHost.innerHTML = "";
         if (!candidates.length) {
           selectionInfo.textContent = "Записей: 0";
+          refreshCreateActions();
           return;
         }
         var q = String(searchInput.value || "").trim().toLowerCase();
@@ -1310,6 +1475,7 @@
           countForView +
           " | Выбрано: " +
           selectedCount;
+        refreshCreateActions();
       }
 
       function setAllSelected(next) {
@@ -1374,6 +1540,174 @@
         );
       }
 
+      async function runCreateSelected() {
+        if (opBusy) {
+          log("Уже выполняется другая операция — дождитесь завершения или нажмите Стоп.");
+          return;
+        }
+        var selected = candidates.filter(function (c) {
+          return c.selected !== false;
+        });
+        if (!selected.length) {
+          log("Нет выбранных записей для создания.");
+          refreshCreateActions();
+          return;
+        }
+
+        var errors = [];
+        var createdByValue = String(createdByInput.value || "").trim() || NEWS_V2_CFG.DEFAULT_CREATED_BY;
+        var stubMode = !!stubModeCb.checked;
+        for (var i = 0; i < selected.length; i++) {
+          if (!String(selected[i].payload.createdBy || "").trim()) {
+            selected[i].payload.createdBy = createdByValue;
+          }
+          var err = validateCreatePayload(selected[i].payload);
+          if (err) {
+            errors.push("[" + (i + 1) + "] " + err + " :: " + compactNewsLabel(selected[i].payload));
+          }
+        }
+        if (errors.length) {
+          log("Отмена создания: найдены ошибки в критичных данных.");
+          for (var ei = 0; ei < errors.length; ei++) log("  " + errors[ei]);
+          return;
+        }
+
+        var confirmText =
+          "Создать выбранные новости: " +
+          selected.length +
+          " шт.?" +
+          (stubMode ? "\n\nРежим болванки: leadersList и authorsList будут пустыми." : "");
+        if (!window.confirm(confirmText)) {
+          log("Создание отменено пользователем.");
+          return;
+        }
+
+        var env = getEnv();
+        var settings = getSharedRequestSettings();
+        var okCount = 0;
+        var failCount = 0;
+        var retriesTotal = 0;
+        var consecutiveFails = 0;
+        var stoppedByUser = false;
+        var abortedByErrors = false;
+        var resultDump = [];
+        setOpBusy(true, "создание");
+        refreshCreateActions();
+        try {
+          for (var si = 0; si < selected.length; si++) {
+            if (isStopRequested()) {
+              stoppedByUser = true;
+              log("Стоп: создание прервано пользователем.");
+              break;
+            }
+            // Копия payload: болванка чистит lists только на отправку, UI-counts не трогаем.
+            var payload = payloadForCreateSend(selected[si].payload, stubMode);
+            sharedOpStatus.textContent =
+              "Операции: создание " + (si + 1) + "/" + selected.length;
+            var retryResult = await postJsonWithRetry(
+              env.origin + NEWS_V2_CFG.NEWS_CREATE_PATH,
+              payload,
+              env.origin + "/salesheroes/admin/community/create",
+              {
+                log: log,
+                retryMax: settings.retryMax,
+                retryPauseMs: settings.retryPauseMs,
+                requireBody: true,
+                shouldStop: isStopRequested,
+                successCheck: function (fr) {
+                  if (!(fr && fr.data && fr.data.body && fr.data.body.objectId)) {
+                    return "нет objectId в ответе";
+                  }
+                  return null;
+                },
+                onAttempt: function (attempt, maxAttempts, err, meta) {
+                  if (meta && meta.isRetry) retriesTotal++;
+                }
+              }
+            );
+            if (retryResult.stopped || isStopRequested()) {
+              stoppedByUser = true;
+              resultDump.push({ payload: payload, response: retryResult.fr, stopped: true });
+              break;
+            }
+            resultDump.push({
+              payload: payload,
+              response: retryResult.fr,
+              attempts: retryResult.attempts,
+              retries: retryResult.retries
+            });
+            if (retryResult.ok) {
+              consecutiveFails = 0;
+              okCount++;
+              log(
+                "Создано: objectId=" +
+                  retryResult.fr.data.body.objectId +
+                  " | type=" +
+                  payload.type +
+                  " | " +
+                  compactNewsLabel(payload)
+              );
+            } else {
+              failCount++;
+              consecutiveFails++;
+              log(
+                "Ошибка создания: " +
+                  (retryResult.error || ("HTTP " + (retryResult.fr && retryResult.fr.status))) +
+                  " | " +
+                  compactNewsLabel(payload)
+              );
+              if (consecutiveFails >= settings.abortLimit) {
+                abortedByErrors = true;
+                log(
+                  "АВАРИЯ: " +
+                    consecutiveFails +
+                    " подряд исчерпанных ошибок — остановка создания."
+                );
+                break;
+              }
+            }
+            if (si < selected.length - 1 && settings.opGapMs > 0) {
+              await delay(settings.opGapMs);
+              if (isStopRequested()) {
+                stoppedByUser = true;
+                break;
+              }
+            }
+          }
+        } finally {
+          setOpBusy(false);
+          refreshCreateActions();
+        }
+
+        downloadJson(
+          "news_create_result_" + env.stand + "_" + env.contour + "_" + tsShort() + ".json",
+          {
+            env: env,
+            stubMode: stubMode,
+            settings: settings,
+            total: selected.length,
+            okCount: okCount,
+            failCount: failCount,
+            retriesTotal: retriesTotal,
+            stoppedByUser: stoppedByUser,
+            abortedByErrors: abortedByErrors,
+            results: resultDump
+          }
+        );
+        log(
+          "Создание завершено. OK=" +
+            okCount +
+            ", FAIL=" +
+            failCount +
+            ", повторов=" +
+            retriesTotal +
+            (stoppedByUser ? " | стоп" : "") +
+            (abortedByErrors ? " | авария" : "") +
+            (stubMode ? " | болванка без leaders/authors" : "") +
+            "."
+        );
+      }
+
       stubModeCb.addEventListener("change", function () {
         log(
           stubModeCb.checked
@@ -1381,215 +1715,6 @@
             : "Режим болванки выключен."
         );
       });
-
-      actions.appendChild(
-        mkBtn("Шаблон JSON", function () {
-          downloadJson("news_create_template_" + tsShort() + ".json", buildCreateTemplate());
-          log("Скачан шаблон создания.");
-        })
-      );
-      actions.appendChild(
-        mkBtn("Разобрать JSON из поля", function () {
-          void parseFromText(manualInput.value);
-        })
-      );
-      actions.appendChild(
-        mkBtn("Отметить всё", function () {
-          setAllSelected(true);
-        })
-      );
-      actions.appendChild(
-        mkBtn("Отметить в фильтре", function () {
-          setFilteredSelected(true);
-        })
-      );
-      actions.appendChild(
-        mkBtn("Снять всё", function () {
-          setAllSelected(false);
-        })
-      );
-      actions.appendChild(
-        mkBtn("Снять в фильтре", function () {
-          setFilteredSelected(false);
-        })
-      );
-      actions.appendChild(
-        mkBtn("Очистить загруженное", function () {
-          clearLoadedSelection();
-        })
-      );
-      actions.appendChild(
-        mkBtn(
-          "Создать выбранные",
-          function () {
-            void (async function () {
-              if (opBusy) {
-                log("Уже выполняется другая операция — дождитесь завершения или нажмите Стоп.");
-                return;
-              }
-              var selected = candidates.filter(function (c) {
-                return c.selected !== false;
-              });
-              if (!selected.length) {
-                log("Нет выбранных записей для создания.");
-                return;
-              }
-
-              var errors = [];
-              var createdByValue = String(createdByInput.value || "").trim() || NEWS_V2_CFG.DEFAULT_CREATED_BY;
-              var stubMode = !!stubModeCb.checked;
-              for (var i = 0; i < selected.length; i++) {
-                if (!String(selected[i].payload.createdBy || "").trim()) {
-                  selected[i].payload.createdBy = createdByValue;
-                }
-                var err = validateCreatePayload(selected[i].payload);
-                if (err) {
-                  errors.push("[" + (i + 1) + "] " + err + " :: " + compactNewsLabel(selected[i].payload));
-                }
-              }
-              if (errors.length) {
-                log("Отмена создания: найдены ошибки в критичных данных.");
-                for (var ei = 0; ei < errors.length; ei++) log("  " + errors[ei]);
-                return;
-              }
-
-              var confirmText =
-                "Создать выбранные новости: " +
-                selected.length +
-                " шт.?" +
-                (stubMode ? "\n\nРежим болванки: leadersList и authorsList будут пустыми." : "");
-              if (!window.confirm(confirmText)) {
-                log("Создание отменено пользователем.");
-                return;
-              }
-
-              var env = getEnv();
-              var settings = getSharedRequestSettings();
-              var okCount = 0;
-              var failCount = 0;
-              var retriesTotal = 0;
-              var consecutiveFails = 0;
-              var stoppedByUser = false;
-              var abortedByErrors = false;
-              var resultDump = [];
-              setOpBusy(true, "создание");
-              try {
-                for (var si = 0; si < selected.length; si++) {
-                  if (isStopRequested()) {
-                    stoppedByUser = true;
-                    log("Стоп: создание прервано пользователем.");
-                    break;
-                  }
-                  // Копия payload: болванка чистит lists только на отправку, UI-counts не трогаем.
-                  var payload = payloadForCreateSend(selected[si].payload, stubMode);
-                  sharedOpStatus.textContent =
-                    "Операции: создание " + (si + 1) + "/" + selected.length;
-                  var retryResult = await postJsonWithRetry(
-                    env.origin + NEWS_V2_CFG.NEWS_CREATE_PATH,
-                    payload,
-                    env.origin + "/salesheroes/admin/community/create",
-                    {
-                      log: log,
-                      retryMax: settings.retryMax,
-                      retryPauseMs: settings.retryPauseMs,
-                      requireBody: true,
-                      shouldStop: isStopRequested,
-                      successCheck: function (fr) {
-                        if (!(fr && fr.data && fr.data.body && fr.data.body.objectId)) {
-                          return "нет objectId в ответе";
-                        }
-                        return null;
-                      },
-                      onAttempt: function (attempt, maxAttempts, err, meta) {
-                        if (meta && meta.isRetry) retriesTotal++;
-                      }
-                    }
-                  );
-                  if (retryResult.stopped || isStopRequested()) {
-                    stoppedByUser = true;
-                    resultDump.push({ payload: payload, response: retryResult.fr, stopped: true });
-                    break;
-                  }
-                  resultDump.push({
-                    payload: payload,
-                    response: retryResult.fr,
-                    attempts: retryResult.attempts,
-                    retries: retryResult.retries
-                  });
-                  if (retryResult.ok) {
-                    consecutiveFails = 0;
-                    okCount++;
-                    log(
-                      "Создано: objectId=" +
-                        retryResult.fr.data.body.objectId +
-                        " | type=" +
-                        payload.type +
-                        " | " +
-                        compactNewsLabel(payload)
-                    );
-                  } else {
-                    failCount++;
-                    consecutiveFails++;
-                    log(
-                      "Ошибка создания: " +
-                        (retryResult.error || ("HTTP " + (retryResult.fr && retryResult.fr.status))) +
-                        " | " +
-                        compactNewsLabel(payload)
-                    );
-                    if (consecutiveFails >= settings.abortLimit) {
-                      abortedByErrors = true;
-                      log(
-                        "АВАРИЯ: " +
-                          consecutiveFails +
-                          " подряд исчерпанных ошибок — остановка создания."
-                      );
-                      break;
-                    }
-                  }
-                  if (si < selected.length - 1 && settings.opGapMs > 0) {
-                    await delay(settings.opGapMs);
-                    if (isStopRequested()) {
-                      stoppedByUser = true;
-                      break;
-                    }
-                  }
-                }
-              } finally {
-                setOpBusy(false);
-              }
-
-              downloadJson(
-                "news_create_result_" + env.stand + "_" + env.contour + "_" + tsShort() + ".json",
-                {
-                  env: env,
-                  stubMode: stubMode,
-                  settings: settings,
-                  total: selected.length,
-                  okCount: okCount,
-                  failCount: failCount,
-                  retriesTotal: retriesTotal,
-                  stoppedByUser: stoppedByUser,
-                  abortedByErrors: abortedByErrors,
-                  results: resultDump
-                }
-              );
-              log(
-                "Создание завершено. OK=" +
-                  okCount +
-                  ", FAIL=" +
-                  failCount +
-                  ", повторов=" +
-                  retriesTotal +
-                  (stoppedByUser ? " | стоп" : "") +
-                  (abortedByErrors ? " | авария" : "") +
-                  (stubMode ? " | болванка без leaders/authors" : "") +
-                  "."
-              );
-            })();
-          },
-          "background:#16a34a;color:#fff;border-color:#16a34a;"
-        )
-      );
 
       fileInput.addEventListener("change", function () {
         void (async function () {
@@ -1599,7 +1724,11 @@
           await parseFromText(text);
         })();
       });
-      searchInput.addEventListener("input", renderList);
+      searchInput.addEventListener("input", function () {
+        renderList();
+      });
+      manualInput.addEventListener("input", refreshCreateActions);
+      refreshCreateActions();
     }
 
     function renderStatusTab() {
