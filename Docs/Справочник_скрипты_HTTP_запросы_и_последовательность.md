@@ -247,6 +247,30 @@
 
 ---
 
+## 6A. `News_Community_Export_v2.js`
+
+**Назначение:** массовые операции по новостям через отдельные вкладки модалки: создание, смена статусов и базовое редактирование.
+
+**Origin:** `ORIGINS[стенд][контур]` (`PROM/PSI/IFT-SB/IFT-GF × ALPHA/SIGMA`), автоопределение по `window.location.origin`, `credentials: "include"`.
+
+| Операция | Метод | Путь | Payload |
+|----------|-------|------|---------|
+| Создание новости | **POST** | `/bo/rmkib.gamification/proxy/v1/administration/news/newsCreate` | payload создания (`type`, `description`, `leadersList`, `createdBy`, и др.) |
+| Смена статуса | **POST** | `/bo/rmkib.gamification/proxy/v1/administration/news/newsUpdate` | `{ "newsId": "...", "status": "published\|draft", "method": "patch" }` |
+| Редактирование (каркас) | **POST** | `/bo/rmkib.gamification/proxy/v1/administration/news/newsUpdate` | payload редактирования + `"method": "put"` |
+
+**Последовательность:**
+
+1. Загрузка JSON (файл/поле) и разбор в кандидаты.
+2. Показ компактного списка с чекбоксами выбора (по умолчанию выбраны все).
+3. Предвалидация критичных полей.
+4. Подтверждение пользователем.
+5. Последовательная отправка POST и сохранение `*_result_*.json`.
+
+Подробности: [Docs/Скрипт_новости_community_News_Community_Export_v2.md](Скрипт_новости_community_News_Community_Export_v2.md).
+
+---
+
 ## 7. `UI_AutoTest.js`
 
 **Назначение:** локальная автоматизация UI **без прямых вызовов `fetch`**: последовательный проход по фиксированному списку внутренних путей меню (`MENU_HREFS`: `/community`, `/tournaments`, …, `/admin/parameters` и др.) — поиск `a[href="…"]` в DOM и вызов **`click()`** для каждого шага.
@@ -330,6 +354,7 @@
 | `Parameters_Actual_Export.js` | POST JSON | `{ status }`, `{ objectIds }`, create body, update body |
 | `Tournament_LeadersForAdmin.js` | GET JSON | — |
 | `News_Community_Export.js` | POST JSON | всегда `{ newsStatus, businessBlock, pageNum }`; опционально `newsTagList[]` |
+| `News_Community_Export_v2.js` | POST JSON | `newsCreate`, `newsUpdate` (`method: patch/put`) |
 | `UI_AutoTest.js` | — | — (клики по меню, без `fetch`) |
 | `UI_AutoTest_LinksCrawler.js` | — | — (клики по ссылкам этапов, без `fetch`) |
 | `SUP_Config_Update.js` | POST JSON + GET | list/export/bundle/add; `cfg-rn`, `x-cfga-location` |
@@ -374,5 +399,6 @@
 | **1.30** | § **6** `News_Community_Export.js` v3.1: счётчики повторов/ошибок; disabled JSON/CSV; подсветка пустых блоков. |
 | **1.31** | § **6** `News_Community_Export.js` v3.2: стоп только после двух подряд исчерпанных запросов; успех сбрасывает счётчик. |
 | **1.32** | § **6** `News_Community_Export.js` v3.3: по умолчанию `RETRY_MAX = 2`. |
+| **1.33** | Добавлен § **6A** `News_Community_Export_v2.js`: создание/статусы/редактирование-каркас, загрузка JSON с выбором новостей перед отправкой. |
 
 *Актуальность проверяйте по скриптам в `Script/`.*
