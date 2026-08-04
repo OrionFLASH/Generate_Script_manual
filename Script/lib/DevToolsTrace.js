@@ -1,6 +1,6 @@
 /**
  * DevToolsTrace — трассировка UI, HTTP и журнала для DevTools-скриптов (один файл → вставка в консоль).
- * Использование: createDevToolsTrace({ scriptId: "MyScript" }) → mountToggleRow, attachPanel, wrapFetch, log.
+ * Использование: createDevToolsTrace({ scriptId: "MyScript", sanitizeForTrace }) → mountToggleRow, attachPanel, wrapFetch, log.
  */
 /* DevToolsTrace v1 */
 function createDevToolsTrace(opts) {
@@ -8,6 +8,13 @@ function createDevToolsTrace(opts) {
   var scriptId = (opts && opts.scriptId) || "devtools_script";
   var maxBodyLen = (opts && opts.maxBodyLen) || 16384;
   var maxLines = (opts && opts.maxLines) || 8000;
+  /** @type {(s: string) => string} */
+  var sanitizeForTrace =
+    opts && typeof opts.sanitizeForTrace === "function"
+      ? opts.sanitizeForTrace
+      : function (s) {
+          return s;
+        };
   var enabled = false;
   /** @type {string[]} */
   var buffer = [];
@@ -45,10 +52,11 @@ function createDevToolsTrace(opts) {
    */
   function push(kind, message, detail) {
     if (!enabled) return;
-    var line = isoNow() + " [" + kind + "] " + message;
+    var safeMsg = sanitizeForTrace(String(message == null ? "" : message));
+    var line = isoNow() + " [" + kind + "] " + safeMsg;
     if (detail && typeof detail === "object") {
       try {
-        line += " " + JSON.stringify(detail);
+        line += " " + sanitizeForTrace(JSON.stringify(detail));
       } catch (_e) {
         line += " [detail unserializable]";
       }
@@ -107,7 +115,7 @@ function createDevToolsTrace(opts) {
             ? String(input.url)
             : String(input);
       var method = (init && init.method) || "GET";
-      var reqBody = init && init.body != null ? truncBody(init.body) : "";
+      var reqBody = init && init.body != null ? sanitizeForTrace(truncBody(init.body)) : "";
       push("HTTP", "→ " + method + " " + url, reqBody ? { requestBody: reqBody } : null);
       var t0 = Date.now();
       var res = await nativeFetch(input, init);
@@ -115,7 +123,7 @@ function createDevToolsTrace(opts) {
       var status = res.status;
       var respText = "";
       try {
-        respText = truncBody(await res.clone().text());
+        respText = sanitizeForTrace(truncBody(await res.clone().text()));
       } catch (_e) {
         respText = "[body read error]";
       }
@@ -145,7 +153,10 @@ function createDevToolsTrace(opts) {
         }
         var cb = t.closest('input[type="checkbox"]');
         if (cb) {
-          ui("click checkbox", { checked: cb.checked, label: (cb.parentElement && cb.parentElement.textContent || "").trim().slice(0, 80) });
+          ui("click checkbox", {
+            checked: cb.checked,
+            label: ((cb.parentElement && cb.parentElement.textContent) || "").trim().slice(0, 80)
+          });
           return;
         }
         var sel = t.closest("select");
@@ -187,7 +198,8 @@ function createDevToolsTrace(opts) {
     label.style.cssText = "display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;";
     var checkbox = document.createElement("input");
     checkbox.type = "checkbox";
-    checkbox.title = "Запись всех HTTP-запросов, кликов по панели и строк журнала в файл при выключении";
+    checkbox.title =
+      "Общая запись HTTP, кликов по панели и журнала со всех вкладок → файл .log при выключении";
     var span = document.createElement("span");
     span.textContent = "Trace (диагностика → файл .log)";
     label.appendChild(checkbox);

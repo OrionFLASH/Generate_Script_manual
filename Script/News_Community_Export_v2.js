@@ -9,6 +9,8 @@
 
   var NEWS_V2_CFG = {
     PANEL_ID: "newsCommunityExportV2Root",
+    /** scriptId для DevToolsTrace / имени .log */
+    SCRIPT_ID: "News_Community_Export_v2",
     NEWS_PATH: "/bo/rmkib.gamification/proxy/v1/news",
     NEWS_CREATE_PATH: "/bo/rmkib.gamification/proxy/v1/administration/news/newsCreate",
     NEWS_UPDATE_PATH: "/bo/rmkib.gamification/proxy/v1/administration/news/newsUpdate",
@@ -36,6 +38,12 @@
     FALLBACK_CONTOUR: "SIGMA",
     DEFAULT_NEWS_TYPE: "publication",
     NEWS_TYPES: ["achievement", "bestPractice", "publication"],
+    /** Подписи типов для формы создания (create API ≠ все значения newsType из выгрузки). */
+    NEWS_TYPE_LABELS: {
+      achievement: "Достижение (achievement) ← individual/tournamentAchievement",
+      bestPractice: "Лучшая практика (bestPractice)",
+      publication: "Публикация / новость проекта (publication)"
+    },
     DEFAULT_STATUS_TARGET: "published",
     DEFAULT_CREATED_BY: "00673892",
     STATUS_OPTIONS: [
@@ -84,8 +92,429 @@
     ],
     FILENAME_PREFIX_AUTO: "news_community_",
     FILENAME_PREFIX_PLACEHOLDER: "авто: news_community_{стенд}_{контур}_",
-    LOG_MAX_LINES: 1200
+    LOG_MAX_LINES: 1200,
+    /** DevToolsTrace */
+    TRACE_MAX_BODY_LEN: 16384,
+    TRACE_MAX_LINES: 8000
   };
+
+  /**
+   * Ключи JSON (news / create / update / authors / leaders / newsFeature),
+   * значения которых маскируются в Trace.
+   */
+  var TRACE_MASK_KEYS = {
+    employeenumber: true,
+    createdby: true,
+    lastname: true,
+    firstname: true,
+    midname: true,
+    middlename: true,
+    secondname: true,
+    fullname: true,
+    sberchatmention: true,
+    alphalink: true,
+    sigmalink: true,
+    email: true,
+    mail: true,
+    phone: true,
+    preferred_mail: true,
+    preferred_phone: true
+  };
+
+/**
+ * DevToolsTrace — трассировка UI, HTTP и журнала для DevTools-скриптов (один файл → вставка в консоль).
+ * Использование: createDevToolsTrace({ scriptId: "MyScript", sanitizeForTrace }) → mountToggleRow, attachPanel, wrapFetch, log.
+ */
+/* DevToolsTrace v1 */
+function createDevToolsTrace(opts) {
+  "use strict";
+  var scriptId = (opts && opts.scriptId) || "devtools_script";
+  var maxBodyLen = (opts && opts.maxBodyLen) || 16384;
+  var maxLines = (opts && opts.maxLines) || 8000;
+  /** @type {(s: string) => string} */
+  var sanitizeForTrace =
+    opts && typeof opts.sanitizeForTrace === "function"
+      ? opts.sanitizeForTrace
+      : function (s) {
+          return s;
+        };
+  var enabled = false;
+  /** @type {string[]} */
+  var buffer = [];
+
+  /**
+   * @returns {string}
+   */
+  function isoNow() {
+    return new Date().toISOString();
+  }
+
+  /**
+   * @param {string} ts
+   * @returns {string}
+   */
+  function fileTsFromIso(ts) {
+    return ts.replace(/[-:]/g, "").replace("T", "_").slice(0, 15);
+  }
+
+  /**
+   * @param {unknown} v
+   * @returns {string}
+   */
+  function truncBody(v) {
+    if (v == null) return "";
+    var s = typeof v === "string" ? v : String(v);
+    if (s.length <= maxBodyLen) return s;
+    return s.slice(0, maxBodyLen) + "\n… [truncated " + (s.length - maxBodyLen) + " chars]";
+  }
+
+  /**
+   * @param {string} kind
+   * @param {string} message
+   * @param {Record<string, unknown>|null} [detail]
+   */
+  function push(kind, message, detail) {
+    if (!enabled) return;
+    var safeMsg = sanitizeForTrace(String(message == null ? "" : message));
+    var line = isoNow() + " [" + kind + "] " + safeMsg;
+    if (detail && typeof detail === "object") {
+      try {
+        line += " " + sanitizeForTrace(JSON.stringify(detail));
+      } catch (_e) {
+        line += " [detail unserializable]";
+      }
+    }
+    buffer.push(line);
+    if (buffer.length > maxLines) buffer = buffer.slice(buffer.length - maxLines);
+  }
+
+  /**
+   * @param {boolean} on
+   */
+  function setEnabled(on) {
+    var next = !!on;
+    if (next === enabled) return;
+    if (next) {
+      enabled = true;
+      push("SYS", "Trace ON script=" + scriptId);
+      return;
+    }
+    push("SYS", "Trace OFF script=" + scriptId);
+    enabled = false;
+    if (buffer.length > 0) downloadLog();
+    buffer = [];
+  }
+
+  function isEnabled() {
+    return enabled;
+  }
+
+  /**
+   * @param {string} msg
+   */
+  function log(msg) {
+    push("LOG", String(msg));
+  }
+
+  /**
+   * @param {string} action
+   * @param {Record<string, unknown>|null} [detail]
+   */
+  function ui(action, detail) {
+    push("UI", action, detail);
+  }
+
+  /**
+   * @param {typeof fetch} nativeFetch
+   * @returns {typeof fetch}
+   */
+  function wrapFetch(nativeFetch) {
+    return async function tracedFetch(input, init) {
+      if (!enabled) return nativeFetch(input, init);
+      var url =
+        typeof input === "string"
+          ? input
+          : input && typeof input === "object" && "url" in input
+            ? String(input.url)
+            : String(input);
+      var method = (init && init.method) || "GET";
+      var reqBody = init && init.body != null ? sanitizeForTrace(truncBody(init.body)) : "";
+      push("HTTP", "→ " + method + " " + url, reqBody ? { requestBody: reqBody } : null);
+      var t0 = Date.now();
+      var res = await nativeFetch(input, init);
+      var ms = Date.now() - t0;
+      var status = res.status;
+      var respText = "";
+      try {
+        respText = sanitizeForTrace(truncBody(await res.clone().text()));
+      } catch (_e) {
+        respText = "[body read error]";
+      }
+      push("HTTP", "← " + status + " " + method + " " + url + " " + ms + "ms", {
+        responseBody: respText
+      });
+      return res;
+    };
+  }
+
+  /**
+   * @param {HTMLElement} panelRoot
+   */
+  function attachPanel(panelRoot) {
+    if (!panelRoot || panelRoot.__devToolsTraceAttached) return;
+    panelRoot.__devToolsTraceAttached = true;
+    panelRoot.addEventListener(
+      "click",
+      function (ev) {
+        if (!enabled) return;
+        var t = ev.target;
+        if (!(t instanceof Element)) return;
+        var btn = t.closest("button");
+        if (btn) {
+          ui("click button", { text: (btn.textContent || "").trim().slice(0, 120) });
+          return;
+        }
+        var cb = t.closest('input[type="checkbox"]');
+        if (cb) {
+          ui("click checkbox", {
+            checked: cb.checked,
+            label: ((cb.parentElement && cb.parentElement.textContent) || "").trim().slice(0, 80)
+          });
+          return;
+        }
+        var sel = t.closest("select");
+        if (sel) {
+          ui("change select", { value: sel.value });
+        }
+      },
+      true
+    );
+    panelRoot.addEventListener(
+      "change",
+      function (ev) {
+        if (!enabled) return;
+        var t = ev.target;
+        if (!(t instanceof HTMLInputElement && t.type === "file")) return;
+        var names = [];
+        if (t.files) {
+          for (var i = 0; i < t.files.length; i++) names.push(t.files[i].name);
+        }
+        ui("file input", { files: names });
+      },
+      true
+    );
+  }
+
+  /**
+   * @param {HTMLElement} container
+   * @param {HTMLElement|null} [beforeNode]
+   * @returns {{ row: HTMLElement, checkbox: HTMLInputElement, saveBtn: HTMLButtonElement }}
+   */
+  function mountToggleRow(container, beforeNode) {
+    var row = document.createElement("div");
+    row.className = "devtools-trace-row";
+    row.style.cssText =
+      "display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:6px 0;padding:6px 10px;" +
+      "background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px;font-size:11px;color:#334155;flex-shrink:0;";
+
+    var label = document.createElement("label");
+    label.style.cssText = "display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;";
+    var checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.title =
+      "Общая запись HTTP, кликов по панели и журнала со всех вкладок → файл .log при выключении";
+    var span = document.createElement("span");
+    span.textContent = "Trace (диагностика → файл .log)";
+    label.appendChild(checkbox);
+    label.appendChild(span);
+
+    var saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.textContent = "Сохранить trace";
+    saveBtn.style.cssText =
+      "padding:3px 8px;border:1px solid #cbd5e1;border-radius:4px;background:#fff;cursor:pointer;font-size:11px;";
+    saveBtn.disabled = true;
+
+    checkbox.addEventListener("change", function () {
+      setEnabled(checkbox.checked);
+      saveBtn.disabled = !checkbox.checked;
+    });
+
+    saveBtn.addEventListener("click", function () {
+      if (buffer.length === 0) {
+        push("SYS", "manual save (empty buffer)");
+      }
+      downloadLog();
+    });
+
+    row.appendChild(label);
+    row.appendChild(saveBtn);
+
+    if (beforeNode && beforeNode.parentNode) {
+      beforeNode.parentNode.insertBefore(row, beforeNode);
+    } else if (container) {
+      container.appendChild(row);
+    }
+    return { row: row, checkbox: checkbox, saveBtn: saveBtn };
+  }
+
+  function downloadLog() {
+    if (buffer.length === 0) return;
+    var header =
+      "# DevToolsTrace script=" +
+      scriptId +
+      " exported=" +
+      isoNow() +
+      " lines=" +
+      buffer.length +
+      "\n";
+    var body = header + buffer.join("\n") + "\n";
+    var fname = "trace_" + scriptId + "_" + fileTsFromIso(isoNow()) + ".log";
+    var blob = new Blob(["\uFEFF" + body], { type: "text/plain;charset=utf-8" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = fname;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () {
+      URL.revokeObjectURL(a.href);
+    }, 500);
+  }
+
+  return {
+    scriptId: scriptId,
+    isEnabled: isEnabled,
+    setEnabled: setEnabled,
+    log: log,
+    ui: ui,
+    wrapFetch: wrapFetch,
+    attachPanel: attachPanel,
+    mountToggleRow: mountToggleRow,
+    downloadLog: downloadLog
+  };
+}
+
+  var __nativeFetch = window.fetch.bind(window);
+
+  /**
+   * Маска: первая буква + *** + последние 3 (пример: 00673892 → 0***892).
+   * @param {unknown} v
+   * @returns {string}
+   */
+  function maskSensitiveValue(v) {
+    var s = v == null ? "" : String(v);
+    if (!s) return s;
+    if (s.length === 1) return s + "***";
+    if (s.length <= 4) return s.charAt(0) + "***" + s.slice(1);
+    return s.charAt(0) + "***" + s.slice(-3);
+  }
+
+  /**
+   * Рекурсивно маскирует чувствительные ключи в объекте/массиве для Trace.
+   * @param {unknown} node
+   * @returns {unknown}
+   */
+  function maskSensitiveTree(node) {
+    if (node == null) return node;
+    if (Array.isArray(node)) {
+      return node.map(maskSensitiveTree);
+    }
+    if (typeof node === "object") {
+      /** @type {Record<string, unknown>} */
+      var out = {};
+      var keys = Object.keys(/** @type {object} */ (node));
+      for (var i = 0; i < keys.length; i++) {
+        var k = keys[i];
+        var val = /** @type {Record<string, unknown>} */ (node)[k];
+        var lk = String(k).toLowerCase();
+        if (TRACE_MASK_KEYS[lk] && (typeof val === "string" || typeof val === "number")) {
+          out[k] = maskSensitiveValue(val);
+        } else if (typeof val === "string") {
+          // Вложенные JSON-строки: newsFeature, contestFeature и т.п.
+          out[k] = maskSensitiveDeep(val);
+        } else {
+          out[k] = maskSensitiveTree(val);
+        }
+      }
+      return out;
+    }
+    return node;
+  }
+
+  /**
+   * Маскирование текста/JSON для записи в Trace.
+   * @param {string} raw
+   * @returns {string}
+   */
+  function sanitizeForTrace(raw) {
+    var s = String(raw == null ? "" : raw);
+    if (!s) return s;
+    var t = s.replace(/^\s+/, "");
+    if (t.charAt(0) === "{" || t.charAt(0) === "[") {
+      try {
+        var parsed = JSON.parse(s);
+        return JSON.stringify(maskSensitiveDeep(parsed));
+      } catch (_e) {
+        /* не JSON — текстовые замены ниже */
+      }
+    }
+    return maskSensitiveInPlainText(s);
+  }
+
+  /**
+   * Рекурсивный обход с разбором вложенных JSON-строк (newsFeature и т.п.).
+   * @param {unknown} node
+   * @returns {unknown}
+   */
+  function maskSensitiveDeep(node) {
+    if (node == null) return node;
+    if (typeof node === "string") {
+      var trimmed = node.replace(/^\s+/, "");
+      if (trimmed.charAt(0) === "{" || trimmed.charAt(0) === "[") {
+        try {
+          return JSON.stringify(maskSensitiveTree(JSON.parse(node)));
+        } catch (_e) {
+          return maskSensitiveInPlainText(node);
+        }
+      }
+      return maskSensitiveInPlainText(node);
+    }
+    if (typeof node === "object") {
+      return maskSensitiveTree(node);
+    }
+    return node;
+  }
+
+  /**
+   * Текстовое маскирование лейблов и "key": "value" паттернов.
+   * @param {string} s
+   * @returns {string}
+   */
+  function maskSensitiveInPlainText(s) {
+    s = String(s);
+    s = s.replace(
+      /(createdBy|employeeNumber|authorsList|leadersList|ФИО|firstName|lastName|fullName|sberChatMention)\s*=\s*([^|,\n]+?)(?=\s*\||,|$)/gi,
+      function (_m, label, val) {
+        return label + "=" + maskSensitiveValue(String(val).replace(/^\s+|\s+$/g, ""));
+      }
+    );
+    s = s.replace(
+      /"(employeeNumber|createdBy|lastName|firstName|midName|middleName|secondName|fullName|sberChatMention|alphaLink|sigmaLink|email|mail|phone|preferred_mail|preferred_phone)"\s*:\s*"([^"]*)"/gi,
+      function (_m, key, val) {
+        return '"' + key + '": "' + maskSensitiveValue(val) + '"';
+      }
+    );
+    return s;
+  }
+
+  var devTrace = createDevToolsTrace({
+    scriptId: NEWS_V2_CFG.SCRIPT_ID,
+    maxBodyLen: NEWS_V2_CFG.TRACE_MAX_BODY_LEN,
+    maxLines: NEWS_V2_CFG.TRACE_MAX_LINES,
+    sanitizeForTrace: sanitizeForTrace
+  });
+  var httpFetch = devTrace.wrapFetch(__nativeFetch);
 
   function detectEnvByOrigin(origin) {
     var lower = String(origin || "").toLowerCase();
@@ -174,7 +603,7 @@
   function normalizeType(typeValue) {
     var t = String(typeValue || "").trim();
     if (!t) return NEWS_V2_CFG.DEFAULT_NEWS_TYPE;
-    if (t === "individualAchievement") return "achievement";
+    if (t === "individualAchievement" || t === "tournamentAchievement") return "achievement";
     if (NEWS_V2_CFG.NEWS_TYPES.indexOf(t) >= 0) return t;
     return NEWS_V2_CFG.DEFAULT_NEWS_TYPE;
   }
@@ -216,6 +645,70 @@
     return value == null ? "" : String(value);
   }
 
+  /**
+   * Коды наград из create-шаблона или выгрузки (rewards / rewardList).
+   * @param {*} source
+   * @returns {{ rewardCode: string }[]}
+   */
+  function extractRewardList(source) {
+    var out = [];
+    var seen = {};
+    function add(code) {
+      var c = String(code == null ? "" : code).trim();
+      if (!c || seen[c]) return;
+      seen[c] = true;
+      out.push({ rewardCode: c });
+    }
+    var list = (source && (source.rewardList || source.rewards)) || [];
+    if (!Array.isArray(list)) return out;
+    for (var i = 0; i < list.length; i++) {
+      var r = list[i];
+      if (r && typeof r === "object") add(r.rewardCode);
+      else add(r);
+    }
+    return out;
+  }
+
+  /**
+   * Коды турниров: tournamentList или contests[].tournaments[].tournamentCode.
+   * @param {*} source
+   * @returns {{ tournamentCode: string }[]}
+   */
+  function extractTournamentList(source) {
+    var out = [];
+    var seen = {};
+    function add(code) {
+      var c = String(code == null ? "" : code).trim();
+      if (!c || seen[c]) return;
+      seen[c] = true;
+      out.push({ tournamentCode: c });
+    }
+    var list = (source && source.tournamentList) || [];
+    if (Array.isArray(list)) {
+      for (var i = 0; i < list.length; i++) {
+        var t = list[i];
+        if (t && typeof t === "object") add(t.tournamentCode);
+        else add(t);
+      }
+    }
+    var contests = (source && source.contests) || [];
+    if (Array.isArray(contests)) {
+      for (var ci = 0; ci < contests.length; ci++) {
+        var contest = contests[ci];
+        if (!contest || typeof contest !== "object") continue;
+        if (contest.tournamentCode) add(contest.tournamentCode);
+        var ts = contest.tournaments;
+        if (!Array.isArray(ts)) continue;
+        for (var ti = 0; ti < ts.length; ti++) {
+          var tw = ts[ti];
+          if (tw && typeof tw === "object") add(tw.tournamentCode);
+          else add(tw);
+        }
+      }
+    }
+    return out;
+  }
+
   function normalizeNewsFeature(rawFeature, fallbackBusinessBlocks) {
     if (rawFeature == null || rawFeature === "") {
       return JSON.stringify({
@@ -250,9 +743,6 @@
     var type = normalizeType(source.type || source.newsType);
     var leadersSource = source.leadersList || source.leaders || [];
     var authorsSource = source.authorsList || source.authors || [];
-    var rewardsSource = source.rewardList || source.rewards || [];
-    var tournamentsSource = source.tournamentList || [];
-    var contestsSource = source.contests || [];
     var tagsSource = source.tagList || source.newsTagList || [];
     var businessBlocks =
       source.businessBlocks || parseMaybeJsonArray((source.newsFeatureObj || {}).businessBlock);
@@ -263,38 +753,8 @@
       (leadersSource[0] && String(leadersSource[0].employeeNumber || "").trim()) ||
       "";
 
-    var rewardList = rewardsSource
-      .map(function (r) {
-        var code = r && typeof r === "object" ? r.rewardCode : r;
-        return String(code || "").trim();
-      })
-      .filter(Boolean)
-      .map(function (rewardCode) {
-        return { rewardCode: rewardCode };
-      });
-
-    var tournamentList = tournamentsSource
-      .map(function (t) {
-        var code = t && typeof t === "object" ? t.tournamentCode : t;
-        return String(code || "").trim();
-      })
-      .filter(Boolean)
-      .map(function (tournamentCode) {
-        return { tournamentCode: tournamentCode };
-      });
-
-    if (!tournamentList.length && Array.isArray(contestsSource)) {
-      for (var ci = 0; ci < contestsSource.length; ci++) {
-        var contest = contestsSource[ci];
-        if (!contest || !Array.isArray(contest.tournaments)) continue;
-        for (var ti = 0; ti < contest.tournaments.length; ti++) {
-          var tournamentCode = String(
-            (contest.tournaments[ti] && contest.tournaments[ti].tournamentCode) || ""
-          ).trim();
-          if (tournamentCode) tournamentList.push({ tournamentCode: tournamentCode });
-        }
-      }
-    }
+    var rewardList = extractRewardList(source);
+    var tournamentList = extractTournamentList(source);
 
     var authorsList = ignoreLeadersAuthors ? [] : mapEmployeesList(authorsSource);
     var leadersList = ignoreLeadersAuthors ? [] : mapEmployeesList(leadersSource);
@@ -315,7 +775,8 @@
       ),
       leadersList: leadersList,
       createdBy: createdBy,
-      plannedDt: nowIso(),
+      // Как в HAR: можно задать plannedDt; иначе — сейчас
+      plannedDt: ensureString(source.plannedDt || source.plannedDateTime).trim() || nowIso(),
       status: "draft",
       createDt: batchStartIso || nowIso()
     };
@@ -373,47 +834,73 @@
   }
 
   /**
-   * Собирает новости из экспортного JSON: pages[], comboResults, merged.
-   * Важно: берём все страницы/body, не только первую.
+   * Страница выгрузки = полный ответ API ({ body }) или сам body с timePeriod.
+   * @param {*} pageOrBody
+   * @param {*[]} rows
+   * @param {Record<string, boolean>} seenIds
+   * @returns {boolean} true, если удалось прочитать timePeriod
+   */
+  function pushNewsFromPageLike(pageOrBody, rows, seenIds) {
+    if (!pageOrBody || typeof pageOrBody !== "object") return false;
+    if (pageOrBody.body && Array.isArray(pageOrBody.body.timePeriod)) {
+      pushNewsFromBody(pageOrBody.body, rows, seenIds);
+      return true;
+    }
+    if (Array.isArray(pageOrBody.timePeriod)) {
+      pushNewsFromBody(pageOrBody, rows, seenIds);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Собирает новости из экспортного JSON: все pages[], все comboResults, merged.
+   * Не ограничиваемся первой страницей.
    * @param {*} source
-   * @returns {*[]}
+   * @returns {{ rows: *[], meta: { pagesScanned: number, comboBlocks: number, fromCreateItems: boolean } }}
    */
   function collectNewsRowsFromExportJson(source) {
     var rows = [];
     var seenIds = {};
-    if (!source) return rows;
+    var meta = { pagesScanned: 0, comboBlocks: 0, fromCreateItems: false };
+    if (!source) return { rows: rows, meta: meta };
 
     if (Array.isArray(source)) {
       for (var ai = 0; ai < source.length; ai++) {
         if (source[ai] && typeof source[ai] === "object") rows.push(source[ai]);
       }
-      return rows;
+      return { rows: rows, meta: meta };
     }
 
-    if (Array.isArray(source.createItems)) return source.createItems.slice();
-    if (Array.isArray(source.statusItems)) return source.statusItems.slice();
+    if (Array.isArray(source.createItems)) {
+      meta.fromCreateItems = true;
+      return { rows: source.createItems.slice(), meta: meta };
+    }
+    if (Array.isArray(source.statusItems)) {
+      return { rows: source.statusItems.slice(), meta: meta };
+    }
 
     if (Array.isArray(source.pages)) {
       for (var pi = 0; pi < source.pages.length; pi++) {
-        var page = source.pages[pi];
-        pushNewsFromBody(page && page.body, rows, seenIds);
+        if (pushNewsFromPageLike(source.pages[pi], rows, seenIds)) meta.pagesScanned++;
       }
     }
 
     if (Array.isArray(source.comboResults)) {
       for (var ci = 0; ci < source.comboResults.length; ci++) {
         var cr = source.comboResults[ci] || {};
+        meta.comboBlocks++;
         if (Array.isArray(cr.pages)) {
           for (var cpi = 0; cpi < cr.pages.length; cpi++) {
-            pushNewsFromBody(cr.pages[cpi] && cr.pages[cpi].body, rows, seenIds);
+            if (pushNewsFromPageLike(cr.pages[cpi], rows, seenIds)) meta.pagesScanned++;
           }
         }
-        pushNewsFromBody(cr.merged && cr.merged.body, rows, seenIds);
+        pushNewsFromPageLike(cr.merged, rows, seenIds);
       }
     }
 
-    if (source.merged && source.merged.body) {
-      pushNewsFromBody(source.merged.body, rows, seenIds);
+    if (source.merged) {
+      pushNewsFromPageLike(source.merged, rows, seenIds);
     }
 
     // одиночный ответ API / payload
@@ -424,11 +911,12 @@
     if (!rows.length && (source.newsId || source.newsType || source.newsText || source.description)) {
       rows = [source];
     }
-    return rows;
+    return { rows: rows, meta: meta };
   }
 
   function extractCreateCandidatesFromAnyJson(inputJson, defaultCreatedBy, batchStartIso, options) {
-    var rows = collectNewsRowsFromExportJson(inputJson);
+    var collected = collectNewsRowsFromExportJson(inputJson);
+    var rows = collected.rows;
     var candidates = [];
     for (var i = 0; i < rows.length; i++) {
       var row = rows[i];
@@ -440,9 +928,12 @@
         summary: compactNewsLabel(row),
         authorsCount: Array.isArray(payload.authorsList) ? payload.authorsList.length : 0,
         leadersCount: Array.isArray(payload.leadersList) ? payload.leadersList.length : 0,
+        rewardsCount: Array.isArray(payload.rewardList) ? payload.rewardList.length : 0,
+        tournamentsCount: Array.isArray(payload.tournamentList) ? payload.tournamentList.length : 0,
         payload: payload
       });
     }
+    candidates._parseMeta = collected.meta;
     return candidates;
   }
 
@@ -452,6 +943,15 @@
       return "некорректный type";
     }
     if (!String(payload.createdBy || "").trim()) return "пустой createdBy";
+    if (!String(payload.description || "").trim()) return "пустой description (текст новости)";
+    if (payload.type === "achievement") {
+      if (!Array.isArray(payload.rewardList) || !payload.rewardList.length) {
+        return "для achievement нужна хотя бы одна награда (rewardCode)";
+      }
+      if (!Array.isArray(payload.tournamentList) || !payload.tournamentList.length) {
+        return "для achievement нужен хотя бы один турнир (tournamentCode)";
+      }
+    }
     return "";
   }
 
@@ -460,7 +960,7 @@
     if (inputJson && Array.isArray(inputJson.statusItems)) {
       rows = inputJson.statusItems;
     } else {
-      rows = collectNewsRowsFromExportJson(inputJson);
+      rows = collectNewsRowsFromExportJson(inputJson).rows;
     }
 
     var target = defaultStatus === "draft" ? "draft" : "published";
@@ -513,7 +1013,7 @@
       body: JSON.stringify(payload)
     };
     if (refererUrl) options.referrer = refererUrl;
-    var response = await fetch(url, options);
+    var response = await httpFetch(url, options);
     var data = null;
     try {
       data = await response.json();
@@ -787,25 +1287,113 @@
   }
 
   function buildCreateTemplate() {
+    var batchIso = nowIso();
     return {
-      info: "Шаблон для создания news. Можно передать массив createItems или одиночный объект.",
+      info:
+        "Шаблон по ToDo/NEWS/Создание новостей.txt (HAR newsCreate). " +
+        "createItems[] — по одной новости. type: achievement | bestPractice | publication. " +
+        "Для achievement обязательны rewardList и tournamentList (даже для «нетурнирной» награды в UI — в API уходит tournamentCode). " +
+        "Ответ create: body.objectId — скрипт предложит опубликовать выбранные черновики. " +
+        "Вместо createItems можно загрузить файл выгрузки (все pages[]).",
+      fieldNotes: {
+        type: "achievement | bestPractice | publication",
+        description: "текст новости (в выгрузке — newsText)",
+        summary: "заголовок; у achievement/publication часто \"\"",
+        bankLevel: "bestPractice в HAR: false; achievement: true",
+        newsFeature:
+          "строка JSON или объект. bestPractice в HAR: только alphaLink/sigmaLink; achievement: + businessBlock",
+        rewardList: "[] или [{ rewardCode }] — обязательно непусто для achievement",
+        tournamentList: "[] или [{ tournamentCode }] — обязательно непусто для achievement",
+        authorsList: "[{ employeeNumber }]",
+        leadersList: "[{ employeeNumber }]",
+        tagList: "[{ tagValue }]",
+        tbCodeList: "пример bestPractice: [\"99\"]",
+        gosbCodeList: "пример bestPractice: [\"0\"]",
+        createdBy: "табельный или UPPKKSB_TECH",
+        plannedDt: "ISO-8601; если нет — подставится now",
+        status: "при отправке всегда draft",
+        createDt: "ставится пакетом при создании"
+      },
       createItems: [
         {
-          bankLevel: false,
-          rewardList: [{ rewardCode: "r_01_2026-1_01-1_1" }],
-          tournamentList: [{ tournamentCode: "t_01_2026-1_01-1_1_4001" }],
-          newsFeature: "{\"alphaLink\":\"\",\"sigmaLink\":\"\",\"businessBlock\":[\"KMKKSB\"]}",
+          _example: "HAR: создание лучшей практики",
           type: "bestPractice",
-          description: "Текст новости",
-          summary: "Заголовок новости",
+          bankLevel: false,
+          rewardList: [],
+          tournamentList: [],
+          newsFeature: "{\"alphaLink\":\"\",\"sigmaLink\":\"\"}",
+          description:
+            "### **Компания X внедрила лучшие практики геймификации для ускорения разработки ИИ-решений**\n\nКраткий пример текста bestPractice (полный текст — в ToDo HAR).",
+          summary: "Тест создания Лучшей практики для уведомлений",
           authorsList: [{ employeeNumber: "00673892" }],
-          tagList: [{ tagValue: "ТЕСТ" }],
+          tagList: [{ tagValue: "AI" }, { tagValue: "Благотворительность" }],
           tbCodeList: ["99"],
+          gosbCodeList: ["0"],
+          leadersList: [
+            { employeeNumber: "02122594" },
+            { employeeNumber: "01340230" },
+            { employeeNumber: "01924995" }
+          ],
+          createdBy: "00673892",
+          plannedDt: batchIso,
+          status: "draft"
+        },
+        {
+          _example:
+            "HAR: достижение с выбором нетурнирной награды — в API всё равно rewardCode + tournamentCode",
+          type: "achievement",
+          bankLevel: true,
+          rewardList: [{ rewardCode: "r_01_2026-1_09-1_1_1" }],
+          tournamentList: [{ tournamentCode: "t_01_2026-1_09-1_1_3071" }],
+          newsFeature: "{\"businessBlock\":[\"KMKKSB\"],\"alphaLink\":\"\",\"sigmaLink\":\"\"}",
+          description:
+            "**Новость: Победа в турнире «Лучший герой продаж Геймификации»!**\n\nКраткий пример achievement (полный текст — в ToDo HAR).",
+          summary: "",
+          authorsList: [],
+          tagList: [
+            { tagValue: "AI" },
+            { tagValue: "Бизнес-миссия" },
+            { tagValue: "Sber API" }
+          ],
+          tbCodeList: [],
           gosbCodeList: [],
-          leadersList: [{ employeeNumber: "02122594" }],
-          createdBy: "00673892"
+          leadersList: [
+            { employeeNumber: "01340230" },
+            { employeeNumber: "01655289" }
+          ],
+          createdBy: "UPPKKSB_TECH",
+          plannedDt: batchIso,
+          status: "draft"
+        },
+        {
+          _example: "publication — из типичной выгрузки (в HAR create нет, формат тот же API)",
+          type: "publication",
+          bankLevel: true,
+          rewardList: [],
+          tournamentList: [],
+          newsFeature: "{\"alphaLink\":\"\",\"sigmaLink\":\"\",\"businessBlock\":[\"KMKKSB\"]}",
+          description: "Текст новости проекта / публикации для community.",
+          summary: "",
+          authorsList: [],
+          tagList: [{ tagValue: "Преференции" }],
+          tbCodeList: [],
+          gosbCodeList: [],
+          leadersList: [
+            { employeeNumber: "00125105" },
+            { employeeNumber: "00321473" }
+          ],
+          createdBy: "00673892",
+          plannedDt: batchIso,
+          status: "draft"
         }
-      ]
+      ],
+      _meta: {
+        generatedAt: batchIso,
+        sourceDoc: "ToDo/NEWS/Создание новостей.txt",
+        apiPath: "/bo/rmkib.gamification/proxy/v1/administration/news/newsCreate",
+        refererHint: "/admin/community/create",
+        responseIdField: "body.objectId"
+      }
     };
   }
 
@@ -904,7 +1492,7 @@
     var subtitle = document.createElement("div");
     subtitle.style.cssText = "padding:0 14px 10px;color:#475569;font-size:12px;border-bottom:1px solid #e2e8f0;";
     subtitle.textContent =
-      "Основной режим: загрузка JSON-файла, выбор новостей, подтверждение и отправка запросов.";
+      "Вкладки сверху. Рабочая область, статистика и журнал — на всю ширину панели.";
     root.appendChild(subtitle);
 
     var envRow = document.createElement("div");
@@ -1097,31 +1685,42 @@
     }
 
     var main = document.createElement("div");
-    main.style.cssText = "flex:1;min-height:0;display:flex;overflow:hidden;";
+    main.style.cssText =
+      "flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;width:100%;";
     root.appendChild(main);
 
-    var left = document.createElement("div");
-    left.style.cssText = "width:220px;border-right:1px solid #e2e8f0;background:#f8fafc;padding:8px;display:flex;flex-direction:column;gap:6px;";
-    main.appendChild(left);
+    // Вкладки — компактная строка сверху на всю ширину
+    var tabBar = document.createElement("div");
+    tabBar.style.cssText =
+      "display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:6px 10px;" +
+      "border-bottom:1px solid #e2e8f0;background:#f8fafc;flex-shrink:0;width:100%;box-sizing:border-box;";
+    main.appendChild(tabBar);
 
-    var right = document.createElement("div");
-    right.style.cssText = "flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden;";
-    main.appendChild(right);
+    var work = document.createElement("div");
+    work.style.cssText =
+      "flex:1;min-height:0;min-width:0;display:flex;flex-direction:column;overflow:hidden;width:100%;";
+    main.appendChild(work);
 
     var content = document.createElement("div");
-    content.style.cssText = "flex:1;min-height:0;overflow:auto;padding:10px 12px;";
-    right.appendChild(content);
+    content.style.cssText =
+      "flex:1;min-height:0;min-width:0;overflow:auto;padding:10px 12px;width:100%;box-sizing:border-box;";
+    work.appendChild(content);
 
     var logWrap = document.createElement("div");
-    logWrap.style.cssText = "height:190px;border-top:1px solid #e2e8f0;background:#fff;padding:8px 12px;display:flex;flex-direction:column;";
-    right.appendChild(logWrap);
+    logWrap.style.cssText =
+      "height:190px;border-top:1px solid #e2e8f0;background:#fff;padding:8px 12px;" +
+      "display:flex;flex-direction:column;width:100%;box-sizing:border-box;flex-shrink:0;";
+    work.appendChild(logWrap);
     var logTitle = document.createElement("div");
-    logTitle.textContent = "Журнал";
+    logTitle.textContent = "Журнал (общий для всех вкладок)";
     logTitle.style.cssText = "font-size:11px;font-weight:700;color:#334155;margin-bottom:6px;";
     logWrap.appendChild(logTitle);
     var logEl = document.createElement("div");
     logEl.style.cssText = "flex:1;overflow:auto;border:1px solid #cbd5e1;border-radius:6px;background:#f8fafc;padding:6px;font-family:ui-monospace,monospace;font-size:11px;";
     logWrap.appendChild(logEl);
+
+    // Один общий Trace на всю панель (все вкладки → один буфер / один .log)
+    devTrace.mountToggleRow(logWrap, logTitle);
 
     function log(msg) {
       var line = document.createElement("div");
@@ -1132,6 +1731,11 @@
         logEl.removeChild(logEl.firstElementChild);
       }
       logEl.scrollTop = logEl.scrollHeight;
+      try {
+        devTrace.log(String(msg));
+      } catch (_e) {
+        /* ignore */
+      }
     }
 
     function mkBtn(text, onClick, extraCss) {
@@ -1230,7 +1834,7 @@
         "display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:5px 8px;" +
         "border:1px solid #cbd5e1;border-radius:6px;background:#fff;cursor:pointer;";
       stubModeLabel.title =
-        "Создавать болванки: leadersList и authorsList всегда пустые, даже если заполнены в файле";
+        "Создавать болванки: leadersList и authorsList всегда пустые, даже если заполнены в файле/форме";
       var stubModeCb = document.createElement("input");
       stubModeCb.type = "checkbox";
       stubModeCb.checked = false;
@@ -1238,22 +1842,378 @@
       stubModeLabel.appendChild(document.createTextNode("Болванка: без leaders и authors"));
       top.appendChild(stubModeLabel);
 
+      var modeRow = document.createElement("div");
+      modeRow.style.cssText =
+        "display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;padding:8px 10px;" +
+        "border:1px solid #cbd5e1;border-radius:8px;background:#fff;";
+      wrap.appendChild(modeRow);
+      var modeHint = document.createElement("div");
+      modeHint.style.cssText = "font-size:11px;color:#64748b;width:100%;";
+      modeHint.textContent =
+        "Одна новость — форма или файл. Несколько новостей — только файл JSON.";
+      modeRow.appendChild(modeHint);
+
+      function mkModeRadio(id, value, labelText, checked) {
+        var lab = document.createElement("label");
+        lab.setAttribute("for", id);
+        lab.style.cssText =
+          "display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;cursor:pointer;color:#0f172a;";
+        var r = document.createElement("input");
+        r.type = "radio";
+        r.name = "newsV2CreateSourceMode";
+        r.id = id;
+        r.value = value;
+        r.checked = !!checked;
+        lab.appendChild(r);
+        lab.appendChild(document.createTextNode(labelText));
+        return { lab: lab, inp: r };
+      }
+      var modeForm = mkModeRadio("newsV2CreateModeForm", "form", "Форма (одна новость)", true);
+      var modeFile = mkModeRadio("newsV2CreateModeFile", "file", "Файл JSON (несколько)", false);
+      modeRow.appendChild(modeForm.lab);
+      modeRow.appendChild(modeFile.lab);
+
+      function getCreateMode() {
+        return modeFile.inp.checked ? "file" : "form";
+      }
+
+      function mkLabeled(labelText, node, hint) {
+        var box = document.createElement("div");
+        box.style.cssText = "display:flex;flex-direction:column;gap:4px;min-width:0;";
+        var lab = document.createElement("label");
+        lab.style.cssText = "font-size:11px;font-weight:700;color:#475569;";
+        lab.textContent = labelText;
+        if (hint) lab.title = hint;
+        box.appendChild(lab);
+        box.appendChild(node);
+        return box;
+      }
+
+      function styleInput(el) {
+        el.style.cssText =
+          "width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid #94a3b8;" +
+          "border-radius:6px;font-size:12px;background:#fff;color:#0f172a;";
+        return el;
+      }
+
+      function styleTextarea(el, rows) {
+        el.rows = rows || 3;
+        el.style.cssText =
+          "width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid #94a3b8;" +
+          "border-radius:6px;font-size:12px;background:#fff;color:#0f172a;resize:vertical;" +
+          "font-family:ui-sans-serif,system-ui,sans-serif;";
+        return el;
+      }
+
+      // --- Форма одной новости ---
+      var formBox = document.createElement("div");
+      formBox.style.cssText =
+        "display:flex;flex-direction:column;gap:10px;padding:10px;border:1px solid #bbf7d0;" +
+        "border-radius:10px;background:rgba(240,253,244,.7);";
+      wrap.appendChild(formBox);
+
+      var formGrid = document.createElement("div");
+      formGrid.style.cssText = "display:grid;grid-template-columns:1fr 1fr;gap:10px;";
+      formBox.appendChild(formGrid);
+
+      var typeSel = document.createElement("select");
+      styleInput(typeSel);
+      for (var ti = 0; ti < NEWS_V2_CFG.NEWS_TYPES.length; ti++) {
+        var tVal = NEWS_V2_CFG.NEWS_TYPES[ti];
+        var tOpt = document.createElement("option");
+        tOpt.value = tVal;
+        tOpt.textContent =
+          (NEWS_V2_CFG.NEWS_TYPE_LABELS && NEWS_V2_CFG.NEWS_TYPE_LABELS[tVal]) || tVal;
+        if (tVal === NEWS_V2_CFG.DEFAULT_NEWS_TYPE) tOpt.selected = true;
+        typeSel.appendChild(tOpt);
+      }
+      formGrid.appendChild(
+        mkLabeled(
+          "Тип (type) для create",
+          typeSel,
+          "В выгрузке бывают individualAchievement / tournamentAchievement — при создании уходят как achievement"
+        )
+      );
+
+      var summaryInp = document.createElement("input");
+      summaryInp.type = "text";
+      summaryInp.placeholder = "Заголовок; у bestPractice обычно есть, у achievement/publication часто пусто";
+      styleInput(summaryInp);
+      formGrid.appendChild(mkLabeled("Заголовок (summary)", summaryInp));
+
+      var descTa = document.createElement("textarea");
+      descTa.placeholder = "Текст новости — в выгрузке поле newsText → в create: description";
+      styleTextarea(descTa, 5);
+      var descWrap = mkLabeled("Текст (description ← newsText)", descTa);
+      descWrap.style.gridColumn = "1 / -1";
+      formGrid.appendChild(descWrap);
+
+      var bankLevelLab = document.createElement("label");
+      bankLevelLab.style.cssText =
+        "display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:6px 8px;" +
+        "border:1px solid #cbd5e1;border-radius:6px;background:#fff;cursor:pointer;";
+      var bankLevelCb = document.createElement("input");
+      bankLevelCb.type = "checkbox";
+      bankLevelCb.checked = true;
+      bankLevelLab.appendChild(bankLevelCb);
+      bankLevelLab.appendChild(document.createTextNode("bankLevel (в выгрузке чаще true)"));
+      formGrid.appendChild(mkLabeled("Флаги", bankLevelLab));
+
+      var formCreatedBy = document.createElement("input");
+      formCreatedBy.type = "text";
+      formCreatedBy.placeholder = "если пусто — из поля сверху";
+      formCreatedBy.value = NEWS_V2_CFG.DEFAULT_CREATED_BY;
+      styleInput(formCreatedBy);
+      formGrid.appendChild(mkLabeled("createdBy (этой новости)", formCreatedBy));
+
+      var alphaLinkInp = document.createElement("input");
+      alphaLinkInp.type = "text";
+      alphaLinkInp.placeholder = "alphaLink (из newsFeature)";
+      styleInput(alphaLinkInp);
+      formGrid.appendChild(mkLabeled("Ссылка ALPHA", alphaLinkInp));
+
+      var sigmaLinkInp = document.createElement("input");
+      sigmaLinkInp.type = "text";
+      sigmaLinkInp.placeholder = "sigmaLink (из newsFeature)";
+      styleInput(sigmaLinkInp);
+      formGrid.appendChild(mkLabeled("Ссылка SIGMA", sigmaLinkInp));
+
+      var blocksBox = document.createElement("div");
+      blocksBox.style.cssText = "display:flex;flex-wrap:wrap;gap:6px 10px;";
+      /** @type {Record<string, HTMLInputElement>} */
+      var blockChecks = {};
+      for (var bi = 0; bi < NEWS_V2_CFG.BUSINESS_BLOCK_OPTIONS.length; bi++) {
+        var bo = NEWS_V2_CFG.BUSINESS_BLOCK_OPTIONS[bi];
+        var bl = document.createElement("label");
+        bl.style.cssText = "display:inline-flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;";
+        var bc = document.createElement("input");
+        bc.type = "checkbox";
+        bc.checked = !!bo.defaultChecked;
+        blockChecks[bo.value] = bc;
+        bl.appendChild(bc);
+        bl.appendChild(document.createTextNode(bo.label || bo.value));
+        blocksBox.appendChild(bl);
+      }
+      var blocksWrap = mkLabeled(
+        "Бизнес-блоки (businessBlocks / newsFeature.businessBlock)",
+        blocksBox,
+        "В выгрузках чаще KMKKSB; в create уходит в newsFeature.businessBlock"
+      );
+      blocksWrap.style.gridColumn = "1 / -1";
+      formGrid.appendChild(blocksWrap);
+
+      var customTagsTa = document.createElement("textarea");
+      customTagsTa.placeholder =
+        "Основные теги из выгрузки — TEXT: ДРИМФ, Гарантии, Лизинг, ВЭД…\nПо одному в строке или через ;";
+      styleTextarea(customTagsTa, 3);
+      var customTagsWrap = mkLabeled(
+        "Теги TEXT (newsTagList.tagValue)",
+        customTagsTa,
+        "В реальных данных почти все теги tagType=TEXT (не NEWS_TYPE)"
+      );
+      customTagsWrap.style.gridColumn = "1 / -1";
+      formGrid.appendChild(customTagsWrap);
+
+      var tagsBox = document.createElement("div");
+      tagsBox.style.cssText = "display:flex;flex-wrap:wrap;gap:6px 10px;";
+      /** @type {HTMLInputElement[]} */
+      var tagChecks = [];
+      for (var tgi = 0; tgi < NEWS_V2_CFG.TAG_OPTIONS.length; tgi++) {
+        var tg = NEWS_V2_CFG.TAG_OPTIONS[tgi];
+        var tgl = document.createElement("label");
+        tgl.style.cssText = "display:inline-flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;";
+        var tgc = document.createElement("input");
+        tgc.type = "checkbox";
+        tgc.checked = !!tg.defaultChecked;
+        tgc.setAttribute("data-tag-value", tg.tagCode || tg.label || "");
+        tagChecks.push(tgc);
+        tgl.appendChild(tgc);
+        tgl.appendChild(document.createTextNode(tg.label || tg.tagCode));
+        tagsBox.appendChild(tgl);
+      }
+      var tagsWrap = mkLabeled("Доп. теги NEWS_TYPE (редко в выгрузке)", tagsBox);
+      tagsWrap.style.gridColumn = "1 / -1";
+      formGrid.appendChild(tagsWrap);
+
+      var rewardsTa = document.createElement("textarea");
+      rewardsTa.placeholder =
+        "Обязательно для achievement: rewardCode из rewards[].rewardCode\nпример: r_01_2026-1_16-2_1";
+      styleTextarea(rewardsTa, 2);
+      formGrid.appendChild(
+        mkLabeled("Награды * (rewardList ← rewards)", rewardsTa, "Для type=achievement обязательно")
+      );
+
+      var tournamentsTa = document.createElement("textarea");
+      tournamentsTa.placeholder =
+        "Обязательно для achievement: tournamentCode из contests[].tournaments[]\nпример: t_01_2026-1_16-2_1_2032";
+      styleTextarea(tournamentsTa, 2);
+      formGrid.appendChild(
+        mkLabeled(
+          "Турниры * (tournamentList ← contests)",
+          tournamentsTa,
+          "Для type=achievement обязательно; в выгрузке — contests[].tournaments[].tournamentCode"
+        )
+      );
+
+      var authorsTa = document.createElement("textarea");
+      authorsTa.placeholder = "Табельные authors[].employeeNumber (у bestPractice часто 1)";
+      styleTextarea(authorsTa, 2);
+      var authorsWrap = mkLabeled("Авторы (authorsList ← authors)", authorsTa);
+      formGrid.appendChild(authorsWrap);
+
+      var leadersTa = document.createElement("textarea");
+      leadersTa.placeholder = "Табельные leaders[].employeeNumber (в create достаточно номера)";
+      styleTextarea(leadersTa, 2);
+      var leadersWrap = mkLabeled("Лидеры (leadersList ← leaders)", leadersTa);
+      formGrid.appendChild(leadersWrap);
+
+      var tbInp = document.createElement("input");
+      tbInp.type = "text";
+      tbInp.placeholder = "в выгрузке часто \"[]\" — можно пусто";
+      styleInput(tbInp);
+      formGrid.appendChild(mkLabeled("tbCodeList ← tbCode", tbInp, "Коды ТБ через ; или запятую"));
+
+      var gosbInp = document.createElement("input");
+      gosbInp.type = "text";
+      gosbInp.placeholder = "в выгрузке часто \"[]\" — можно пусто";
+      styleInput(gosbInp);
+      formGrid.appendChild(mkLabeled("gosbCodeList ← gosbCode", gosbInp));
+
+      var formActions = document.createElement("div");
+      formActions.style.cssText = "display:flex;flex-wrap:wrap;gap:8px;";
+      formBox.appendChild(formActions);
+
+      function syncStubFieldsVisibility() {
+        var off = !!stubModeCb.checked;
+        authorsWrap.style.opacity = off ? "0.45" : "1";
+        leadersWrap.style.opacity = off ? "0.45" : "1";
+        authorsTa.disabled = off;
+        leadersTa.disabled = off;
+      }
+      stubModeCb.addEventListener("change", syncStubFieldsVisibility);
+      syncStubFieldsVisibility();
+
+      function splitCodes(text) {
+        return String(text || "")
+          .split(/[\n;,]+/)
+          .map(function (s) {
+            return s.replace(/^\s+|\s+$/g, "");
+          })
+          .filter(Boolean);
+      }
+
+      function readFormSourceItem() {
+        var blocks = [];
+        Object.keys(blockChecks).forEach(function (k) {
+          if (blockChecks[k].checked) blocks.push(k);
+        });
+        var tags = [];
+        for (var i = 0; i < tagChecks.length; i++) {
+          if (tagChecks[i].checked) {
+            var tv = tagChecks[i].getAttribute("data-tag-value") || "";
+            if (tv) tags.push(tv);
+          }
+        }
+        splitCodes(customTagsTa.value).forEach(function (t) {
+          tags.push(t);
+        });
+        var createdByForm = String(formCreatedBy.value || "").trim();
+        var createdByTop = String(createdByInput.value || "").trim();
+        return {
+          type: typeSel.value,
+          summary: summaryInp.value,
+          description: descTa.value,
+          bankLevel: !!bankLevelCb.checked,
+          businessBlocks: blocks,
+          newsFeature: {
+            alphaLink: String(alphaLinkInp.value || "").trim(),
+            sigmaLink: String(sigmaLinkInp.value || "").trim(),
+            businessBlock: blocks
+          },
+          tagList: tags,
+          rewardList: splitCodes(rewardsTa.value).map(function (c) {
+            return { rewardCode: c };
+          }),
+          tournamentList: splitCodes(tournamentsTa.value).map(function (c) {
+            return { tournamentCode: c };
+          }),
+          authorsList: stubModeCb.checked
+            ? []
+            : splitCodes(authorsTa.value).map(function (n) {
+                return { employeeNumber: n };
+              }),
+          leadersList: stubModeCb.checked
+            ? []
+            : splitCodes(leadersTa.value).map(function (n) {
+                return { employeeNumber: n };
+              }),
+          tbCodeList: splitCodes(tbInp.value),
+          gosbCodeList: splitCodes(gosbInp.value),
+          createdBy: createdByForm || createdByTop || NEWS_V2_CFG.DEFAULT_CREATED_BY
+        };
+      }
+
+      function clearFormFields() {
+        typeSel.value = NEWS_V2_CFG.DEFAULT_NEWS_TYPE;
+        summaryInp.value = "";
+        descTa.value = "";
+        bankLevelCb.checked = true;
+        formCreatedBy.value = String(createdByInput.value || "").trim() || NEWS_V2_CFG.DEFAULT_CREATED_BY;
+        alphaLinkInp.value = "";
+        sigmaLinkInp.value = "";
+        Object.keys(blockChecks).forEach(function (k) {
+          var def = NEWS_V2_CFG.BUSINESS_BLOCK_OPTIONS.filter(function (o) {
+            return o.value === k;
+          })[0];
+          blockChecks[k].checked = !!(def && def.defaultChecked);
+        });
+        for (var i = 0; i < tagChecks.length; i++) {
+          var opt = NEWS_V2_CFG.TAG_OPTIONS[i];
+          tagChecks[i].checked = !!(opt && opt.defaultChecked);
+        }
+        customTagsTa.value = "";
+        rewardsTa.value = "";
+        tournamentsTa.value = "";
+        authorsTa.value = "";
+        leadersTa.value = "";
+        tbInp.value = "";
+        gosbInp.value = "";
+      }
+
+      // --- Файл / JSON ---
+      var fileBox = document.createElement("div");
+      fileBox.style.cssText =
+        "display:none;flex-direction:column;gap:8px;padding:10px;border:1px solid #bfdbfe;" +
+        "border-radius:10px;background:rgba(239,246,255,.75);";
+      wrap.appendChild(fileBox);
+
+      var fileTop = document.createElement("div");
+      fileTop.style.cssText = "display:flex;flex-wrap:wrap;gap:8px;align-items:center;";
+      fileBox.appendChild(fileTop);
       var fileInput = document.createElement("input");
       fileInput.type = "file";
       fileInput.accept = ".json,application/json";
       fileInput.style.display = "none";
-      top.appendChild(fileInput);
-      top.appendChild(
+      fileTop.appendChild(fileInput);
+      fileTop.appendChild(
         mkBtn("Выбрать файл JSON", function () {
           fileInput.click();
         })
       );
+      fileTop.appendChild(
+        mkBtn("Шаблон JSON", function () {
+          downloadJson("news_create_template_" + tsShort() + ".json", buildCreateTemplate());
+          log("Скачан шаблон создания.");
+        })
+      );
 
       var manualInput = document.createElement("textarea");
-      manualInput.placeholder = "Вставьте JSON вручную (объект или массив)";
+      manualInput.placeholder =
+        "Несколько новостей: вставьте JSON (createItems / выгрузка) или загрузите файл выше";
       manualInput.rows = 6;
-      manualInput.style.cssText = "width:100%;padding:8px;border:1px solid #94a3b8;border-radius:6px;font-family:ui-monospace,monospace;font-size:12px;";
-      wrap.appendChild(manualInput);
+      manualInput.style.cssText =
+        "width:100%;padding:8px;border:1px solid #94a3b8;border-radius:6px;font-family:ui-monospace,monospace;font-size:12px;";
+      fileBox.appendChild(manualInput);
 
       var actions = document.createElement("div");
       actions.style.cssText = "display:flex;flex-wrap:wrap;gap:8px;";
@@ -1266,11 +2226,193 @@
       var searchInput = document.createElement("input");
       searchInput.type = "text";
       searchInput.placeholder = "Поиск по типу / заголовку / ID";
-      searchInput.style.cssText = "width:100%;padding:8px;border:1px solid #94a3b8;border-radius:6px;font-size:12px;";
+      searchInput.style.cssText =
+        "width:100%;padding:8px;border:1px solid #94a3b8;border-radius:6px;font-size:12px;";
       wrap.appendChild(searchInput);
       var selectionInfo = document.createElement("div");
       selectionInfo.style.cssText = "font-size:11px;color:#475569;";
       wrap.appendChild(selectionInfo);
+
+      var publishBox = document.createElement("div");
+      publishBox.style.cssText =
+        "display:none;flex-direction:column;gap:8px;padding:10px;border:1px solid #86efac;" +
+        "border-radius:8px;background:#f0fdf4;";
+      wrap.appendChild(publishBox);
+
+      /** @type {{ newsId: string, type: string, summary: string, selected: boolean }[]} */
+      var createdDrafts = [];
+
+      function clearPublishBox() {
+        createdDrafts = [];
+        publishBox.style.display = "none";
+        publishBox.innerHTML = "";
+      }
+
+      function renderPublishBox() {
+        publishBox.innerHTML = "";
+        if (!createdDrafts.length) {
+          publishBox.style.display = "none";
+          return;
+        }
+        publishBox.style.display = "flex";
+        var title = document.createElement("div");
+        title.style.cssText = "font-size:12px;font-weight:700;color:#166534;";
+        title.textContent =
+          "Созданы черновики (" +
+          createdDrafts.length +
+          "). Отметьте и опубликуйте (status → published):";
+        publishBox.appendChild(title);
+
+        var list = document.createElement("div");
+        list.style.cssText =
+          "border:1px solid #bbf7d0;border-radius:6px;overflow:hidden;background:#fff;max-height:220px;overflow-y:auto;";
+        for (var i = 0; i < createdDrafts.length; i++) {
+          (function () {
+            var item = createdDrafts[i];
+            var row = document.createElement("label");
+            row.style.cssText =
+              "display:grid;grid-template-columns:24px 110px 1fr 200px;gap:8px;padding:6px 8px;" +
+              "font-size:11px;border-bottom:1px solid #f0fdf4;align-items:center;cursor:pointer;";
+            var cb = document.createElement("input");
+            cb.type = "checkbox";
+            cb.checked = item.selected !== false;
+            cb.addEventListener("change", function () {
+              item.selected = cb.checked;
+            });
+            row.appendChild(cb);
+            var t = document.createElement("div");
+            t.textContent = item.type || "";
+            row.appendChild(t);
+            var s = document.createElement("div");
+            s.style.cssText = "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+            s.textContent = item.summary || "";
+            row.appendChild(s);
+            var idEl = document.createElement("div");
+            idEl.style.cssText = "font-family:ui-monospace,monospace;font-size:10px;";
+            idEl.textContent = item.newsId || "";
+            row.appendChild(idEl);
+            list.appendChild(row);
+          })();
+        }
+        publishBox.appendChild(list);
+
+        var pubActions = document.createElement("div");
+        pubActions.style.cssText = "display:flex;flex-wrap:wrap;gap:8px;";
+        publishBox.appendChild(pubActions);
+
+        pubActions.appendChild(
+          mkBtn("Отметить все", function () {
+            for (var i = 0; i < createdDrafts.length; i++) createdDrafts[i].selected = true;
+            renderPublishBox();
+          })
+        );
+        pubActions.appendChild(
+          mkBtn("Снять все", function () {
+            for (var i = 0; i < createdDrafts.length; i++) createdDrafts[i].selected = false;
+            renderPublishBox();
+          })
+        );
+        pubActions.appendChild(
+          mkBtn(
+            "Опубликовать выбранные",
+            function () {
+              void publishCreatedDrafts();
+            },
+            "background:#16a34a;color:#fff;border-color:#16a34a;"
+          )
+        );
+        pubActions.appendChild(
+          mkBtn("Пропустить", function () {
+            clearPublishBox();
+            log("Публикация созданных черновиков пропущена.");
+          })
+        );
+      }
+
+      async function publishCreatedDrafts() {
+        var toPub = createdDrafts.filter(function (x) {
+          return x.selected !== false && String(x.newsId || "").trim();
+        });
+        if (!toPub.length) {
+          log("Нет отмеченных черновиков для публикации.");
+          return;
+        }
+        if (opBusy) {
+          log("Уже выполняется другая операция — дождитесь завершения или нажмите Стоп.");
+          return;
+        }
+        if (
+          !window.confirm(
+            "Опубликовать выбранные новости: " + toPub.length + " шт. (method: patch, status: published)?"
+          )
+        ) {
+          log("Публикация отменена пользователем.");
+          return;
+        }
+        var env = getEnv();
+        var settings = getSharedRequestSettings();
+        var ok = 0;
+        var fail = 0;
+        setOpBusy(true, "публикация после создания");
+        try {
+          for (var i = 0; i < toPub.length; i++) {
+            if (isStopRequested()) {
+              log("Стоп: публикация прервана.");
+              break;
+            }
+            var newsId = toPub[i].newsId;
+            sharedOpStatus.textContent = "Операции: публикация " + (i + 1) + "/" + toPub.length;
+            var payload = { newsId: newsId, status: "published", method: "patch" };
+            var retryResult = await postJsonWithRetry(
+              env.origin + NEWS_V2_CFG.NEWS_UPDATE_PATH,
+              payload,
+              env.origin + "/admin/community/" + newsId,
+              {
+                log: log,
+                retryMax: settings.retryMax,
+                retryPauseMs: settings.retryPauseMs,
+                requireBody: false,
+                shouldStop: isStopRequested
+              }
+            );
+            if (retryResult.stopped) break;
+            if (retryResult.ok) {
+              ok++;
+              log("Опубликовано: newsId=" + newsId);
+            } else {
+              fail++;
+              log(
+                "Ошибка публикации newsId=" +
+                  newsId +
+                  ": " +
+                  (retryResult.error || ("HTTP " + (retryResult.fr && retryResult.fr.status)))
+              );
+            }
+            if (i < toPub.length - 1 && settings.opGapMs > 0) await delay(settings.opGapMs);
+          }
+        } finally {
+          setOpBusy(false);
+        }
+        log("Публикация после создания: OK=" + ok + ", FAIL=" + fail + ".");
+        if (fail === 0 && ok > 0) clearPublishBox();
+      }
+
+      function showCreatedDraftsForPublish(items) {
+        createdDrafts = (items || []).map(function (x) {
+          return {
+            newsId: ensureString(x.newsId),
+            type: ensureString(x.type),
+            summary: ensureString(x.summary),
+            selected: true
+          };
+        });
+        renderPublishBox();
+        if (createdDrafts.length) {
+          log(
+            "Можно опубликовать созданные черновики: отметьте нужные и нажмите «Опубликовать выбранные»."
+          );
+        }
+      }
 
       function renderList() {
         tableHost.innerHTML = "";
@@ -1322,6 +2464,7 @@
         manualInput.value = "";
         fileInput.value = "";
         searchInput.value = "";
+        clearPublishBox();
         renderList();
         log("Список выбора (создание) очищен.");
       }
@@ -1345,21 +2488,17 @@
         renderList();
       }
 
-      async function parseFromText(text) {
-        var parsed = safeParseJson(text);
-        if (!parsed.ok) {
-          log("Ошибка JSON: " + parsed.error.message);
-          return;
-        }
+      function applyCandidatesFromSourceList(rowsOrJson, fromLabel) {
         var batchStartIso = nowIso();
         var createdByValue = String(createdByInput.value || "").trim() || NEWS_V2_CFG.DEFAULT_CREATED_BY;
         var stubMode = !!stubModeCb.checked;
         candidates = extractCreateCandidatesFromAnyJson(
-          parsed.value,
+          rowsOrJson,
           createdByValue,
           batchStartIso,
           { ignoreLeadersAuthors: stubMode }
         );
+        var parseMeta = candidates._parseMeta || {};
         for (var ci = 0; ci < candidates.length; ci++) {
           if (!String(candidates[ci].payload.createdBy || "").trim()) {
             candidates[ci].payload.createdBy = createdByValue;
@@ -1367,14 +2506,118 @@
         }
         applyCreateStubModeToCandidates(candidates, stubMode);
         renderList();
+        var achMissing = 0;
+        var achOk = 0;
+        for (var aj = 0; aj < candidates.length; aj++) {
+          if (candidates[aj].payload.type !== "achievement") continue;
+          if (
+            !(candidates[aj].payload.rewardList || []).length ||
+            !(candidates[aj].payload.tournamentList || []).length
+          ) {
+            achMissing++;
+          } else {
+            achOk++;
+          }
+        }
         log(
           "Загружено записей для создания: " +
             candidates.length +
+            (fromLabel ? " (" + fromLabel + ")" : "") +
+            (parseMeta.fromCreateItems
+              ? " | источник: createItems"
+              : " | страниц API прочитано: " +
+                (parseMeta.pagesScanned || 0) +
+                " | combo-блоков: " +
+                (parseMeta.comboBlocks || 0)) +
             (stubMode ? " | режим болванки: без leaders/authors" : "")
         );
+        if (achOk || achMissing) {
+          log(
+            "  achievement: с наградой+турниром=" +
+              achOk +
+              ", без обязательных кодов=" +
+              achMissing +
+              (achMissing
+                ? " (такие записи не пройдут валидацию при создании)"
+                : "")
+          );
+        }
       }
 
+      async function parseFromText(text) {
+        var parsed = safeParseJson(text);
+        if (!parsed.ok) {
+          log("Ошибка JSON: " + parsed.error.message);
+          return;
+        }
+        applyCandidatesFromSourceList(parsed.value, "JSON");
+      }
+
+      function addFromForm() {
+        var source = readFormSourceItem();
+        if (!String(source.description || "").trim() && !String(source.summary || "").trim()) {
+          log("Форма: заполните заголовок или текст новости.");
+          return;
+        }
+        if (!String(source.description || "").trim()) {
+          log("Форма: заполните текст новости (description).");
+          return;
+        }
+        if (!source.businessBlocks.length) {
+          log("Форма: выберите хотя бы один businessBlock.");
+          return;
+        }
+        if (normalizeType(source.type) === "achievement") {
+          if (!source.rewardList.length) {
+            log("Форма: для achievement укажите хотя бы один rewardCode.");
+            return;
+          }
+          if (!source.tournamentList.length) {
+            log("Форма: для achievement укажите хотя бы один tournamentCode.");
+            return;
+          }
+        }
+        // Одна новость из формы — заменяем список кандидатов.
+        applyCandidatesFromSourceList({ createItems: [source] }, "форма");
+        if (getCreateMode() === "form" && candidates.length > 1) {
+          candidates = candidates.slice(0, 1);
+          renderList();
+        }
+      }
+
+      function applyModeUi() {
+        var mode = getCreateMode();
+        var isForm = mode === "form";
+        formBox.style.display = isForm ? "flex" : "none";
+        fileBox.style.display = isForm ? "none" : "flex";
+        log(
+          isForm
+            ? "Режим: форма (одна новость)."
+            : "Режим: файл/JSON (несколько новостей)."
+        );
+      }
+      modeForm.inp.addEventListener("change", applyModeUi);
+      modeFile.inp.addEventListener("change", applyModeUi);
+      applyModeUi();
+
+      formActions.appendChild(
+        mkBtn(
+          "Добавить в список из формы",
+          function () {
+            addFromForm();
+          },
+          "background:#16a34a;color:#fff;border-color:#16a34a;"
+        )
+      );
+      formActions.appendChild(
+        mkBtn("Очистить форму", function () {
+          clearFormFields();
+          log("Форма создания очищена.");
+        })
+      );
+
       stubModeCb.addEventListener("change", function () {
+        syncStubFieldsVisibility();
         if (!candidates.length) {
           log(
             stubModeCb.checked
@@ -1389,19 +2632,17 @@
           log("Режим болванки: leaders/authors очищены у загруженных записей.");
         } else {
           log(
-            "Режим болванки выключен. Перезагрузите JSON, чтобы восстановить leaders/authors из файла."
+            "Режим болванки выключен. Перезагрузите JSON/форму, чтобы восстановить leaders/authors."
           );
         }
       });
 
       actions.appendChild(
-        mkBtn("Шаблон JSON", function () {
-          downloadJson("news_create_template_" + tsShort() + ".json", buildCreateTemplate());
-          log("Скачан шаблон создания.");
-        })
-      );
-      actions.appendChild(
         mkBtn("Разобрать JSON из поля", function () {
+          if (getCreateMode() !== "file") {
+            log("Разбор JSON доступен в режиме «Файл JSON».");
+            return;
+          }
           void parseFromText(manualInput.value);
         })
       );
@@ -1439,11 +2680,18 @@
                 log("Уже выполняется другая операция — дождитесь завершения или нажмите Стоп.");
                 return;
               }
+              if (getCreateMode() === "form" && !candidates.length) {
+                addFromForm();
+              }
               var selected = candidates.filter(function (c) {
                 return c.selected !== false;
               });
               if (!selected.length) {
                 log("Нет выбранных записей для создания.");
+                return;
+              }
+              if (getCreateMode() === "form" && selected.length > 1) {
+                log("В режиме формы создаётся только одна новость. Снимите лишние или переключитесь на файл.");
                 return;
               }
 
@@ -1485,6 +2733,8 @@
               var stoppedByUser = false;
               var abortedByErrors = false;
               var resultDump = [];
+              var createdIds = [];
+              clearPublishBox();
               setOpBusy(true, "создание");
               try {
                 for (var si = 0; si < selected.length; si++) {
@@ -1503,7 +2753,7 @@
                   var retryResult = await postJsonWithRetry(
                     env.origin + NEWS_V2_CFG.NEWS_CREATE_PATH,
                     payload,
-                    env.origin + "/salesheroes/admin/community/create",
+                    env.origin + "/admin/community/create",
                     {
                       log: log,
                       retryMax: settings.retryMax,
@@ -1535,9 +2785,15 @@
                   if (retryResult.ok) {
                     consecutiveFails = 0;
                     okCount++;
+                    var newId = String(retryResult.fr.data.body.objectId);
+                    createdIds.push({
+                      newsId: newId,
+                      type: payload.type,
+                      summary: compactNewsLabel(payload)
+                    });
                     log(
                       "Создано: objectId=" +
-                        retryResult.fr.data.body.objectId +
+                        newId +
                         " | type=" +
                         payload.type +
                         " | " +
@@ -1586,6 +2842,9 @@
                   retriesTotal: retriesTotal,
                   stoppedByUser: stoppedByUser,
                   abortedByErrors: abortedByErrors,
+                  createdObjectIds: createdIds.map(function (x) {
+                    return x.newsId;
+                  }),
                   results: resultDump
                 }
               );
@@ -1601,6 +2860,7 @@
                   (stubMode ? " | болванка без leaders/authors" : "") +
                   "."
               );
+              if (createdIds.length) showCreatedDraftsForPublish(createdIds);
             })();
           },
           "background:#16a34a;color:#fff;border-color:#16a34a;"
@@ -1611,6 +2871,10 @@
         void (async function () {
           var file = fileInput.files && fileInput.files[0];
           if (!file) return;
+          if (getCreateMode() !== "file") {
+            modeFile.inp.checked = true;
+            applyModeUi();
+          }
           var text = await readFileAsText(file);
           await parseFromText(text);
         })();
@@ -1832,7 +3096,7 @@
                   var retryResult = await postJsonWithRetry(
                     env.origin + NEWS_V2_CFG.NEWS_UPDATE_PATH,
                     payload,
-                    env.origin + "/salesheroes/admin/community/" + item.newsId,
+                    env.origin + "/admin/community/" + item.newsId,
                     {
                       log: log,
                       retryMax: settings.retryMax,
@@ -2406,7 +3670,7 @@
                   var retryResult = await postJsonWithRetry(
                     env.origin + NEWS_V2_CFG.NEWS_UPDATE_PATH,
                     payload,
-                    env.origin + "/salesheroes/admin/community/" + payload.newsId + "/edit",
+                    env.origin + "/admin/community/" + payload.newsId + "/edit",
                     {
                       log: log,
                       retryMax: settings.retryMax,
@@ -2699,14 +3963,6 @@
       selectGrid.appendChild(blockCtl.el);
       selectGrid.appendChild(tagColWrap);
 
-      var timingHint = document.createElement("div");
-      timingHint.style.cssText =
-        "margin-top:8px;padding:6px 8px;border:1px dashed #94a3b8;border-radius:6px;" +
-        "background:#f8fafc;font-size:11px;color:#475569;";
-      timingHint.textContent =
-        "Паузы, попытки, диапазон страниц (Стр. с / Стр. по) и аварийный стоп — в общем блоке над вкладками. Пример: с 10 по 20 — только эти pageNum.";
-      payloadBox.appendChild(timingHint);
-
       function refreshRequiredUi() {
         var hasStatus = statusCtl.getSelectedKeys().length > 0;
         var hasBlock = blockCtl.getSelectedKeys().length > 0;
@@ -2965,6 +4221,7 @@
                 pageTo: pageTo > 0 ? pageTo : null,
                 newsCount: mergedCombo ? countNewsInBody(mergedCombo.body) : 0,
                 partial: !!stoppedByUser || !!abortedByErrors,
+                pages: comboPages,
                 merged: mergedCombo
               });
             }
@@ -3050,20 +4307,25 @@
     }
 
     var tabs = [
-      { key: "export", label: "Выгрузка (старый блок)", render: renderExportTab },
+      { key: "export", label: "Выгрузка", render: renderExportTab },
       { key: "create", label: "Создание", render: renderCreateTab },
       { key: "status", label: "Статусы", render: renderStatusTab },
-      { key: "edit", label: "Редактирование (каркас)", render: renderEditTab }
+      { key: "edit", label: "Редактирование", render: renderEditTab }
     ];
+
+    var tabBtnBaseCss =
+      "padding:3px 9px;border-radius:999px;border:1px solid #94a3b8;background:#fff;color:#334155;" +
+      "cursor:pointer;font-size:11px;font-weight:600;line-height:1.2;white-space:nowrap;";
 
     var activeTab = "";
     function switchTab(nextKey) {
       activeTab = nextKey;
-      for (var i = 0; i < left.children.length; i++) {
-        var btn = left.children[i];
+      for (var i = 0; i < tabBar.children.length; i++) {
+        var btn = tabBar.children[i];
+        if (!btn.getAttribute || !btn.getAttribute("data-tab")) continue;
         var isOn = btn.getAttribute("data-tab") === nextKey;
         btn.style.background = isOn ? "#2563eb" : "#fff";
-        btn.style.color = isOn ? "#fff" : "#0f172a";
+        btn.style.color = isOn ? "#fff" : "#334155";
         btn.style.borderColor = isOn ? "#2563eb" : "#94a3b8";
       }
       for (var ti = 0; ti < tabs.length; ti++) {
@@ -3078,23 +4340,33 @@
     for (var ti = 0; ti < tabs.length; ti++) {
       (function () {
         var t = tabs[ti];
-        var b = mkBtn(t.label, function () {
-          switchTab(t.key);
-        }, "text-align:left;");
+        var b = document.createElement("button");
+        b.type = "button";
+        b.textContent = t.label;
         b.setAttribute("data-tab", t.key);
-        left.appendChild(b);
+        b.style.cssText = tabBtnBaseCss;
+        b.addEventListener("click", function () {
+          switchTab(t.key);
+        });
+        tabBar.appendChild(b);
       })();
     }
 
-    left.appendChild(
-      mkBtn("Закрыть", function () {
-        root.remove();
-      }, "margin-top:auto;background:#ef4444;border-color:#ef4444;color:#fff;")
-    );
+    var btnClose = document.createElement("button");
+    btnClose.type = "button";
+    btnClose.textContent = "Закрыть";
+    btnClose.style.cssText =
+      tabBtnBaseCss +
+      "margin-left:auto;background:#ef4444;border-color:#ef4444;color:#fff;border-radius:6px;";
+    btnClose.addEventListener("click", function () {
+      root.remove();
+    });
+    tabBar.appendChild(btnClose);
 
     document.body.appendChild(root);
+    devTrace.attachPanel(root);
     switchTab("export");
-    log("Панель запущена.");
+    log("Панель запущена. Trace — общий для всех вкладок (с маскированием ПДн).");
   }
 
   startPanel();

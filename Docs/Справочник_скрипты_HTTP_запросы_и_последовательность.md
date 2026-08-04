@@ -251,26 +251,23 @@
 
 **Назначение:** обновление старого скрипта новостей в единой модалке: выгрузка news (паритет с исходником: статистика, Стоп, JSON+CSV, ретраи) + создание + смена статусов + базовое редактирование.
 
-**Origin:** `ORIGINS[стенд][контур]` (`PROM/PSI/IFT-SB/IFT-GF × ALPHA/SIGMA`), автоопределение по `window.location.origin`, `credentials: "include"`.
+**Origin:** `ORIGINS[стенд][контур]` (`PROM/PSI/IFT-SB/IFT-GF × ALPHA/SIGMA`), автоопределение по `window.location.origin`, `credentials: "include"`. Referer create: `/admin/community/create`.
 
 | Операция | Метод | Путь | Payload |
 |----------|-------|------|---------|
 | Выгрузка списка | **POST** | `/bo/rmkib.gamification/proxy/v1/news` | `{ newsStatus, businessBlock, pageNum }` + опц. `newsTagList[]` |
-| Создание новости | **POST** | `/bo/rmkib.gamification/proxy/v1/administration/news/newsCreate` | payload создания (`type`, `description`, `leadersList`, `createdBy`, и др.) |
+| Создание новости | **POST** | `/bo/rmkib.gamification/proxy/v1/administration/news/newsCreate` | `type`, `description`, `summary`, `bankLevel`, `newsFeature`, `rewardList`, `tournamentList`, `authorsList`, `leadersList`, `tagList`, `tbCodeList`, `gosbCodeList`, `createdBy`, `plannedDt`, `status=draft`, `createDt`; ответ: `body.objectId` |
 | Смена статуса | **POST** | `/bo/rmkib.gamification/proxy/v1/administration/news/newsUpdate` | `{ "newsId": "...", "status": "published\|draft", "method": "patch" }` |
 | Редактирование (каркас) | **POST** | `/bo/rmkib.gamification/proxy/v1/administration/news/newsUpdate` | payload редактирования + `"method": "put"` |
 
 **Последовательность:**
 
-1. Общий блок панели: паузы операций/страниц, диапазон **Стр. с / Стр. по**, пауза повтора, число попыток, аварийный стоп после N ошибок подряд, кнопка **Стоп**.
-2. Вкладка «Выгрузка»: выбор status/block/tag, POST-пагинация только по указанному диапазону `pageNum` с общими ретраями/паузами и сохранение JSON.
-3. Вкладки операций: загрузка JSON (файл/поле) и разбор в кандидаты.
-4. Показ компактного списка с чекбоксами выбора (по умолчанию выбраны все).
-5. Предвалидация критичных полей.
-6. Подтверждение пользователем.
-7. Последовательная отправка POST с ретраями / паузами / Стоп и сохранение `*_result_*.json`.
+1. Общий блок панели: паузы операций/страниц, диапазон **Стр. с / Стр. по**, пауза повтора, число попыток, аварийный стоп после N ошибок подряд, кнопка **Стоп**; вкладки — строка сверху; **Trace** общий на все вкладки (с маскированием ПДн).
+2. Вкладка «Выгрузка»: выбор status/block/tag, POST-пагинация только по указанному диапазону `pageNum` с общими ретраями/паузами и сохранение JSON (`pages[]` + `comboResults[].pages`/`merged`).
+3. Вкладка «Создание»: форма (одна) или файл/JSON (несколько); разбор **всех** `pages`; для `achievement` обязательны `rewardList`+`tournamentList`; после create — выбор `objectId` для публикации (`patch` → `published`).
+4. Вкладки статусов/редактирования: загрузка JSON и разбор в кандидаты; чекбоксы; предвалидация; подтверждение; POST с ретраями/паузами/Стоп; `*_result_*.json`.
 
-Для «Создания» задан дефолт `createdBy = 00673892` (можно изменить в интерфейсе).
+Для «Создания» задан дефолт `createdBy = 00673892` (можно изменить в интерфейсе). Шаблон JSON — кнопка «Шаблон JSON» (примеры bestPractice / achievement / publication по HAR).
 
 Подробности: [Docs/Скрипт_новости_community_News_Community_Export_v2.md](Скрипт_новости_community_News_Community_Export_v2.md).
 
@@ -409,5 +406,6 @@
 | **1.35** | § **6A** `News_Community_Export_v2.js`: паритет выгрузки с исходником (статус/Стоп/JSON+CSV), разбор всех `pages` при создании, пустой summary → 100 символов `newsText`. |
 | **1.36** | § **6A** `News_Community_Export_v2.js`: общие паузы/ретраи/Стоп на все вкладки (создание, статусы, редактирование, выгрузка). |
 | **1.37** | § **6A** `News_Community_Export_v2.js`: диапазон страниц выгрузки **Стр. с / Стр. по** (пример: 10…20) вместо «Макс. страниц». |
+| **1.38** | § **6A** `News_Community_Export_v2.js`: Trace+маски ПДн; вкладки сверху; create form/файл; achievement reward+tournament; разбор всех pages; публикация по `objectId`; шаблон JSON по HAR. |
 
 *Актуальность проверяйте по скриптам в `Script/`.*

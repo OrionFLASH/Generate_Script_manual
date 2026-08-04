@@ -25,6 +25,7 @@
 | `Pulse_export_OE.js` | над «Журнал работы» |
 | `File_DB_Load_GP.js` / `_v2.js` | над «Журнал работы» |
 | `News_Community_Export.js` | в блоке журнала |
+| `News_Community_Export_v2.js` | над общим журналом (один буфер на все вкладки; маскирование ПДн) |
 | `Profile_GP_LOAD_file.js` | над «Журнал работы» |
 | `Tournament_LeadersForAdmin.js` | в блоке журнала |
 | `UI_AutoTest_LinksCrawler.js` | под блоком «Лог в файл» |
@@ -53,13 +54,18 @@
 
 ```javascript
 var __nativeFetch = fetch.bind(window);
-var devTrace = createDevToolsTrace({ scriptId: "MyScript" });
+var devTrace = createDevToolsTrace({
+  scriptId: "MyScript",
+  sanitizeForTrace: sanitizeForTrace // опционально: маскирование ПДн в HTTP/LOG
+});
 var httpFetch = devTrace.wrapFetch(__nativeFetch);
 // await httpFetch(...) вместо fetch
 devTrace.log("строка журнала");
 devTrace.mountToggleRow(panel, nodeBeforeJournal);
 devTrace.attachPanel(panel);
 ```
+
+Опция `sanitizeForTrace(string) → string` применяется к сообщениям, detail и телам HTTP. Пример реализации масок — `Pulse_export_OE.js` / `News_Community_Export_v2.js`.
 
 Пересборка встроенной копии во все скрипты:  
 `node tools/inject_devtools_trace.js` (только если в файле ещё нет маркера `DevToolsTrace v1`).
@@ -69,3 +75,4 @@ devTrace.attachPanel(panel);
 | Версия | Дата | Изменения |
 |--------|------|-----------|
 | 1.0 | 2026-07-02 | Trace во всех Script/*.js |
+| 1.1 | 2026-08-04 | Опция `sanitizeForTrace`; News v2 — сквозной trace + маски ПДн |
