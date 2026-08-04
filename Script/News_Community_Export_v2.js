@@ -1984,7 +1984,9 @@
       fetchPagesInput.value = "3";
       fetchPagesInput.style.cssText = "padding:4px 6px;border:1px solid #94a3b8;border-radius:6px;width:90px;margin-right:8px;";
       fetchBox.appendChild(fetchPagesInput);
-      fetchBox.appendChild(document.createTextNode("макс. страниц на комбинацию"));
+      fetchBox.appendChild(
+        document.createTextNode(" страниц (если «Стр. по»=0 — сколько взять начиная со «Стр. с»)")
+      );
 
       var fileInput = document.createElement("input");
       fileInput.type = "file";
