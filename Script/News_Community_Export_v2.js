@@ -1505,9 +1505,10 @@
         } else {
           for (var fi = 0; fi < candidates.length; fi++) {
             var hay = [
-              ensureString(candidates[fi].sourceType || candidates[fi].type),
+              ensureString(candidates[fi].sourceNewsType || candidates[fi].sourceType || candidates[fi].type),
               ensureString(candidates[fi].summary),
-              ensureString(candidates[fi].sourceNewsId || candidates[fi].newsId)
+              ensureString(candidates[fi].sourceNewsId || candidates[fi].newsId),
+              ensureString(candidates[fi].codesDisplay)
             ]
               .join(" ")
               .toLowerCase();
@@ -3033,6 +3034,124 @@
         var abortedByErrors = false;
         var consecutiveExhaustedFails = 0;
         var newsTotal = 0;
+        var saveDone = false;
+
+        /** Сохранить только успешные страницы (ошибочные ответы не входят в rawPages). */
+        function finalizeExportSave(reason) {
+          if (saveDone) return;
+          newsTotal = flatRows.length;
+          if (!rawPages.length) {
+            setStats({
+              tone: abortedByErrors ? "done_err" : stoppedByUser ? "stop" : "done_err",
+              phase: abortedByErrors ? "ошибка (нет данных)" : stoppedByUser ? "стоп (нет данных)" : "нет данных",
+              retries: String(retriesTotal),
+              errors: String(errors)
+            });
+            log(
+              (reason ? reason + " " : "") +
+                "Выгрузка не завершена: нет успешных страниц. Повторов: " +
+                retriesTotal +
+                ", ошибок: " +
+                errors +
+                "."
+            );
+            return;
+          }
+          saveDone = true;
+          var isPartial = !!(stoppedByUser || abortedByErrors || errors > 0);
+          var bundle = {
+            exportMeta: {
+              stand: env.stand,
+              contour: env.contour,
+              origin: env.origin,
+              fetchedAt: nowIso(),
+              pagesFetched: rawPages.length,
+              combosTotal: combos.length,
+              combosOk: combosOk,
+              stoppedByUser: !!stoppedByUser,
+              abortedByErrors: !!abortedByErrors,
+              partial: isPartial,
+              finishReason: reason || (abortedByErrors ? "abortedByErrors" : stoppedByUser ? "stoppedByUser" : errors > 0 ? "completedWithErrors" : "ok"),
+              retryMax: retryMax,
+              retryPauseMs: retryPauseMs,
+              retriesTotal: retriesTotal,
+              errorsExhausted: errors,
+              abortLimit: abortLimit,
+              pageFrom: pageFrom,
+              pageTo: pageTo > 0 ? pageTo : null,
+              mode: sel.useTags ? "businessBlock+tags" : "businessBlock",
+              selection: {
+                newsStatuses: sel.newsStatuses,
+                businessBlocks: sel.businessBlocks,
+                newsTagList: sel.useTags ? sel.newsTagList : []
+              },
+              newsItemsFlat: newsTotal,
+              newsItemsMerged: mergedAll ? countNewsInBody(mergedAll.body) : 0
+            },
+            comboResults: comboResults,
+            pages: rawPages,
+            merged: mergedAll
+          };
+          var prefix = NEWS_V2_CFG.FILENAME_PREFIX_AUTO + env.stand + "_" + env.contour + "_";
+          var stamp = tsShort();
+          var suffix =
+            abortedByErrors || stoppedByUser ? "_partial" : "";
+          var fnameJson = prefix + stamp + suffix + ".json";
+          try {
+            downloadJson(fnameJson, bundle);
+            log(
+              (abortedByErrors
+                ? "Авария — JSON сохранён (только успешные страницы). "
+                : stoppedByUser
+                  ? "Остановлено — JSON сохранён (только успешные страницы). "
+                  : errors > 0
+                    ? "JSON сохранён с ошибками (ошибочные страницы пропущены). "
+                    : "JSON готов. ") +
+                "Страниц: " +
+                rawPages.length +
+                " | новостей: " +
+                newsTotal +
+                " | файл: " +
+                fnameJson
+            );
+          } catch (saveEx) {
+            log(
+              "Не удалось сохранить JSON: " +
+                (saveEx && saveEx.message ? saveEx.message : String(saveEx))
+            );
+          }
+          if (mode === "JSON+CSV") {
+            try {
+              var table = buildNewsFlatCsv(flatRows);
+              if (table.rows.length) {
+                var fnameCsv = prefix + stamp + suffix + "_news.csv";
+                downloadText(fnameCsv, "\uFEFF" + csvTableToText(table), "text/csv;charset=utf-8");
+                log("  CSV: " + fnameCsv + " | строк: " + table.rows.length);
+              } else {
+                log("  CSV не создан: нет строк новостей среди успешных страниц.");
+              }
+            } catch (csvEx) {
+              log(
+                "Не удалось сохранить CSV: " +
+                  (csvEx && csvEx.message ? csvEx.message : String(csvEx))
+              );
+            }
+          }
+          setStats({
+            tone: abortedByErrors || errors > 0 ? "done_err" : stoppedByUser ? "stop" : "done_ok",
+            phase: abortedByErrors
+              ? "ошибка — сохранено"
+              : stoppedByUser
+                ? "стоп — сохранено"
+                : errors > 0
+                  ? "готово с ошибками"
+                  : "готово",
+            progress: combosOk + " OK / " + combos.length,
+            news: String(newsTotal),
+            retries: String(retriesTotal),
+            errors: String(errors)
+          });
+        }
 
         try {
           for (var ci = 0; ci < combos.length; ci++) {
@@ -3094,8 +3213,17 @@
               });
               if (retryResult.stopped || isStopRequested()) { stoppedByUser = true; break; }
               if (!retryResult.ok) {
+                // Ошибочную страницу в rawPages не кладём.
                 errors++;
                 consecutiveExhaustedFails++;
+                log(
+                  "  ✗ pageNum=" +
+                    pageNum +
+                    " исчерпан | " +
+                    (retryResult.error || "ошибка") +
+                    " — страница пропущена, успешные уже собраны: " +
+                    rawPages.length
+                );
                 if (consecutiveExhaustedFails >= abortLimit) {
                   abortedByErrors = true;
                   setStats({ tone: "done_err", phase: "ошибка — стоп", errors: String(errors) });
@@ -3198,75 +3326,38 @@
             }
           }
 
-          if (!rawPages.length) {
-            setStats({
-              tone: abortedByErrors ? "done_err" : stoppedByUser ? "stop" : "done_err",
-              phase: abortedByErrors ? "ошибка (нет данных)" : stoppedByUser ? "стоп (нет данных)" : "нет данных",
-              retries: String(retriesTotal),
-              errors: String(errors)
-            });
-            log("Выгрузка не завершена: нет успешных страниц.");
-            return;
-          }
-
-          var bundle = {
-            exportMeta: {
-              stand: env.stand,
-              contour: env.contour,
-              origin: env.origin,
-              fetchedAt: nowIso(),
-              pagesFetched: rawPages.length,
-              combosTotal: combos.length,
-              combosOk: combosOk,
-              stoppedByUser: !!stoppedByUser,
-              abortedByErrors: !!abortedByErrors,
-              retryMax: retryMax,
-              retryPauseMs: retryPauseMs,
-              retriesTotal: retriesTotal,
-              errorsExhausted: errors,
-              abortLimit: abortLimit,
-              pageFrom: pageFrom,
-              pageTo: pageTo > 0 ? pageTo : null,
-              mode: sel.useTags ? "businessBlock+tags" : "businessBlock",
-              selection: {
-                newsStatuses: sel.newsStatuses,
-                businessBlocks: sel.businessBlocks,
-                newsTagList: sel.useTags ? sel.newsTagList : []
-              },
-              newsItemsFlat: newsTotal,
-              newsItemsMerged: mergedAll ? countNewsInBody(mergedAll.body) : 0
-            },
-            comboResults: comboResults,
-            pages: rawPages,
-            merged: mergedAll
-          };
-          var prefix = NEWS_V2_CFG.FILENAME_PREFIX_AUTO + env.stand + "_" + env.contour + "_";
-          var stamp = tsShort();
-          var fnameJson = prefix + stamp + ".json";
-          downloadJson(fnameJson, bundle);
-          log(
-            (abortedByErrors ? "Авария — JSON сохранён. " : stoppedByUser ? "Остановлено — JSON сохранён. " : errors > 0 ? "JSON сохранён с ошибками. " : "JSON готов. ") +
-              "Страниц: " + rawPages.length + " | новостей: " + newsTotal + " | файл: " + fnameJson
+          finalizeExportSave(
+            abortedByErrors
+              ? "Аварийная остановка."
+              : stoppedByUser
+                ? "Остановлено пользователем."
+                : null
           );
-          if (mode === "JSON+CSV") {
-            var table = buildNewsFlatCsv(flatRows);
-            if (table.rows.length) {
-              var fnameCsv = prefix + stamp + "_news.csv";
-              downloadText(fnameCsv, "\uFEFF" + csvTableToText(table), "text/csv;charset=utf-8");
-              log("  CSV: " + fnameCsv + " | строк: " + table.rows.length);
-            } else {
-              log("  CSV не создан: нет строк новостей.");
+        } catch (ex) {
+          log(
+            "Исключение выгрузки: " +
+              (ex && ex.message ? ex.message : String(ex)) +
+              " — пробуем сохранить уже успешные страницы (" +
+              rawPages.length +
+              ")."
+          );
+          abortedByErrors = true;
+          try {
+            finalizeExportSave("Исключение.");
+          } catch (saveEx2) {
+            log(
+              "Сохранение после исключения тоже не удалось: " +
+                (saveEx2 && saveEx2.message ? saveEx2.message : String(saveEx2))
+            );
+          }
+        } finally {
+          if (!saveDone && rawPages.length) {
+            try {
+              finalizeExportSave("Досохранение в finally.");
+            } catch (_e) {
+              /* ignore */
             }
           }
-          setStats({
-            tone: abortedByErrors || errors > 0 ? "done_err" : stoppedByUser ? "stop" : "done_ok",
-            phase: abortedByErrors ? "ошибка — сохранено" : stoppedByUser ? "стоп — сохранено" : errors > 0 ? "готово с ошибками" : "готово",
-            progress: combosOk + " OK / " + combos.length,
-            news: String(newsTotal),
-            retries: String(retriesTotal),
-            errors: String(errors)
-          });
-        } finally {
           setExportBusy(false);
         }
       }
