@@ -653,7 +653,10 @@
       content.innerHTML = "";
     }
 
-    function renderCandidatesTable(candidates, type) {
+    function renderCandidatesTable(candidates, type, opts) {
+      var options = opts || {};
+      var onSelectionChange =
+        typeof options.onSelectionChange === "function" ? options.onSelectionChange : function () {};
       var box = document.createElement("div");
       box.style.cssText = "border:1px solid #cbd5e1;border-radius:8px;overflow:hidden;background:#fff;";
       var head = document.createElement("div");
@@ -675,6 +678,7 @@
           ch.checked = item.selected !== false;
           ch.addEventListener("change", function () {
             item.selected = ch.checked;
+            onSelectionChange();
           });
           var cc = document.createElement("div");
           cc.appendChild(ch);
@@ -750,15 +754,76 @@
       wrap.appendChild(tableHost);
 
       var candidates = [];
+      var searchInput = document.createElement("input");
+      searchInput.type = "text";
+      searchInput.placeholder = "Поиск по типу / заголовку / ID";
+      searchInput.style.cssText = "width:100%;padding:8px;border:1px solid #94a3b8;border-radius:6px;font-size:12px;";
+      wrap.appendChild(searchInput);
+      var selectionInfo = document.createElement("div");
+      selectionInfo.style.cssText = "font-size:11px;color:#475569;";
+      wrap.appendChild(selectionInfo);
 
       function renderList() {
         tableHost.innerHTML = "";
-        if (!candidates.length) return;
-        tableHost.appendChild(renderCandidatesTable(candidates, "create"));
+        if (!candidates.length) {
+          selectionInfo.textContent = "Записей: 0";
+          return;
+        }
+        var q = String(searchInput.value || "").trim().toLowerCase();
+        var filtered = candidates.filter(function (item) {
+          if (!q) return true;
+          var hay = [
+            ensureString(item.sourceType || item.type),
+            ensureString(item.summary),
+            ensureString(item.sourceNewsId || item.newsId)
+          ]
+            .join(" ")
+            .toLowerCase();
+          return hay.indexOf(q) >= 0;
+        });
+        tableHost.appendChild(
+          renderCandidatesTable(filtered, "create", {
+            onSelectionChange: updateSelectionInfo
+          })
+        );
+        updateSelectionInfo(filtered.length);
+      }
+
+      function updateSelectionInfo(filteredCount) {
+        var selectedCount = candidates.filter(function (x) {
+          return x.selected !== false;
+        }).length;
+        var countForView = typeof filteredCount === "number" ? filteredCount : candidates.length;
+        selectionInfo.textContent =
+          "Записей: " +
+          candidates.length +
+          " | В фильтре: " +
+          countForView +
+          " | Выбрано: " +
+          selectedCount;
       }
 
       function setAllSelected(next) {
         for (var i = 0; i < candidates.length; i++) candidates[i].selected = !!next;
+        renderList();
+      }
+
+      function setFilteredSelected(next) {
+        var q = String(searchInput.value || "").trim().toLowerCase();
+        for (var i = 0; i < candidates.length; i++) {
+          if (!q) {
+            candidates[i].selected = !!next;
+            continue;
+          }
+          var hay = [
+            ensureString(candidates[i].sourceType || candidates[i].type),
+            ensureString(candidates[i].summary),
+            ensureString(candidates[i].sourceNewsId || candidates[i].newsId)
+          ]
+            .join(" ")
+            .toLowerCase();
+          if (hay.indexOf(q) >= 0) candidates[i].selected = !!next;
+        }
         renderList();
       }
 
@@ -801,8 +866,18 @@
         })
       );
       actions.appendChild(
+        mkBtn("Отметить в фильтре", function () {
+          setFilteredSelected(true);
+        })
+      );
+      actions.appendChild(
         mkBtn("Снять всё", function () {
           setAllSelected(false);
+        })
+      );
+      actions.appendChild(
+        mkBtn("Снять в фильтре", function () {
+          setFilteredSelected(false);
         })
       );
       actions.appendChild(
@@ -895,6 +970,7 @@
           await parseFromText(text);
         })();
       });
+      searchInput.addEventListener("input", renderList);
     }
 
     function renderStatusTab() {
@@ -943,14 +1019,74 @@
       wrap.appendChild(tableHost);
 
       var candidates = [];
+      var searchInput = document.createElement("input");
+      searchInput.type = "text";
+      searchInput.placeholder = "Поиск по типу / заголовку / ID";
+      searchInput.style.cssText = "width:100%;padding:8px;border:1px solid #94a3b8;border-radius:6px;font-size:12px;";
+      wrap.appendChild(searchInput);
+      var selectionInfo = document.createElement("div");
+      selectionInfo.style.cssText = "font-size:11px;color:#475569;";
+      wrap.appendChild(selectionInfo);
       function renderList() {
         tableHost.innerHTML = "";
-        if (!candidates.length) return;
-        tableHost.appendChild(renderCandidatesTable(candidates, "status"));
+        if (!candidates.length) {
+          selectionInfo.textContent = "Записей: 0";
+          return;
+        }
+        var q = String(searchInput.value || "").trim().toLowerCase();
+        var filtered = candidates.filter(function (item) {
+          if (!q) return true;
+          var hay = [
+            ensureString(item.type),
+            ensureString(item.summary),
+            ensureString(item.newsId)
+          ]
+            .join(" ")
+            .toLowerCase();
+          return hay.indexOf(q) >= 0;
+        });
+        tableHost.appendChild(
+          renderCandidatesTable(filtered, "status", {
+            onSelectionChange: updateSelectionInfo
+          })
+        );
+        updateSelectionInfo(filtered.length);
+      }
+
+      function updateSelectionInfo(filteredCount) {
+        var selectedCount = candidates.filter(function (x) {
+          return x.selected !== false;
+        }).length;
+        var countForView = typeof filteredCount === "number" ? filteredCount : candidates.length;
+        selectionInfo.textContent =
+          "Записей: " +
+          candidates.length +
+          " | В фильтре: " +
+          countForView +
+          " | Выбрано: " +
+          selectedCount;
       }
 
       function setAllSelected(next) {
         for (var i = 0; i < candidates.length; i++) candidates[i].selected = !!next;
+        renderList();
+      }
+      function setFilteredSelected(next) {
+        var q = String(searchInput.value || "").trim().toLowerCase();
+        for (var i = 0; i < candidates.length; i++) {
+          if (!q) {
+            candidates[i].selected = !!next;
+            continue;
+          }
+          var hay = [
+            ensureString(candidates[i].type),
+            ensureString(candidates[i].summary),
+            ensureString(candidates[i].newsId)
+          ]
+            .join(" ")
+            .toLowerCase();
+          if (hay.indexOf(q) >= 0) candidates[i].selected = !!next;
+        }
         renderList();
       }
 
@@ -986,7 +1122,9 @@
         })
       );
       actions.appendChild(mkBtn("Отметить всё", function () { setAllSelected(true); }));
+      actions.appendChild(mkBtn("Отметить в фильтре", function () { setFilteredSelected(true); }));
       actions.appendChild(mkBtn("Снять всё", function () { setAllSelected(false); }));
+      actions.appendChild(mkBtn("Снять в фильтре", function () { setFilteredSelected(false); }));
       actions.appendChild(
         mkBtn(
           "Применить статус",
@@ -1054,6 +1192,7 @@
           parseFromJsonText(text);
         })();
       });
+      searchInput.addEventListener("input", renderList);
     }
 
     function renderEditTab() {
@@ -1143,10 +1282,76 @@
       wrap.appendChild(tableHost);
 
       var candidates = [];
+      var searchInput = document.createElement("input");
+      searchInput.type = "text";
+      searchInput.placeholder = "Поиск по типу / заголовку / ID";
+      searchInput.style.cssText = "width:100%;padding:8px;border:1px solid #94a3b8;border-radius:6px;font-size:12px;";
+      wrap.appendChild(searchInput);
+      var selectionInfo = document.createElement("div");
+      selectionInfo.style.cssText = "font-size:11px;color:#475569;";
+      wrap.appendChild(selectionInfo);
       function renderList() {
         tableHost.innerHTML = "";
-        if (!candidates.length) return;
-        tableHost.appendChild(renderCandidatesTable(candidates, "create"));
+        if (!candidates.length) {
+          selectionInfo.textContent = "Записей: 0";
+          return;
+        }
+        var q = String(searchInput.value || "").trim().toLowerCase();
+        var filtered = candidates.filter(function (item) {
+          if (!q) return true;
+          var hay = [
+            ensureString(item.sourceType || item.type),
+            ensureString(item.summary),
+            ensureString(item.sourceNewsId || item.newsId)
+          ]
+            .join(" ")
+            .toLowerCase();
+          return hay.indexOf(q) >= 0;
+        });
+        tableHost.appendChild(
+          renderCandidatesTable(filtered, "create", {
+            onSelectionChange: updateSelectionInfo
+          })
+        );
+        updateSelectionInfo(filtered.length);
+      }
+
+      function updateSelectionInfo(filteredCount) {
+        var selectedCount = candidates.filter(function (x) {
+          return x.selected !== false;
+        }).length;
+        var countForView = typeof filteredCount === "number" ? filteredCount : candidates.length;
+        selectionInfo.textContent =
+          "Записей: " +
+          candidates.length +
+          " | В фильтре: " +
+          countForView +
+          " | Выбрано: " +
+          selectedCount;
+      }
+
+      function setAllSelected(next) {
+        for (var i = 0; i < candidates.length; i++) candidates[i].selected = !!next;
+        renderList();
+      }
+
+      function setFilteredSelected(next) {
+        var q = String(searchInput.value || "").trim().toLowerCase();
+        for (var i = 0; i < candidates.length; i++) {
+          if (!q) {
+            candidates[i].selected = !!next;
+            continue;
+          }
+          var hay = [
+            ensureString(candidates[i].sourceType || candidates[i].type),
+            ensureString(candidates[i].summary),
+            ensureString(candidates[i].sourceNewsId || candidates[i].newsId)
+          ]
+            .join(" ")
+            .toLowerCase();
+          if (hay.indexOf(q) >= 0) candidates[i].selected = !!next;
+        }
+        renderList();
       }
 
       function parseUpdateJson(text) {
@@ -1256,6 +1461,26 @@
         })
       );
       actions.appendChild(
+        mkBtn("Отметить всё", function () {
+          setAllSelected(true);
+        })
+      );
+      actions.appendChild(
+        mkBtn("Отметить в фильтре", function () {
+          setFilteredSelected(true);
+        })
+      );
+      actions.appendChild(
+        mkBtn("Снять всё", function () {
+          setAllSelected(false);
+        })
+      );
+      actions.appendChild(
+        mkBtn("Снять в фильтре", function () {
+          setFilteredSelected(false);
+        })
+      );
+      actions.appendChild(
         mkBtn(
           "Применить редактирование",
           function () {
@@ -1324,6 +1549,7 @@
           parseUpdateJson(text);
         })();
       });
+      searchInput.addEventListener("input", renderList);
     }
 
     function renderExportTab() {
