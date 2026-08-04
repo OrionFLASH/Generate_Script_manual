@@ -339,12 +339,82 @@
     return out;
   }
 
-  function compactNewsLabel(meta) {
+  function compactNewsLabel(meta, maxLen) {
+    var max = Number(maxLen);
+    if (!Number.isFinite(max) || max < 1) max = 50;
     var summary = ensureString(meta && meta.summary).trim();
-    if (summary) return summary.slice(0, 100);
+    if (summary) return summary.slice(0, max);
     var text = ensureString(meta && (meta.newsText || meta.description)).trim();
-    if (text) return text.slice(0, 100);
+    if (text) return text.slice(0, max);
     return "без заголовка";
+  }
+
+  /** Уникальные коды из списка объектов/строк по ключу (rewardCode / tournamentCode). */
+  function extractUniqueCodes(list, key) {
+    if (!Array.isArray(list)) return [];
+    var out = [];
+    var seen = {};
+    for (var i = 0; i < list.length; i++) {
+      var item = list[i];
+      var raw =
+        item && typeof item === "object"
+          ? String(item[key] != null ? item[key] : "").trim()
+          : String(item == null ? "" : item).trim();
+      if (!raw || seen[raw]) continue;
+      seen[raw] = true;
+      out.push(raw);
+    }
+    return out;
+  }
+
+  /**
+   * Коды для колонки выбора: по newsType.
+   * individualAchievement / achievement → rewardCode;
+   * tournamentAchievement → tournamentCode;
+   * иначе — reward, иначе tournament; пусто → «—».
+   */
+  function formatLinkedCodesDisplay(newsType, payload) {
+    var p = payload || {};
+    var t = String(newsType || p.type || "").trim();
+    var lower = t.toLowerCase();
+    var rewards = extractUniqueCodes(p.rewardList, "rewardCode");
+    var tournaments = extractUniqueCodes(p.tournamentList, "tournamentCode");
+    var codes = [];
+    if (
+      lower === "tournamentachievement" ||
+      lower === "tournamentacievement" ||
+      lower.indexOf("tournament") >= 0
+    ) {
+      codes = tournaments;
+    } else if (
+      lower === "individualachievement" ||
+      lower === "achievement" ||
+      lower.indexOf("individual") >= 0
+    ) {
+      codes = rewards;
+    } else if (rewards.length) {
+      codes = rewards;
+    } else {
+      codes = tournaments;
+    }
+    if (!codes.length) return "—";
+    return codes.join("\n");
+  }
+
+  function buildCreateCandidateView(row, payload) {
+    var rawType = ensureString((row && (row.newsType || row.type)) || (payload && payload.type) || "");
+    return {
+      selected: true,
+      sourceNewsId: ensureString((row && (row.newsId || row.objectId)) || ""),
+      sourceNewsType: rawType || ensureString(payload && payload.type),
+      sourceType: normalizeType((row && (row.newsType || row.type)) || (payload && payload.type)),
+      summary: compactNewsLabel(row || payload, 50),
+      tagsCount: Array.isArray(payload && payload.tagList) ? payload.tagList.length : 0,
+      codesDisplay: formatLinkedCodesDisplay(rawType || (payload && payload.type), payload),
+      authorsCount: Array.isArray(payload && payload.authorsList) ? payload.authorsList.length : 0,
+      leadersCount: Array.isArray(payload && payload.leadersList) ? payload.leadersList.length : 0,
+      payload: payload
+    };
   }
 
   /**
@@ -433,15 +503,7 @@
     for (var i = 0; i < rows.length; i++) {
       var row = rows[i];
       var payload = buildCreatePayloadFromSourceItem(row, defaultCreatedBy, batchStartIso, options);
-      candidates.push({
-        selected: true,
-        sourceNewsId: ensureString(row.newsId || row.objectId || ""),
-        sourceType: normalizeType(row.newsType || row.type),
-        summary: compactNewsLabel(row),
-        authorsCount: Array.isArray(payload.authorsList) ? payload.authorsList.length : 0,
-        leadersCount: Array.isArray(payload.leadersList) ? payload.leadersList.length : 0,
-        payload: payload
-      });
+      candidates.push(buildCreateCandidateView(row, payload));
     }
     return candidates;
   }
@@ -857,11 +919,24 @@
           return r && r.rewardCode ? { rewardCode: String(r.rewardCode) } : null;
         })
         .filter(Boolean),
-      tournamentList: (source.tournamentList || [])
-        .map(function (t) {
-          return t && t.tournamentCode ? { tournamentCode: String(t.tournamentCode) } : null;
-        })
-        .filter(Boolean),
+      tournamentList: (function () {
+        var list = (source.tournamentList || [])
+          .map(function (t) {
+            return t && t.tournamentCode ? { tournamentCode: String(t.tournamentCode) } : null;
+          })
+          .filter(Boolean);
+        if (list.length) return list;
+        var fromContests = [];
+        var contests = Array.isArray(source.contests) ? source.contests : [];
+        for (var ci = 0; ci < contests.length; ci++) {
+          var tournaments = contests[ci] && Array.isArray(contests[ci].tournaments) ? contests[ci].tournaments : [];
+          for (var ti = 0; ti < tournaments.length; ti++) {
+            var code = String((tournaments[ti] && tournaments[ti].tournamentCode) || "").trim();
+            if (code) fromContests.push({ tournamentCode: code });
+          }
+        }
+        return fromContests;
+      })(),
       imageList: Array.isArray(source.imageList) ? source.imageList.slice() : [],
       newsFeature: normalizeNewsFeature(source.newsFeature, source.businessBlocks || []),
       type: normalizeType(source.type || source.newsType),
@@ -1210,11 +1285,21 @@
       var options = opts || {};
       var onSelectionChange =
         typeof options.onSelectionChange === "function" ? options.onSelectionChange : function () {};
+      var isCreateLike = type === "create" || type === "edit";
       var box = document.createElement("div");
       box.style.cssText = "border:1px solid #cbd5e1;border-radius:8px;overflow:hidden;background:#fff;";
       var head = document.createElement("div");
-      head.style.cssText = "display:grid;grid-template-columns:26px 120px 1fr 90px 90px 170px;gap:8px;padding:6px 8px;font-size:11px;font-weight:700;background:#f1f5f9;border-bottom:1px solid #e2e8f0;";
-      ["✓", "Тип", "Заголовок", "Авторов", "Лидеров", "ID новости"].forEach(function (h) {
+      var gridCols = isCreateLike
+        ? "26px 118px minmax(70px,0.9fr) 40px minmax(110px,1.1fr) 40px 40px 120px"
+        : "26px 120px 1fr 90px 90px 170px";
+      head.style.cssText =
+        "display:grid;grid-template-columns:" +
+        gridCols +
+        ";gap:6px;padding:6px 8px;font-size:11px;font-weight:700;background:#f1f5f9;border-bottom:1px solid #e2e8f0;";
+      var headers = isCreateLike
+        ? ["✓", "NewsType", "Заголовок", "Теги", "Коды", "Авт.", "Лид.", "ID"]
+        : ["✓", "Тип", "Заголовок", "Авторов", "Лидеров", "ID новости"];
+      headers.forEach(function (h) {
         var c = document.createElement("div");
         c.textContent = h;
         head.appendChild(c);
@@ -1225,7 +1310,10 @@
         (function () {
           var item = candidates[i];
           var row = document.createElement("div");
-          row.style.cssText = "display:grid;grid-template-columns:26px 120px 1fr 90px 90px 170px;gap:8px;padding:6px 8px;font-size:11px;border-bottom:1px solid #f1f5f9;align-items:center;";
+          row.style.cssText =
+            "display:grid;grid-template-columns:" +
+            gridCols +
+            ";gap:6px;padding:6px 8px;font-size:11px;border-bottom:1px solid #f1f5f9;align-items:start;";
           var ch = document.createElement("input");
           ch.type = "checkbox";
           ch.checked = item.selected !== false;
@@ -1236,17 +1324,49 @@
           var cc = document.createElement("div");
           cc.appendChild(ch);
           row.appendChild(cc);
-          function addCell(text) {
+          function addCell(text, multiline) {
             var cell = document.createElement("div");
-            cell.style.cssText = "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+            cell.style.cssText = multiline
+              ? "white-space:pre-line;word-break:break-word;line-height:1.35;"
+              : "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
             cell.textContent = ensureString(text);
             row.appendChild(cell);
           }
-          addCell(item.sourceType || item.type || "");
-          addCell(item.summary || "");
-          addCell(item.authorsCount != null ? item.authorsCount : "");
-          addCell(item.leadersCount != null ? item.leadersCount : "");
-          addCell(item.sourceNewsId || item.newsId || "");
+          if (isCreateLike) {
+            var payload = item.payload || {};
+            var newsType =
+              item.sourceNewsType ||
+              item.sourceType ||
+              item.type ||
+              payload.type ||
+              "";
+            var tagsCount =
+              item.tagsCount != null
+                ? item.tagsCount
+                : Array.isArray(payload.tagList)
+                  ? payload.tagList.length
+                  : 0;
+            var codesText =
+              item.codesDisplay ||
+              formatLinkedCodesDisplay(newsType, payload);
+            var title = compactNewsLabel(
+              { summary: item.summary, newsText: payload.description || payload.newsText },
+              50
+            );
+            addCell(newsType);
+            addCell(title);
+            addCell(String(tagsCount));
+            addCell(codesText, true);
+            addCell(item.authorsCount != null ? item.authorsCount : "");
+            addCell(item.leadersCount != null ? item.leadersCount : "");
+            addCell(item.sourceNewsId || item.newsId || "");
+          } else {
+            addCell(item.sourceType || item.type || "");
+            addCell(item.summary || "");
+            addCell(item.authorsCount != null ? item.authorsCount : "");
+            addCell(item.leadersCount != null ? item.leadersCount : "");
+            addCell(item.sourceNewsId || item.newsId || "");
+          }
           box.appendChild(row);
         })();
       }
@@ -1447,9 +1567,10 @@
         var filtered = candidates.filter(function (item) {
           if (!q) return true;
           var hay = [
-            ensureString(item.sourceType || item.type),
+            ensureString(item.sourceNewsType || item.sourceType || item.type),
             ensureString(item.summary),
-            ensureString(item.sourceNewsId || item.newsId)
+            ensureString(item.sourceNewsId || item.newsId),
+            ensureString(item.codesDisplay)
           ]
             .join(" ")
             .toLowerCase();
@@ -1500,9 +1621,10 @@
             continue;
           }
           var hay = [
-            ensureString(candidates[i].sourceType || candidates[i].type),
+            ensureString(candidates[i].sourceNewsType || candidates[i].sourceType || candidates[i].type),
             ensureString(candidates[i].summary),
-            ensureString(candidates[i].sourceNewsId || candidates[i].newsId)
+            ensureString(candidates[i].sourceNewsId || candidates[i].newsId),
+            ensureString(candidates[i].codesDisplay)
           ]
             .join(" ")
             .toLowerCase();
@@ -2235,15 +2357,9 @@
         candidates = rows.map(function (row) {
           var payload = Object.assign({}, row || {});
           payload.method = "put";
-          return {
-            selected: true,
-            sourceNewsId: ensureString(payload.newsId || ""),
-            sourceType: normalizeType(payload.type || payload.newsType),
-            summary: compactNewsLabel(payload),
-            authorsCount: Array.isArray(payload.authorsList) ? payload.authorsList.length : 0,
-            leadersCount: Array.isArray(payload.leadersList) ? payload.leadersList.length : 0,
-            payload: payload
-          };
+          var view = buildCreateCandidateView(row, payload);
+          view.payload = payload;
+          return view;
         });
         renderList();
         log("Загружено payload для редактирования: " + candidates.length);
@@ -2403,15 +2519,9 @@
                 })
                 .map(function (row) {
                   var payload = buildUpdatePayloadFromNewsItem(row);
-                  return {
-                    selected: true,
-                    sourceNewsId: ensureString(payload.newsId || ""),
-                    sourceType: normalizeType(payload.type || payload.newsType),
-                    summary: compactNewsLabel(row),
-                    authorsCount: Array.isArray(payload.authorsList) ? payload.authorsList.length : 0,
-                    leadersCount: Array.isArray(payload.leadersList) ? payload.leadersList.length : 0,
-                    payload: payload
-                  };
+                  var view = buildCreateCandidateView(row, payload);
+                  view.payload = payload;
+                  return view;
                 });
               renderList();
               log(
