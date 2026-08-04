@@ -334,11 +334,7 @@
     if (!payload.type || NEWS_V2_CFG.NEWS_TYPES.indexOf(payload.type) < 0) {
       return "некорректный type";
     }
-    if (!String(payload.description || "").trim()) return "пустой description";
     if (!String(payload.createdBy || "").trim()) return "пустой createdBy";
-    if (!Array.isArray(payload.leadersList) || payload.leadersList.length === 0) {
-      return "leadersList пуст";
-    }
     return "";
   }
 
@@ -1496,8 +1492,6 @@
               for (var i = 0; i < selected.length; i++) {
                 var p = selected[i].payload;
                 if (!String(p.newsId || "").trim()) errs.push("[" + (i + 1) + "] пустой newsId");
-                if (!String(p.type || "").trim()) errs.push("[" + (i + 1) + "] пустой type");
-                if (!String(p.description || "").trim()) errs.push("[" + (i + 1) + "] пустой description");
               }
               if (errs.length) {
                 log("Отмена редактирования: ошибки в критичных данных.");
