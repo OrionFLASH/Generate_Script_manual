@@ -384,6 +384,14 @@
   - `[v]` При включении — payload с пустыми `leadersList` / `authorsList`.
   - `[v]` Документация режима в `Docs/Скрипт_новости_community_News_Community_Export_v2.md`.
 
+### 6.7 Паритет выгрузки + разбор многостраничного JSON
+
+- `[v]` Вкладка «Выгрузка» в `News_Community_Export_v2.js` как в исходном `News_Community_Export.js`:
+  - `[v]` Статистика/цвета фаз, Стоп, JSON и JSON+CSV, паузы/ретраи/макс. страниц.
+  - `[v]` Корректный merge всех страниц в `comboResults[].merged` и `pages[]`.
+- `[v]` Разбор файла для создания/статусов: все `pages` / все `body.timePeriod[].news`, не только первая страница.
+- `[v]` В списке выбора: если `summary` пустой — первые 100 символов `newsText`/`description`.
+
 ---
 
 ## 7. `Script/UI_AutoTest.js`

@@ -24,13 +24,17 @@
 
 ## Вкладка «Выгрузка (старый блок)»
 
-Реализована встроенная выгрузка новостей, чтобы новый скрипт оставался обновлением старого сценария:
+Выгрузка приведена к паритету с исходным `News_Community_Export.js`:
 
-- выбор `status` (множественно);
-- выбор `businessBlock` (множественно);
-- опциональный выбор `newsTagList` (`NEWS_TYPE`);
-- пагинация по страницам с лимитом `макс. страниц` (0 = все);
-- сохранение JSON-выгрузки с `exportMeta`, `comboResults`, `pages`, `errors`.
+- кнопки **⬇ JSON**, **▦ JSON+CSV**, **⏹ Стоп**;
+- цветной блок **Статистика** (фаза / status / block / теги / стр. / прогресс / собрано / newsCount / повторов / ошибок);
+- компактный выбор status / businessBlock / тегов (+ custom TEXT);
+- паузы payload/страниц, макс. страниц, пауза повтора, число попыток;
+- пагинация с ретраями и аварийным стопом после двух подряд исчерпанных попыток;
+- корректный **merge всех страниц** в `comboResults[].merged` + полный массив `pages[]`;
+- CSV: одна строка на новость, разделитель `;`.
+
+Интерфейс вкладки повторяет цветовую схему исходного скрипта (градиентный фон панели, тона статистики idle/run/retry/done/stop).
 
 ## Вкладка «Создание»
 
@@ -44,25 +48,17 @@
 }
 ```
 
-2. **Формат выгрузки из `News_Community_Export.js`**:
-   - `comboResults[].merged.body.timePeriod[].news`
-   - или `merged.body.timePeriod[].news`
+2. **Формат выгрузки** (`News_Community_Export.js` / v2):
+   - `pages[].body.timePeriod[].news` — **все страницы**;
+   - `comboResults[].merged.body.timePeriod[].news`;
+   - `comboResults[].pages[].body...` (если есть);
+   - `merged.body.timePeriod[].news`.
 
-Для каждого кандидата строится payload создания:
+Разбор идёт по всем `body`/`pages`, не только по первой странице. Дедупликация по `newsId`.
 
-- `type`: `achievement` / `bestPractice` / `publication`  
-  (`individualAchievement` нормализуется в `achievement`)
-- `description`, `summary`, `authorsList`, `leadersList`, `tagList`
-- `rewardList`, `tournamentList` (включая извлечение `tournamentCode` из `contests`)
-- `tbCodeList`, `gosbCodeList`
-- `createdBy`, `plannedDt`, `createDt`, `status: "draft"`
+В компактном списке выбора:
 
-Перед отправкой:
-
-- список показывается с чекбоксами (**по умолчанию всё выбрано**);
-- есть явная кнопка **«Выбрать файл JSON»**;
-- выполняется валидация критичных полей;
-- при ошибках операция отменяется без выполнения запросов.
+- если `summary` пустой — показываются **первые 100 символов** `newsText` (или `description`).
 
 Минимальные критичные поля для создания:
 
