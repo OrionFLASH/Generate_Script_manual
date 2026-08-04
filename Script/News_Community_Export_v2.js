@@ -200,7 +200,9 @@
     });
   }
 
-  function buildCreatePayloadFromSourceItem(item, defaultCreatedBy, batchStartIso) {
+  function buildCreatePayloadFromSourceItem(item, defaultCreatedBy, batchStartIso, options) {
+    var opts = options || {};
+    var ignoreLeadersAuthors = !!opts.ignoreLeadersAuthors;
     var source = item || {};
     var type = normalizeType(source.type || source.newsType);
     var leadersSource = source.leadersList || source.leaders || [];
@@ -251,6 +253,9 @@
       }
     }
 
+    var authorsList = ignoreLeadersAuthors ? [] : mapEmployeesList(authorsSource);
+    var leadersList = ignoreLeadersAuthors ? [] : mapEmployeesList(leadersSource);
+
     var payload = {
       bankLevel: source.bankLevel !== false,
       rewardList: rewardList,
@@ -259,13 +264,13 @@
       type: type,
       description: ensureString(source.description || source.newsText),
       summary: type === "achievement" ? "" : ensureString(source.summary),
-      authorsList: mapEmployeesList(authorsSource),
+      authorsList: authorsList,
       tagList: toTagList(tagsSource),
       tbCodeList: parseMaybeJsonArray(source.tbCodeList != null ? source.tbCodeList : source.tbCode),
       gosbCodeList: parseMaybeJsonArray(
         source.gosbCodeList != null ? source.gosbCodeList : source.gosbCode
       ),
-      leadersList: mapEmployeesList(leadersSource),
+      leadersList: leadersList,
       createdBy: createdBy,
       plannedDt: nowIso(),
       status: "draft",
@@ -275,6 +280,22 @@
     return payload;
   }
 
+  /**
+   * Режим «болванка»: принудительно очищает leaders/authors в кандидатах создания.
+   * @param {object[]} list
+   * @param {boolean} enabled
+   */
+  function applyCreateStubModeToCandidates(list, enabled) {
+    if (!enabled || !Array.isArray(list)) return;
+    for (var i = 0; i < list.length; i++) {
+      if (!list[i] || !list[i].payload) continue;
+      list[i].payload.authorsList = [];
+      list[i].payload.leadersList = [];
+      list[i].authorsCount = 0;
+      list[i].leadersCount = 0;
+    }
+  }
+
   function compactNewsLabel(meta) {
     var summary = ensureString(meta.summary).trim();
     if (summary) return summary.slice(0, 70);
@@ -282,7 +303,7 @@
     return description ? description.slice(0, 70) : "без заголовка";
   }
 
-  function extractCreateCandidatesFromAnyJson(inputJson, defaultCreatedBy, batchStartIso) {
+  function extractCreateCandidatesFromAnyJson(inputJson, defaultCreatedBy, batchStartIso, options) {
     var source = inputJson;
     var rows = [];
     if (Array.isArray(source)) {
@@ -315,7 +336,7 @@
     var candidates = [];
     for (var i = 0; i < rows.length; i++) {
       var row = rows[i];
-      var payload = buildCreatePayloadFromSourceItem(row, defaultCreatedBy, batchStartIso);
+      var payload = buildCreatePayloadFromSourceItem(row, defaultCreatedBy, batchStartIso, options);
       candidates.push({
         selected: true,
         sourceNewsId: ensureString(row.newsId || row.objectId || ""),
@@ -725,6 +746,19 @@
       createdByInput.style.cssText = "padding:6px 8px;border:1px solid #94a3b8;border-radius:6px;width:220px;";
       top.appendChild(createdByInput);
 
+      var stubModeLabel = document.createElement("label");
+      stubModeLabel.style.cssText =
+        "display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:5px 8px;" +
+        "border:1px solid #cbd5e1;border-radius:6px;background:#fff;cursor:pointer;";
+      stubModeLabel.title =
+        "Создавать болванки: leadersList и authorsList всегда пустые, даже если заполнены в файле";
+      var stubModeCb = document.createElement("input");
+      stubModeCb.type = "checkbox";
+      stubModeCb.checked = false;
+      stubModeLabel.appendChild(stubModeCb);
+      stubModeLabel.appendChild(document.createTextNode("Болванка: без leaders и authors"));
+      top.appendChild(stubModeLabel);
+
       var fileInput = document.createElement("input");
       fileInput.type = "file";
       fileInput.accept = ".json,application/json";
@@ -840,19 +874,46 @@
         }
         var batchStartIso = nowIso();
         var createdByValue = String(createdByInput.value || "").trim() || NEWS_V2_CFG.DEFAULT_CREATED_BY;
+        var stubMode = !!stubModeCb.checked;
         candidates = extractCreateCandidatesFromAnyJson(
           parsed.value,
           createdByValue,
-          batchStartIso
+          batchStartIso,
+          { ignoreLeadersAuthors: stubMode }
         );
         for (var ci = 0; ci < candidates.length; ci++) {
           if (!String(candidates[ci].payload.createdBy || "").trim()) {
             candidates[ci].payload.createdBy = createdByValue;
           }
         }
+        applyCreateStubModeToCandidates(candidates, stubMode);
         renderList();
-        log("Загружено записей для создания: " + candidates.length);
+        log(
+          "Загружено записей для создания: " +
+            candidates.length +
+            (stubMode ? " | режим болванки: без leaders/authors" : "")
+        );
       }
+
+      stubModeCb.addEventListener("change", function () {
+        if (!candidates.length) {
+          log(
+            stubModeCb.checked
+              ? "Режим болванки включён: при загрузке/создании leaders и authors будут пустыми."
+              : "Режим болванки выключен."
+          );
+          return;
+        }
+        if (stubModeCb.checked) {
+          applyCreateStubModeToCandidates(candidates, true);
+          renderList();
+          log("Режим болванки: leaders/authors очищены у загруженных записей.");
+        } else {
+          log(
+            "Режим болванки выключен. Перезагрузите JSON, чтобы восстановить leaders/authors из файла."
+          );
+        }
+      });
 
       actions.appendChild(
         mkBtn("Шаблон JSON", function () {
@@ -905,6 +966,8 @@
 
               var errors = [];
               var createdByValue = String(createdByInput.value || "").trim() || NEWS_V2_CFG.DEFAULT_CREATED_BY;
+              var stubMode = !!stubModeCb.checked;
+              applyCreateStubModeToCandidates(selected, stubMode);
               for (var i = 0; i < selected.length; i++) {
                 if (!String(selected[i].payload.createdBy || "").trim()) {
                   selected[i].payload.createdBy = createdByValue;
@@ -920,7 +983,12 @@
                 return;
               }
 
-              if (!window.confirm("Создать выбранные новости: " + selected.length + " шт.?")) {
+              var confirmText =
+                "Создать выбранные новости: " +
+                selected.length +
+                " шт.?" +
+                (stubMode ? "\n\nРежим болванки: leadersList и authorsList будут пустыми." : "");
+              if (!window.confirm(confirmText)) {
                 log("Создание отменено пользователем.");
                 return;
               }
@@ -931,6 +999,10 @@
               var resultDump = [];
               for (var si = 0; si < selected.length; si++) {
                 var payload = selected[si].payload;
+                if (stubMode) {
+                  payload.authorsList = [];
+                  payload.leadersList = [];
+                }
                 var res = await postJson(
                   env.origin + NEWS_V2_CFG.NEWS_CREATE_PATH,
                   payload,
@@ -959,13 +1031,21 @@
                 "news_create_result_" + env.stand + "_" + env.contour + "_" + tsShort() + ".json",
                 {
                   env: env,
+                  stubMode: stubMode,
                   total: selected.length,
                   okCount: okCount,
                   failCount: failCount,
                   results: resultDump
                 }
               );
-              log("Создание завершено. OK=" + okCount + ", FAIL=" + failCount + ".");
+              log(
+                "Создание завершено. OK=" +
+                  okCount +
+                  ", FAIL=" +
+                  failCount +
+                  (stubMode ? " | болванка без leaders/authors" : "") +
+                  "."
+              );
             })();
           },
           "background:#16a34a;color:#fff;border-color:#16a34a;"
