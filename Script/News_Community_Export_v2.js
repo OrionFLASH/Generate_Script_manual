@@ -672,7 +672,8 @@
     setTimeout(function () { URL.revokeObjectURL(a.href); }, 0);
   }
 
-  function getNewsResponseError(fr) {
+  function getNewsResponseError(fr, opts) {
+    var o = opts || {};
     if (!fr) return "нет ответа";
     if (!fr.ok) return "HTTP " + String(fr.status != null ? fr.status : "?");
     var data = fr.data;
@@ -683,7 +684,10 @@
       else if (data.error != null) apiTxt = String(data.error).trim();
       return "API success=false" + (apiTxt ? ": " + apiTxt : "");
     }
-    if (data.success === true && data.body == null) return "JSON: success=true, но body отсутствует";
+    // Для list/create body обычно нужен; для patch/put статуса body может отсутствовать.
+    if (o.requireBody !== false && data.success === true && data.body == null) {
+      return "JSON: success=true, но body отсутствует";
+    }
     return null;
   }
 
@@ -712,6 +716,50 @@
       logFn("  ошибка (попытка " + attempt + "/" + maxAttempts + "): " + lastErr);
       if (attempt < maxAttempts) {
         if (shouldStop()) return { ok: false, stopped: true, fr: lastFr, error: lastErr, attempts: attempt, retries: retriesDone };
+        if (pauseMs > 0) await delay(pauseMs);
+      }
+    }
+    return { ok: false, fr: lastFr, error: lastErr, attempts: maxAttempts, retries: retriesDone };
+  }
+
+  async function postJsonWithRetry(url, payload, refererUrl, hooks) {
+    var h = hooks || {};
+    var logFn = typeof h.log === "function" ? h.log : function () {};
+    var onAttempt = typeof h.onAttempt === "function" ? h.onAttempt : null;
+    var shouldStop = typeof h.shouldStop === "function" ? h.shouldStop : function () { return false; };
+    var successCheck = typeof h.successCheck === "function" ? h.successCheck : null;
+    // По умолчанию для mutate-запросов body не обязателен (status/edit).
+    var requireBody = h.requireBody === true;
+    var maxAttempts = Math.max(1, Number(h.retryMax != null ? h.retryMax : NEWS_V2_CFG.RETRY_MAX) || 2);
+    var pauseMs = Math.max(0, Number(h.retryPauseMs != null ? h.retryPauseMs : NEWS_V2_CFG.RETRY_PAUSE_MS) || 2000);
+    var lastFr = null;
+    var lastErr = null;
+    var retriesDone = 0;
+    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (shouldStop()) {
+        return { ok: false, stopped: true, fr: lastFr, error: lastErr || "стоп", attempts: attempt - 1, retries: retriesDone };
+      }
+      if (attempt > 1) retriesDone++;
+      try {
+        lastFr = await postJson(url, payload, refererUrl);
+        lastErr = getNewsResponseError(lastFr, { requireBody: requireBody });
+        if (!lastErr && successCheck) {
+          var customErr = successCheck(lastFr);
+          if (customErr) lastErr = customErr;
+        }
+      } catch (ex) {
+        lastFr = { ok: false, status: 0, data: null };
+        lastErr = "исключение: " + (ex && ex.message ? ex.message : String(ex));
+      }
+      if (onAttempt) onAttempt(attempt, maxAttempts, lastErr, { isRetry: attempt > 1 });
+      if (!lastErr) {
+        return { ok: true, fr: lastFr, error: null, attempts: attempt, retries: retriesDone };
+      }
+      logFn("  ошибка (попытка " + attempt + "/" + maxAttempts + "): " + lastErr);
+      if (attempt < maxAttempts) {
+        if (shouldStop()) {
+          return { ok: false, stopped: true, fr: lastFr, error: lastErr, attempts: attempt, retries: retriesDone };
+        }
         if (pauseMs > 0) await delay(pauseMs);
       }
     }
@@ -879,6 +927,118 @@
     envRow.appendChild(contourSel);
     envRow.appendChild(envInfo);
     refreshEnvInfo();
+
+    // Общие настройки пауз/ретраев + Стоп для всех вкладок
+    var sharedTimingBox = document.createElement("div");
+    sharedTimingBox.style.cssText =
+      "display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px;align-items:end;" +
+      "padding:8px 14px;border-bottom:1px solid #e2e8f0;background:rgba(255,255,255,.75);";
+    root.appendChild(sharedTimingBox);
+
+    function mkSharedNum(labelText, value, title) {
+      var lab = document.createElement("label");
+      lab.style.cssText = "display:flex;flex-direction:column;gap:2px;font-size:10px;color:#64748b;min-width:0;";
+      lab.title = title || labelText;
+      var cap = document.createElement("span");
+      cap.textContent = labelText;
+      var inp = document.createElement("input");
+      inp.type = "number";
+      inp.min = "0";
+      inp.value = String(value);
+      inp.style.cssText =
+        "width:100%;box-sizing:border-box;padding:4px 6px;font-size:11px;border:1px solid #94a3b8;" +
+        "border-radius:5px;background:#fff;color:#0f172a;";
+      lab.appendChild(cap);
+      lab.appendChild(inp);
+      return { lab: lab, inp: inp };
+    }
+
+    var sharedPayloadGap = mkSharedNum("Пауза операций, мс", NEWS_V2_CFG.PAYLOAD_GAP_MS, "Пауза между запросами создания/статусов/редактирования и между комбинациями выгрузки");
+    var sharedPageGap = mkSharedNum("Пауза страниц, мс", NEWS_V2_CFG.PAGE_GAP_MS, "Пауза между pageNum внутри комбинации выгрузки");
+    var sharedMaxPages = mkSharedNum("Макс. страниц", NEWS_V2_CFG.MAX_PAGES_PER_COMBO, "Лимит страниц на комбинацию выгрузки: 0 = все");
+    var sharedRetryPause = mkSharedNum("Пауза повтора, мс", NEWS_V2_CFG.RETRY_PAUSE_MS, "Пауза перед повтором при ошибке");
+    var sharedRetryMax = mkSharedNum("Попыток", NEWS_V2_CFG.RETRY_MAX, "Число попыток одного запроса");
+    sharedRetryMax.inp.min = "1";
+    var sharedAbort = mkSharedNum("Стоп после N ошибок подряд", NEWS_V2_CFG.CONSECUTIVE_FAIL_ABORT, "Аварийная остановка после N подряд исчерпанных попыток");
+    sharedAbort.inp.min = "1";
+    sharedTimingBox.appendChild(sharedPayloadGap.lab);
+    sharedTimingBox.appendChild(sharedPageGap.lab);
+    sharedTimingBox.appendChild(sharedMaxPages.lab);
+    sharedTimingBox.appendChild(sharedRetryPause.lab);
+    sharedTimingBox.appendChild(sharedRetryMax.lab);
+    sharedTimingBox.appendChild(sharedAbort.lab);
+
+    var sharedOpRow = document.createElement("div");
+    sharedOpRow.style.cssText =
+      "display:flex;gap:8px;align-items:center;padding:6px 14px;border-bottom:1px solid #e2e8f0;background:#f8fafc;";
+    root.appendChild(sharedOpRow);
+    var sharedOpStatus = document.createElement("div");
+    sharedOpStatus.style.cssText = "font-size:11px;color:#475569;flex:1;";
+    sharedOpStatus.textContent = "Операции: ожидание";
+    sharedOpRow.appendChild(sharedOpStatus);
+
+    var opBusy = false;
+    var stopRequested = false;
+    var btnGlobalStop = document.createElement("button");
+    btnGlobalStop.type = "button";
+    btnGlobalStop.textContent = "⏹ Стоп";
+    btnGlobalStop.disabled = true;
+    btnGlobalStop.style.cssText =
+      "padding:6px 10px;border-radius:6px;border:1px solid #dc2626;background:#dc2626;color:#fff;" +
+      "font-size:12px;font-weight:700;cursor:not-allowed;opacity:0.55;";
+    btnGlobalStop.addEventListener("click", function () {
+      if (!opBusy) return;
+      if (stopRequested) {
+        log("Стоп уже запрошен — ждём текущий запрос…");
+        return;
+      }
+      stopRequested = true;
+      sharedOpStatus.textContent = "Операции: стоп запрошен…";
+      log("Стоп запрошен: после текущего запроса остановим пакет.");
+    });
+    sharedOpRow.appendChild(btnGlobalStop);
+
+    function readSharedGap(inp, fallback) {
+      var n = parseInt(String(inp.value || "").trim(), 10);
+      if (!Number.isFinite(n) || n < 0) return fallback;
+      if (n > NEWS_V2_CFG.GAP_MAX_MS) return NEWS_V2_CFG.GAP_MAX_MS;
+      return n;
+    }
+    function readSharedRetryMax() {
+      var n = parseInt(String(sharedRetryMax.inp.value || "").trim(), 10);
+      if (!Number.isFinite(n) || n < 1) return NEWS_V2_CFG.RETRY_MAX || 2;
+      if (n > 20) return 20;
+      return n;
+    }
+    function readSharedAbortLimit() {
+      var n = parseInt(String(sharedAbort.inp.value || "").trim(), 10);
+      if (!Number.isFinite(n) || n < 1) return NEWS_V2_CFG.CONSECUTIVE_FAIL_ABORT || 2;
+      if (n > 20) return 20;
+      return n;
+    }
+    function getSharedRequestSettings() {
+      return {
+        opGapMs: readSharedGap(sharedPayloadGap.inp, NEWS_V2_CFG.PAYLOAD_GAP_MS),
+        pageGapMs: readSharedGap(sharedPageGap.inp, NEWS_V2_CFG.PAGE_GAP_MS),
+        maxPages: Math.max(0, parseInt(String(sharedMaxPages.inp.value || "0"), 10) || 0),
+        retryPauseMs: readSharedGap(sharedRetryPause.inp, NEWS_V2_CFG.RETRY_PAUSE_MS),
+        retryMax: readSharedRetryMax(),
+        abortLimit: readSharedAbortLimit()
+      };
+    }
+    function setOpBusy(busy, label) {
+      opBusy = !!busy;
+      btnGlobalStop.disabled = !busy;
+      btnGlobalStop.style.opacity = busy ? "1" : "0.55";
+      btnGlobalStop.style.cursor = busy ? "pointer" : "not-allowed";
+      if (!busy) stopRequested = false;
+      sharedOpStatus.textContent = busy
+        ? "Операции: " + (label || "выполняется…")
+        : "Операции: ожидание";
+    }
+    function isStopRequested() {
+      return !!stopRequested;
+    }
 
     var main = document.createElement("div");
     main.style.cssText = "flex:1;min-height:0;display:flex;overflow:hidden;";
@@ -1219,6 +1379,10 @@
           "Создать выбранные",
           function () {
             void (async function () {
+              if (opBusy) {
+                log("Уже выполняется другая операция — дождитесь завершения или нажмите Стоп.");
+                return;
+              }
               var selected = candidates.filter(function (c) {
                 return c.selected !== false;
               });
@@ -1257,37 +1421,101 @@
               }
 
               var env = getEnv();
+              var settings = getSharedRequestSettings();
               var okCount = 0;
               var failCount = 0;
+              var retriesTotal = 0;
+              var consecutiveFails = 0;
+              var stoppedByUser = false;
+              var abortedByErrors = false;
               var resultDump = [];
-              for (var si = 0; si < selected.length; si++) {
-                var payload = selected[si].payload;
-                if (stubMode) {
-                  payload.authorsList = [];
-                  payload.leadersList = [];
-                }
-                var res = await postJson(
-                  env.origin + NEWS_V2_CFG.NEWS_CREATE_PATH,
-                  payload,
-                  env.origin + "/salesheroes/admin/community/create"
-                );
-                var success = !!(
-                  res.ok &&
-                  res.data &&
-                  res.data.success === true &&
-                  res.data.body &&
-                  res.data.body.objectId
-                );
-                resultDump.push({ payload: payload, response: res });
-                if (success) {
-                  okCount++;
-                  log(
-                    "Создано: objectId=" + res.data.body.objectId + " | type=" + payload.type + " | " + compactNewsLabel(payload)
+              setOpBusy(true, "создание");
+              try {
+                for (var si = 0; si < selected.length; si++) {
+                  if (isStopRequested()) {
+                    stoppedByUser = true;
+                    log("Стоп: создание прервано пользователем.");
+                    break;
+                  }
+                  var payload = selected[si].payload;
+                  if (stubMode) {
+                    payload.authorsList = [];
+                    payload.leadersList = [];
+                  }
+                  sharedOpStatus.textContent =
+                    "Операции: создание " + (si + 1) + "/" + selected.length;
+                  var retryResult = await postJsonWithRetry(
+                    env.origin + NEWS_V2_CFG.NEWS_CREATE_PATH,
+                    payload,
+                    env.origin + "/salesheroes/admin/community/create",
+                    {
+                      log: log,
+                      retryMax: settings.retryMax,
+                      retryPauseMs: settings.retryPauseMs,
+                      requireBody: true,
+                      shouldStop: isStopRequested,
+                      successCheck: function (fr) {
+                        if (!(fr && fr.data && fr.data.body && fr.data.body.objectId)) {
+                          return "нет objectId в ответе";
+                        }
+                        return null;
+                      },
+                      onAttempt: function (attempt, maxAttempts, err, meta) {
+                        if (meta && meta.isRetry) retriesTotal++;
+                      }
+                    }
                   );
-                } else {
-                  failCount++;
-                  log("Ошибка создания: HTTP " + res.status + " | " + compactNewsLabel(payload));
+                  if (retryResult.stopped || isStopRequested()) {
+                    stoppedByUser = true;
+                    resultDump.push({ payload: payload, response: retryResult.fr, stopped: true });
+                    break;
+                  }
+                  resultDump.push({
+                    payload: payload,
+                    response: retryResult.fr,
+                    attempts: retryResult.attempts,
+                    retries: retryResult.retries
+                  });
+                  if (retryResult.ok) {
+                    consecutiveFails = 0;
+                    okCount++;
+                    log(
+                      "Создано: objectId=" +
+                        retryResult.fr.data.body.objectId +
+                        " | type=" +
+                        payload.type +
+                        " | " +
+                        compactNewsLabel(payload)
+                    );
+                  } else {
+                    failCount++;
+                    consecutiveFails++;
+                    log(
+                      "Ошибка создания: " +
+                        (retryResult.error || ("HTTP " + (retryResult.fr && retryResult.fr.status))) +
+                        " | " +
+                        compactNewsLabel(payload)
+                    );
+                    if (consecutiveFails >= settings.abortLimit) {
+                      abortedByErrors = true;
+                      log(
+                        "АВАРИЯ: " +
+                          consecutiveFails +
+                          " подряд исчерпанных ошибок — остановка создания."
+                      );
+                      break;
+                    }
+                  }
+                  if (si < selected.length - 1 && settings.opGapMs > 0) {
+                    await delay(settings.opGapMs);
+                    if (isStopRequested()) {
+                      stoppedByUser = true;
+                      break;
+                    }
+                  }
                 }
+              } finally {
+                setOpBusy(false);
               }
 
               downloadJson(
@@ -1295,9 +1523,13 @@
                 {
                   env: env,
                   stubMode: stubMode,
+                  settings: settings,
                   total: selected.length,
                   okCount: okCount,
                   failCount: failCount,
+                  retriesTotal: retriesTotal,
+                  stoppedByUser: stoppedByUser,
+                  abortedByErrors: abortedByErrors,
                   results: resultDump
                 }
               );
@@ -1306,6 +1538,10 @@
                   okCount +
                   ", FAIL=" +
                   failCount +
+                  ", повторов=" +
+                  retriesTotal +
+                  (stoppedByUser ? " | стоп" : "") +
+                  (abortedByErrors ? " | авария" : "") +
                   (stubMode ? " | болванка без leaders/authors" : "") +
                   "."
               );
@@ -1491,6 +1727,10 @@
           "Применить статус",
           function () {
             void (async function () {
+              if (opBusy) {
+                log("Уже выполняется другая операция — дождитесь завершения или нажмите Стоп.");
+                return;
+              }
               var selected = candidates.filter(function (c) {
                 return c.selected !== false;
               });
@@ -1513,32 +1753,111 @@
                 return;
               }
               var env = getEnv();
+              var settings = getSharedRequestSettings();
               var okCount = 0;
               var failCount = 0;
+              var retriesTotal = 0;
+              var consecutiveFails = 0;
+              var stoppedByUser = false;
+              var abortedByErrors = false;
               var dump = [];
-              for (var si = 0; si < selected.length; si++) {
-                var item = selected[si];
-                var payload = { newsId: item.newsId, status: item.targetStatus, method: "patch" };
-                var res = await postJson(
-                  env.origin + NEWS_V2_CFG.NEWS_UPDATE_PATH,
-                  payload,
-                  env.origin + "/salesheroes/admin/community/" + item.newsId
-                );
-                var success = !!(res.ok && res.data && res.data.success === true);
-                dump.push({ payload: payload, response: res });
-                if (success) {
-                  okCount++;
-                  log("Статус обновлён: newsId=" + item.newsId + " -> " + item.targetStatus);
-                } else {
-                  failCount++;
-                  log("Ошибка статуса: newsId=" + item.newsId + " | HTTP " + res.status);
+              setOpBusy(true, "статусы");
+              try {
+                for (var si = 0; si < selected.length; si++) {
+                  if (isStopRequested()) {
+                    stoppedByUser = true;
+                    log("Стоп: смена статусов прервана пользователем.");
+                    break;
+                  }
+                  var item = selected[si];
+                  var payload = { newsId: item.newsId, status: item.targetStatus, method: "patch" };
+                  sharedOpStatus.textContent =
+                    "Операции: статус " + (si + 1) + "/" + selected.length;
+                  var retryResult = await postJsonWithRetry(
+                    env.origin + NEWS_V2_CFG.NEWS_UPDATE_PATH,
+                    payload,
+                    env.origin + "/salesheroes/admin/community/" + item.newsId,
+                    {
+                      log: log,
+                      retryMax: settings.retryMax,
+                      retryPauseMs: settings.retryPauseMs,
+                      requireBody: false,
+                      shouldStop: isStopRequested,
+                      onAttempt: function (attempt, maxAttempts, err, meta) {
+                        if (meta && meta.isRetry) retriesTotal++;
+                      }
+                    }
+                  );
+                  if (retryResult.stopped || isStopRequested()) {
+                    stoppedByUser = true;
+                    dump.push({ payload: payload, response: retryResult.fr, stopped: true });
+                    break;
+                  }
+                  dump.push({
+                    payload: payload,
+                    response: retryResult.fr,
+                    attempts: retryResult.attempts,
+                    retries: retryResult.retries
+                  });
+                  if (retryResult.ok) {
+                    consecutiveFails = 0;
+                    okCount++;
+                    log("Статус обновлён: newsId=" + item.newsId + " -> " + item.targetStatus);
+                  } else {
+                    failCount++;
+                    consecutiveFails++;
+                    log(
+                      "Ошибка статуса: newsId=" +
+                        item.newsId +
+                        " | " +
+                        (retryResult.error || ("HTTP " + (retryResult.fr && retryResult.fr.status)))
+                    );
+                    if (consecutiveFails >= settings.abortLimit) {
+                      abortedByErrors = true;
+                      log(
+                        "АВАРИЯ: " +
+                          consecutiveFails +
+                          " подряд исчерпанных ошибок — остановка смены статусов."
+                      );
+                      break;
+                    }
+                  }
+                  if (si < selected.length - 1 && settings.opGapMs > 0) {
+                    await delay(settings.opGapMs);
+                    if (isStopRequested()) {
+                      stoppedByUser = true;
+                      break;
+                    }
+                  }
                 }
+              } finally {
+                setOpBusy(false);
               }
               downloadJson(
                 "news_status_result_" + env.stand + "_" + env.contour + "_" + tsShort() + ".json",
-                { env: env, total: selected.length, okCount: okCount, failCount: failCount, results: dump }
+                {
+                  env: env,
+                  settings: settings,
+                  total: selected.length,
+                  okCount: okCount,
+                  failCount: failCount,
+                  retriesTotal: retriesTotal,
+                  stoppedByUser: stoppedByUser,
+                  abortedByErrors: abortedByErrors,
+                  results: dump
+                }
               );
-              log("Смена статусов завершена. OK=" + okCount + ", FAIL=" + failCount + ".");
+              log(
+                "Смена статусов завершена. OK=" +
+                  okCount +
+                  ", FAIL=" +
+                  failCount +
+                  ", повторов=" +
+                  retriesTotal +
+                  (stoppedByUser ? " | стоп" : "") +
+                  (abortedByErrors ? " | авария" : "") +
+                  "."
+              );
             })();
           },
           "background:#2563eb;color:#fff;border-color:#2563eb;"
@@ -1764,44 +2083,123 @@
           "Загрузить с сервера для выбора",
           function () {
             void (async function () {
+              if (opBusy) {
+                log("Уже выполняется другая операция — дождитесь завершения или нажмите Стоп.");
+                return;
+              }
               var statuses = editStatusCtl.getSelected();
               var blocks = editBlockCtl.getSelected();
+              var settings = getSharedRequestSettings();
               var maxPages = parseInt(String(fetchPagesInput.value || "3"), 10);
               if (!Number.isFinite(maxPages) || maxPages < 1) maxPages = 1;
+              // Общий лимит страниц панели перекрывает локальный, если задан (>0).
+              if (settings.maxPages > 0) maxPages = settings.maxPages;
               if (!statuses.length || !blocks.length) {
                 log("Для загрузки выберите status и business block.");
                 return;
               }
               var env = getEnv();
               var loaded = [];
-              for (var si = 0; si < statuses.length; si++) {
-                for (var bi = 0; bi < blocks.length; bi++) {
-                  var status = statuses[si];
-                  var block = blocks[bi];
-                  var pageNum = 1;
-                  while (pageNum <= maxPages) {
-                    var payload = { newsStatus: status, businessBlock: block, pageNum: pageNum };
-                    var res = await fetchNewsListPage(env.origin, payload);
-                    if (!(res.ok && res.data && res.data.success === true && res.data.body)) {
-                      log("Ошибка загрузки: " + status + "/" + block + " page=" + pageNum);
+              var retriesTotal = 0;
+              var consecutiveFails = 0;
+              var stoppedByUser = false;
+              var abortedByErrors = false;
+              setOpBusy(true, "загрузка для редактирования");
+              try {
+                for (var si = 0; si < statuses.length; si++) {
+                  if (isStopRequested()) {
+                    stoppedByUser = true;
+                    break;
+                  }
+                  for (var bi = 0; bi < blocks.length; bi++) {
+                    if (isStopRequested()) {
+                      stoppedByUser = true;
                       break;
                     }
-                    var periods = Array.isArray(res.data.body.timePeriod) ? res.data.body.timePeriod : [];
-                    var countOnPage = 0;
-                    for (var pi = 0; pi < periods.length; pi++) {
-                      var newsList = Array.isArray(periods[pi].news) ? periods[pi].news : [];
-                      for (var ni = 0; ni < newsList.length; ni++) {
-                        loaded.push(newsList[ni]);
-                        countOnPage++;
+                    var status = statuses[si];
+                    var block = blocks[bi];
+                    var pageNum = 1;
+                    while (pageNum <= maxPages) {
+                      if (isStopRequested()) {
+                        stoppedByUser = true;
+                        break;
+                      }
+                      sharedOpStatus.textContent =
+                        "Операции: загрузка " + status + "/" + block + " стр." + pageNum;
+                      var payload = { newsStatus: status, businessBlock: block, pageNum: pageNum };
+                      var retryResult = await fetchNewsPageWithRetry(env.origin, payload, {
+                        log: log,
+                        retryMax: settings.retryMax,
+                        retryPauseMs: settings.retryPauseMs,
+                        shouldStop: isStopRequested,
+                        onAttempt: function (attempt, maxAttempts, err, meta) {
+                          if (meta && meta.isRetry) retriesTotal++;
+                        }
+                      });
+                      if (retryResult.stopped || isStopRequested()) {
+                        stoppedByUser = true;
+                        break;
+                      }
+                      if (!retryResult.ok) {
+                        consecutiveFails++;
+                        log(
+                          "Ошибка загрузки: " +
+                            status +
+                            "/" +
+                            block +
+                            " page=" +
+                            pageNum +
+                            " | " +
+                            (retryResult.error || "ошибка")
+                        );
+                        if (consecutiveFails >= settings.abortLimit) {
+                          abortedByErrors = true;
+                          log(
+                            "АВАРИЯ: " +
+                              consecutiveFails +
+                              " подряд исчерпанных ошибок — остановка загрузки."
+                          );
+                          break;
+                        }
+                        break;
+                      }
+                      consecutiveFails = 0;
+                      var res = retryResult.fr;
+                      var periods = Array.isArray(res.data.body.timePeriod) ? res.data.body.timePeriod : [];
+                      var countOnPage = 0;
+                      for (var pi = 0; pi < periods.length; pi++) {
+                        var newsList = Array.isArray(periods[pi].news) ? periods[pi].news : [];
+                        for (var ni = 0; ni < newsList.length; ni++) {
+                          loaded.push(newsList[ni]);
+                          countOnPage++;
+                        }
+                      }
+                      var pageInfo = (res.data.body && res.data.body.page) || {};
+                      log("Загружено: " + status + "/" + block + " page=" + pageNum + " новостей=" + countOnPage);
+                      if (pageInfo.isLast === true) break;
+                      if (Number(pageInfo.total || 0) > 0 && pageNum >= Number(pageInfo.total)) break;
+                      pageNum++;
+                      if (pageNum <= maxPages && settings.pageGapMs > 0) {
+                        await delay(settings.pageGapMs);
+                        if (isStopRequested()) {
+                          stoppedByUser = true;
+                          break;
+                        }
                       }
                     }
-                    var pageInfo = (res.data.body && res.data.body.page) || {};
-                    log("Загружено: " + status + "/" + block + " page=" + pageNum + " новостей=" + countOnPage);
-                    if (pageInfo.isLast === true) break;
-                    if (Number(pageInfo.total || 0) > 0 && pageNum >= Number(pageInfo.total)) break;
-                    pageNum++;
+                    if (stoppedByUser || abortedByErrors) break;
+                    if (settings.opGapMs > 0 && !(si === statuses.length - 1 && bi === blocks.length - 1)) {
+                      await delay(settings.opGapMs);
+                      if (isStopRequested()) {
+                        stoppedByUser = true;
+                        break;
+                      }
+                    }
                   }
+                  if (stoppedByUser || abortedByErrors) break;
                 }
+              } finally {
+                setOpBusy(false);
               }
               candidates = loaded
                 .filter(function (n) {
@@ -1820,7 +2218,15 @@
                   };
                 });
               renderList();
-              log("Подготовлено записей к редактированию из сервера: " + candidates.length);
+              log(
+                "Подготовлено записей к редактированию из сервера: " +
+                  candidates.length +
+                  ", повторов=" +
+                  retriesTotal +
+                  (stoppedByUser ? " | стоп" : "") +
+                  (abortedByErrors ? " | авария" : "") +
+                  "."
+              );
             })();
           },
           "background:#0ea5e9;color:#fff;border-color:#0ea5e9;"
@@ -1868,6 +2274,10 @@
           "Применить редактирование",
           function () {
             void (async function () {
+              if (opBusy) {
+                log("Уже выполняется другая операция — дождитесь завершения или нажмите Стоп.");
+                return;
+              }
               var selected = candidates.filter(function (c) {
                 return c.selected !== false;
               });
@@ -1890,32 +2300,111 @@
                 return;
               }
               var env = getEnv();
+              var settings = getSharedRequestSettings();
               var okCount = 0;
               var failCount = 0;
+              var retriesTotal = 0;
+              var consecutiveFails = 0;
+              var stoppedByUser = false;
+              var abortedByErrors = false;
               var dump = [];
-              for (var si = 0; si < selected.length; si++) {
-                var payload = selected[si].payload;
-                payload.method = "put";
-                var res = await postJson(
-                  env.origin + NEWS_V2_CFG.NEWS_UPDATE_PATH,
-                  payload,
-                  env.origin + "/salesheroes/admin/community/" + payload.newsId + "/edit"
-                );
-                var success = !!(res.ok && res.data && res.data.success === true);
-                dump.push({ payload: payload, response: res });
-                if (success) {
-                  okCount++;
-                  log("Обновлено: newsId=" + payload.newsId);
-                } else {
-                  failCount++;
-                  log("Ошибка обновления: newsId=" + payload.newsId + " | HTTP " + res.status);
+              setOpBusy(true, "редактирование");
+              try {
+                for (var si = 0; si < selected.length; si++) {
+                  if (isStopRequested()) {
+                    stoppedByUser = true;
+                    log("Стоп: редактирование прервано пользователем.");
+                    break;
+                  }
+                  var payload = selected[si].payload;
+                  payload.method = "put";
+                  sharedOpStatus.textContent =
+                    "Операции: редактирование " + (si + 1) + "/" + selected.length;
+                  var retryResult = await postJsonWithRetry(
+                    env.origin + NEWS_V2_CFG.NEWS_UPDATE_PATH,
+                    payload,
+                    env.origin + "/salesheroes/admin/community/" + payload.newsId + "/edit",
+                    {
+                      log: log,
+                      retryMax: settings.retryMax,
+                      retryPauseMs: settings.retryPauseMs,
+                      requireBody: false,
+                      shouldStop: isStopRequested,
+                      onAttempt: function (attempt, maxAttempts, err, meta) {
+                        if (meta && meta.isRetry) retriesTotal++;
+                      }
+                    }
+                  );
+                  if (retryResult.stopped || isStopRequested()) {
+                    stoppedByUser = true;
+                    dump.push({ payload: payload, response: retryResult.fr, stopped: true });
+                    break;
+                  }
+                  dump.push({
+                    payload: payload,
+                    response: retryResult.fr,
+                    attempts: retryResult.attempts,
+                    retries: retryResult.retries
+                  });
+                  if (retryResult.ok) {
+                    consecutiveFails = 0;
+                    okCount++;
+                    log("Обновлено: newsId=" + payload.newsId);
+                  } else {
+                    failCount++;
+                    consecutiveFails++;
+                    log(
+                      "Ошибка обновления: newsId=" +
+                        payload.newsId +
+                        " | " +
+                        (retryResult.error || ("HTTP " + (retryResult.fr && retryResult.fr.status)))
+                    );
+                    if (consecutiveFails >= settings.abortLimit) {
+                      abortedByErrors = true;
+                      log(
+                        "АВАРИЯ: " +
+                          consecutiveFails +
+                          " подряд исчерпанных ошибок — остановка редактирования."
+                      );
+                      break;
+                    }
+                  }
+                  if (si < selected.length - 1 && settings.opGapMs > 0) {
+                    await delay(settings.opGapMs);
+                    if (isStopRequested()) {
+                      stoppedByUser = true;
+                      break;
+                    }
+                  }
                 }
+              } finally {
+                setOpBusy(false);
               }
               downloadJson(
                 "news_edit_result_" + env.stand + "_" + env.contour + "_" + tsShort() + ".json",
-                { env: env, total: selected.length, okCount: okCount, failCount: failCount, results: dump }
+                {
+                  env: env,
+                  settings: settings,
+                  total: selected.length,
+                  okCount: okCount,
+                  failCount: failCount,
+                  retriesTotal: retriesTotal,
+                  stoppedByUser: stoppedByUser,
+                  abortedByErrors: abortedByErrors,
+                  results: dump
+                }
               );
-              log("Редактирование завершено. OK=" + okCount + ", FAIL=" + failCount + ".");
+              log(
+                "Редактирование завершено. OK=" +
+                  okCount +
+                  ", FAIL=" +
+                  failCount +
+                  ", повторов=" +
+                  retriesTotal +
+                  (stoppedByUser ? " | стоп" : "") +
+                  (abortedByErrors ? " | авария" : "") +
+                  "."
+              );
             })();
           },
           "background:#7c3aed;color:#fff;border-color:#7c3aed;"
@@ -1947,13 +2436,15 @@
 
       var btnJson = mkBtn("⬇ JSON", function () { void runExport("JSON"); }, "background:#2563eb;color:#fff;border-color:#2563eb;");
       var btnCsv = mkBtn("▦ JSON+CSV", function () { void runExport("JSON+CSV"); }, "background:#059669;color:#fff;border-color:#059669;");
+      // Стоп общий (панель сверху); на вкладке — зеркальная кнопка для удобства.
       var btnStop = mkBtn("⏹ Стоп", function () {
-        if (!exportBusy) return;
-        if (stopRequested) {
+        if (!opBusy) return;
+        if (isStopRequested()) {
           log("Стоп уже запрошен — ждём текущий POST…");
           return;
         }
         stopRequested = true;
+        sharedOpStatus.textContent = "Операции: стоп запрошен…";
         setStats({ tone: "stop", phase: "стоп… (ждём POST)" });
         log("Стоп запрошен: после текущего запроса сохраним уже загруженное.");
       }, "background:#dc2626;color:#fff;border-color:#dc2626;opacity:0.55;");
@@ -2125,46 +2616,20 @@
       selectGrid.appendChild(blockCtl.el);
       selectGrid.appendChild(tagColWrap);
 
-      function mkNumField(labelText, value, title) {
-        var lab = document.createElement("label");
-        lab.style.cssText = "display:flex;flex-direction:column;gap:2px;font-size:10px;color:#64748b;min-width:0;";
-        lab.title = title || labelText;
-        var cap = document.createElement("span");
-        cap.textContent = labelText;
-        var inp = document.createElement("input");
-        inp.type = "number";
-        inp.min = "0";
-        inp.value = String(value);
-        inp.style.cssText = "width:100%;box-sizing:border-box;padding:4px 6px;font-size:11px;border:1px solid #94a3b8;border-radius:5px;background:#fff;color:#0f172a;";
-        lab.appendChild(cap);
-        lab.appendChild(inp);
-        return { lab: lab, inp: inp };
-      }
-
-      var timingBox = document.createElement("div");
-      timingBox.style.cssText = "display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px;align-items:end;padding-top:8px;border-top:1px solid #e2e8f0;";
-      var fPayloadGap = mkNumField("Пауза payload, мс", NEWS_V2_CFG.PAYLOAD_GAP_MS, "Пауза между комбинациями");
-      var fPageGap = mkNumField("Пауза страниц, мс", NEWS_V2_CFG.PAGE_GAP_MS, "Пауза между pageNum");
-      var fMaxPages = mkNumField("Макс. страниц", NEWS_V2_CFG.MAX_PAGES_PER_COMBO, "0 = все");
-      var fRetryPause = mkNumField("Пауза повтора, мс", NEWS_V2_CFG.RETRY_PAUSE_MS, "Пауза перед повтором");
-      var fRetryMax = mkNumField("Попыток", NEWS_V2_CFG.RETRY_MAX, "Число попыток одного запроса");
-      fRetryMax.inp.min = "1";
-      timingBox.appendChild(fPayloadGap.lab);
-      timingBox.appendChild(fPageGap.lab);
-      timingBox.appendChild(fMaxPages.lab);
-      timingBox.appendChild(fRetryPause.lab);
-      timingBox.appendChild(fRetryMax.lab);
-      payloadBox.appendChild(timingBox);
-
-      var exportBusy = false;
-      var stopRequested = false;
+      var timingHint = document.createElement("div");
+      timingHint.style.cssText =
+        "margin-top:8px;padding:6px 8px;border:1px dashed #94a3b8;border-radius:6px;" +
+        "background:#f8fafc;font-size:11px;color:#475569;";
+      timingHint.textContent =
+        "Паузы, попытки, макс. страниц и аварийный стоп — в общем блоке настроек над вкладками. Стоп — общая кнопка панели (и здесь).";
+      payloadBox.appendChild(timingHint);
 
       function refreshRequiredUi() {
         var hasStatus = statusCtl.getSelectedKeys().length > 0;
         var hasBlock = blockCtl.getSelectedKeys().length > 0;
         statusCtl.setRequiredOk(hasStatus);
         blockCtl.setRequiredOk(hasBlock);
-        if (exportBusy) return;
+        if (opBusy) return;
         var ok = hasStatus && hasBlock;
         btnJson.disabled = !ok;
         btnCsv.disabled = !ok;
@@ -2173,8 +2638,7 @@
       }
       refreshRequiredUi();
 
-      function setBusy(busy) {
-        exportBusy = !!busy;
+      function setExportBusy(busy) {
         btnStop.disabled = !busy;
         btnStop.style.opacity = busy ? "1" : "0.55";
         if (busy) {
@@ -2182,16 +2646,11 @@
           btnCsv.disabled = true;
           btnJson.style.opacity = "0.55";
           btnCsv.style.opacity = "0.55";
+          setOpBusy(true, "выгрузка");
         } else {
+          setOpBusy(false);
           refreshRequiredUi();
         }
-      }
-
-      function readGap(inp, fallback) {
-        var n = parseInt(String(inp.value || "").trim(), 10);
-        if (!Number.isFinite(n) || n < 0) return fallback;
-        if (n > NEWS_V2_CFG.GAP_MAX_MS) return NEWS_V2_CFG.GAP_MAX_MS;
-        return n;
       }
 
       function readPanelSelection() {
@@ -2209,8 +2668,8 @@
       }
 
       async function runExport(mode) {
-        if (exportBusy) {
-          log("Выгрузка уже выполняется.");
+        if (opBusy) {
+          log("Уже выполняется другая операция — дождитесь завершения или нажмите Стоп.");
           return;
         }
         var sel = readPanelSelection();
@@ -2219,14 +2678,15 @@
           log("Остановка: выберите хотя бы один status и один businessBlock.");
           return;
         }
-        setBusy(true);
-        stopRequested = false;
+        setExportBusy(true);
         var env = getEnv();
-        var payloadGapMs = readGap(fPayloadGap.inp, NEWS_V2_CFG.PAYLOAD_GAP_MS);
-        var pageGapMs = readGap(fPageGap.inp, NEWS_V2_CFG.PAGE_GAP_MS);
-        var retryPauseMs = readGap(fRetryPause.inp, NEWS_V2_CFG.RETRY_PAUSE_MS);
-        var retryMax = Math.max(1, parseInt(String(fRetryMax.inp.value || "2"), 10) || 2);
-        var maxPages = Math.max(0, parseInt(String(fMaxPages.inp.value || "0"), 10) || 0);
+        var settings = getSharedRequestSettings();
+        var payloadGapMs = settings.opGapMs;
+        var pageGapMs = settings.pageGapMs;
+        var retryPauseMs = settings.retryPauseMs;
+        var retryMax = settings.retryMax;
+        var maxPages = settings.maxPages;
+        var abortLimit = settings.abortLimit;
         var combos = [];
         for (var si = 0; si < sel.newsStatuses.length; si++) {
           for (var bi = 0; bi < sel.businessBlocks.length; bi++) {
@@ -2250,16 +2710,17 @@
         var stoppedByUser = false;
         var abortedByErrors = false;
         var consecutiveExhaustedFails = 0;
-        var abortLimit = Math.max(1, Number(NEWS_V2_CFG.CONSECUTIVE_FAIL_ABORT) || 2);
         var newsTotal = 0;
 
         try {
           for (var ci = 0; ci < combos.length; ci++) {
-            if (stopRequested) { stoppedByUser = true; break; }
+            if (isStopRequested()) { stoppedByUser = true; break; }
             var combo = combos[ci];
             var tagsStat = combo.newsTagList.length
               ? combo.newsTagList.map(function (t) { return t.tagCode; }).join(", ")
               : "—";
+            sharedOpStatus.textContent =
+              "Операции: выгрузка " + (ci + 1) + "/" + combos.length;
             setStats({
               tone: consecutiveExhaustedFails >= 1 ? "retry2" : "run",
               phase: (ci + 1) + "/" + combos.length,
@@ -2277,7 +2738,7 @@
             var comboPages = [];
             var comboHadSuccess = false;
             while (true) {
-              if (stopRequested) { stoppedByUser = true; break; }
+              if (isStopRequested()) { stoppedByUser = true; break; }
               var payload = {
                 newsStatus: combo.newsStatus,
                 businessBlock: combo.businessBlock,
@@ -2296,7 +2757,7 @@
                 log: log,
                 retryMax: retryMax,
                 retryPauseMs: retryPauseMs,
-                shouldStop: function () { return !!stopRequested; },
+                shouldStop: isStopRequested,
                 onAttempt: function (attempt, maxAttempts, err, meta) {
                   var m = meta || {};
                   if (m.isRetry) retriesTotal++;
@@ -2308,7 +2769,7 @@
                   });
                 }
               });
-              if (retryResult.stopped || stopRequested) { stoppedByUser = true; break; }
+              if (retryResult.stopped || isStopRequested()) { stoppedByUser = true; break; }
               if (!retryResult.ok) {
                 errors++;
                 consecutiveExhaustedFails++;
@@ -2368,7 +2829,7 @@
               pageNum++;
               if (pageGapMs > 0) {
                 await delay(pageGapMs);
-                if (stopRequested) { stoppedByUser = true; break; }
+                if (isStopRequested()) { stoppedByUser = true; break; }
               }
             }
             if (comboHadSuccess) {
@@ -2388,7 +2849,7 @@
             if (abortedByErrors || stoppedByUser) break;
             if (ci < combos.length - 1 && payloadGapMs > 0) {
               await delay(payloadGapMs);
-              if (stopRequested) { stoppedByUser = true; break; }
+              if (isStopRequested()) { stoppedByUser = true; break; }
             }
           }
 
@@ -2418,6 +2879,7 @@
               retryPauseMs: retryPauseMs,
               retriesTotal: retriesTotal,
               errorsExhausted: errors,
+              abortLimit: abortLimit,
               maxPagesPerCombo: maxPages > 0 ? maxPages : null,
               mode: sel.useTags ? "businessBlock+tags" : "businessBlock",
               selection: {
@@ -2459,8 +2921,7 @@
             errors: String(errors)
           });
         } finally {
-          stopRequested = false;
-          setBusy(false);
+          setExportBusy(false);
         }
       }
     }
