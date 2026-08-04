@@ -501,6 +501,40 @@
     };
   }
 
+  function buildUpdatePayloadFromNewsItem(newsItem) {
+    var source = newsItem || {};
+    return {
+      bankLevel: source.bankLevel !== false,
+      rewardList: (source.rewards || [])
+        .map(function (r) {
+          return r && r.rewardCode ? { rewardCode: String(r.rewardCode) } : null;
+        })
+        .filter(Boolean),
+      tournamentList: (source.tournamentList || [])
+        .map(function (t) {
+          return t && t.tournamentCode ? { tournamentCode: String(t.tournamentCode) } : null;
+        })
+        .filter(Boolean),
+      imageList: Array.isArray(source.imageList) ? source.imageList.slice() : [],
+      newsFeature: normalizeNewsFeature(source.newsFeature, source.businessBlocks || []),
+      type: normalizeType(source.type || source.newsType),
+      description: ensureString(source.description || source.newsText),
+      summary: ensureString(source.summary),
+      authorsList: mapEmployeesList(source.authorsList || source.authors || []),
+      tagList: toTagList(source.tagList || source.newsTagList || []),
+      tbCodeList: parseMaybeJsonArray(source.tbCodeList != null ? source.tbCodeList : source.tbCode),
+      gosbCodeList: parseMaybeJsonArray(
+        source.gosbCodeList != null ? source.gosbCodeList : source.gosbCode
+      ),
+      leadersList: mapEmployeesList(source.leadersList || source.leaders || []),
+      createdBy: ensureString(source.createdBy || NEWS_V2_CFG.DEFAULT_CREATED_BY),
+      plannedDt: ensureString(source.plannedDt || source.plannedDateTime || nowIso()),
+      newsId: ensureString(source.newsId || ""),
+      method: "put",
+      status: ensureString(source.newsStatus || source.status || "draft")
+    };
+  }
+
   function startPanel() {
     var prev = document.getElementById(NEWS_V2_CFG.PANEL_ID);
     if (prev) prev.remove();
@@ -1031,8 +1065,58 @@
       var note = document.createElement("div");
       note.style.cssText = "padding:8px;border:1px solid #fde68a;border-radius:6px;background:#fffbeb;font-size:12px;color:#713f12;";
       note.textContent =
-        "Каркас редактирования: загрузка JSON updateItems и отправка method=put. Логику сложных преобразований можно расширять отдельно.";
+        "Редактирование: можно загрузить JSON updateItems или сначала загрузить текущие новости с сервера, выбрать нужные и сформировать payload.";
       wrap.appendChild(note);
+
+      var fetchBox = document.createElement("div");
+      fetchBox.style.cssText = "padding:8px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;";
+      wrap.appendChild(fetchBox);
+
+      var fetchTitle = document.createElement("div");
+      fetchTitle.textContent = "Загрузка текущих новостей для редактирования";
+      fetchTitle.style.cssText = "font-size:12px;font-weight:700;margin-bottom:8px;";
+      fetchBox.appendChild(fetchTitle);
+
+      function mkInlineMulti(label, values, defaultValue) {
+        var row = document.createElement("div");
+        row.style.cssText = "margin-bottom:6px;";
+        var cap = document.createElement("div");
+        cap.textContent = label;
+        cap.style.cssText = "font-size:11px;color:#334155;margin-bottom:4px;";
+        row.appendChild(cap);
+        var checks = [];
+        for (var i = 0; i < values.length; i++) {
+          var lb = document.createElement("label");
+          lb.style.cssText = "display:inline-flex;align-items:center;gap:4px;margin-right:10px;font-size:12px;";
+          var c = document.createElement("input");
+          c.type = "checkbox";
+          c.value = values[i];
+          c.checked = defaultValue === values[i];
+          checks.push(c);
+          lb.appendChild(c);
+          lb.appendChild(document.createTextNode(values[i]));
+          row.appendChild(lb);
+        }
+        return {
+          el: row,
+          getSelected: function () {
+            return checks.filter(function (c) { return c.checked; }).map(function (c) { return c.value; });
+          }
+        };
+      }
+
+      var editStatusCtl = mkInlineMulti("Status", NEWS_V2_CFG.STATUS_OPTIONS, "published");
+      var editBlockCtl = mkInlineMulti("Business block", NEWS_V2_CFG.BUSINESS_BLOCK_OPTIONS, "KMKKSB");
+      fetchBox.appendChild(editStatusCtl.el);
+      fetchBox.appendChild(editBlockCtl.el);
+
+      var fetchPagesInput = document.createElement("input");
+      fetchPagesInput.type = "number";
+      fetchPagesInput.min = "1";
+      fetchPagesInput.value = "3";
+      fetchPagesInput.style.cssText = "padding:4px 6px;border:1px solid #94a3b8;border-radius:6px;width:90px;margin-right:8px;";
+      fetchBox.appendChild(fetchPagesInput);
+      fetchBox.appendChild(document.createTextNode("макс. страниц на комбинацию"));
 
       var fileInput = document.createElement("input");
       fileInput.type = "file";
@@ -1091,6 +1175,74 @@
         renderList();
         log("Загружено payload для редактирования: " + candidates.length);
       }
+
+      actions.appendChild(
+        mkBtn(
+          "Загрузить с сервера для выбора",
+          function () {
+            void (async function () {
+              var statuses = editStatusCtl.getSelected();
+              var blocks = editBlockCtl.getSelected();
+              var maxPages = parseInt(String(fetchPagesInput.value || "3"), 10);
+              if (!Number.isFinite(maxPages) || maxPages < 1) maxPages = 1;
+              if (!statuses.length || !blocks.length) {
+                log("Для загрузки выберите status и business block.");
+                return;
+              }
+              var env = getEnv();
+              var loaded = [];
+              for (var si = 0; si < statuses.length; si++) {
+                for (var bi = 0; bi < blocks.length; bi++) {
+                  var status = statuses[si];
+                  var block = blocks[bi];
+                  var pageNum = 1;
+                  while (pageNum <= maxPages) {
+                    var payload = { newsStatus: status, businessBlock: block, pageNum: pageNum };
+                    var res = await fetchNewsListPage(env.origin, payload);
+                    if (!(res.ok && res.data && res.data.success === true && res.data.body)) {
+                      log("Ошибка загрузки: " + status + "/" + block + " page=" + pageNum);
+                      break;
+                    }
+                    var periods = Array.isArray(res.data.body.timePeriod) ? res.data.body.timePeriod : [];
+                    var countOnPage = 0;
+                    for (var pi = 0; pi < periods.length; pi++) {
+                      var newsList = Array.isArray(periods[pi].news) ? periods[pi].news : [];
+                      for (var ni = 0; ni < newsList.length; ni++) {
+                        loaded.push(newsList[ni]);
+                        countOnPage++;
+                      }
+                    }
+                    var pageInfo = (res.data.body && res.data.body.page) || {};
+                    log("Загружено: " + status + "/" + block + " page=" + pageNum + " новостей=" + countOnPage);
+                    if (pageInfo.isLast === true) break;
+                    if (Number(pageInfo.total || 0) > 0 && pageNum >= Number(pageInfo.total)) break;
+                    pageNum++;
+                  }
+                }
+              }
+              candidates = loaded
+                .filter(function (n) {
+                  return String(n && n.newsId || "").trim();
+                })
+                .map(function (row) {
+                  var payload = buildUpdatePayloadFromNewsItem(row);
+                  return {
+                    selected: true,
+                    sourceNewsId: ensureString(payload.newsId || ""),
+                    sourceType: normalizeType(payload.type || payload.newsType),
+                    summary: compactNewsLabel(row),
+                    authorsCount: Array.isArray(payload.authorsList) ? payload.authorsList.length : 0,
+                    leadersCount: Array.isArray(payload.leadersList) ? payload.leadersList.length : 0,
+                    payload: payload
+                  };
+                });
+              renderList();
+              log("Подготовлено записей к редактированию из сервера: " + candidates.length);
+            })();
+          },
+          "background:#0ea5e9;color:#fff;border-color:#0ea5e9;"
+        )
+      );
 
       actions.appendChild(
         mkBtn("Шаблон редактирования", function () {
