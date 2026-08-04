@@ -1230,7 +1230,7 @@
         "display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:5px 8px;" +
         "border:1px solid #cbd5e1;border-radius:6px;background:#fff;cursor:pointer;";
       stubModeLabel.title =
-        "Создавать болванки: leadersList и authorsList всегда пустые, даже если заполнены в файле";
+        "При создании leadersList и authorsList уйдут пустыми; в таблице счётчики авторов/лидеров не меняются";
       var stubModeCb = document.createElement("input");
       stubModeCb.type = "checkbox";
       stubModeCb.checked = false;
