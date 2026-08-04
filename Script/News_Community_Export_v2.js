@@ -59,6 +59,11 @@
     CUSTOM_TAGS_PLACEHOLDER: "M&A\nГарантии\nВалютное хеджирование",
     PAYLOAD_GAP_MS: 500,
     PAGE_GAP_MS: 100,
+    /** Начальный pageNum выгрузки (и загрузки для edit). */
+    PAGE_FROM: 1,
+    /** Конечный pageNum включительно; 0 = до последней страницы API. */
+    PAGE_TO: 0,
+    /** Совместимость: если PAGE_TO=0 и нужен локальный лимит «сколько страниц» (edit). */
     MAX_PAGES_PER_COMBO: 0,
     GAP_MAX_MS: 60000,
     RETRY_MAX: 2,
@@ -931,7 +936,7 @@
     // Общие настройки пауз/ретраев + Стоп для всех вкладок
     var sharedTimingBox = document.createElement("div");
     sharedTimingBox.style.cssText =
-      "display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px;align-items:end;" +
+      "display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px;align-items:end;" +
       "padding:8px 14px;border-bottom:1px solid #e2e8f0;background:rgba(255,255,255,.75);";
     root.appendChild(sharedTimingBox);
 
@@ -955,7 +960,9 @@
 
     var sharedPayloadGap = mkSharedNum("Пауза операций, мс", NEWS_V2_CFG.PAYLOAD_GAP_MS, "Пауза между запросами создания/статусов/редактирования и между комбинациями выгрузки");
     var sharedPageGap = mkSharedNum("Пауза страниц, мс", NEWS_V2_CFG.PAGE_GAP_MS, "Пауза между pageNum внутри комбинации выгрузки");
-    var sharedMaxPages = mkSharedNum("Макс. страниц", NEWS_V2_CFG.MAX_PAGES_PER_COMBO, "Лимит страниц на комбинацию выгрузки: 0 = все");
+    var sharedPageFrom = mkSharedNum("Стр. с", NEWS_V2_CFG.PAGE_FROM, "Начальный pageNum (выгрузка и загрузка для редактирования). Пример: 10");
+    sharedPageFrom.inp.min = "1";
+    var sharedPageTo = mkSharedNum("Стр. по", NEWS_V2_CFG.PAGE_TO, "Конечный pageNum включительно. 0 = до последней. Пример: 20 → только страницы 10…20");
     var sharedRetryPause = mkSharedNum("Пауза повтора, мс", NEWS_V2_CFG.RETRY_PAUSE_MS, "Пауза перед повтором при ошибке");
     var sharedRetryMax = mkSharedNum("Попыток", NEWS_V2_CFG.RETRY_MAX, "Число попыток одного запроса");
     sharedRetryMax.inp.min = "1";
@@ -963,7 +970,8 @@
     sharedAbort.inp.min = "1";
     sharedTimingBox.appendChild(sharedPayloadGap.lab);
     sharedTimingBox.appendChild(sharedPageGap.lab);
-    sharedTimingBox.appendChild(sharedMaxPages.lab);
+    sharedTimingBox.appendChild(sharedPageFrom.lab);
+    sharedTimingBox.appendChild(sharedPageTo.lab);
     sharedTimingBox.appendChild(sharedRetryPause.lab);
     sharedTimingBox.appendChild(sharedRetryMax.lab);
     sharedTimingBox.appendChild(sharedAbort.lab);
@@ -1016,11 +1024,44 @@
       if (n > 20) return 20;
       return n;
     }
+    function readSharedPageFrom() {
+      var n = parseInt(String(sharedPageFrom.inp.value || "").trim(), 10);
+      if (!Number.isFinite(n) || n < 1) return Math.max(1, NEWS_V2_CFG.PAGE_FROM || 1);
+      return n;
+    }
+    function readSharedPageTo() {
+      var n = parseInt(String(sharedPageTo.inp.value || "").trim(), 10);
+      if (!Number.isFinite(n) || n < 0) return Math.max(0, NEWS_V2_CFG.PAGE_TO || 0);
+      return n;
+    }
+    /**
+     * Диапазон pageNum: с pageFrom по pageTo (включительно).
+     * pageTo=0 → до последней страницы API (isLast / total).
+     */
+    function resolvePageRange(settings, fallbackCount) {
+      var from = Math.max(1, Number(settings && settings.pageFrom) || 1);
+      var to = Math.max(0, Number(settings && settings.pageTo) || 0);
+      if (to > 0 && to < from) {
+        return {
+          ok: false,
+          error: "Стр. по (" + to + ") меньше Стр. с (" + from + ")",
+          pageFrom: from,
+          pageTo: to
+        };
+      }
+      var end = to;
+      if (end <= 0 && fallbackCount != null) {
+        var count = Math.max(1, Number(fallbackCount) || 1);
+        end = from + count - 1;
+      }
+      return { ok: true, pageFrom: from, pageTo: end, pageToRaw: to };
+    }
     function getSharedRequestSettings() {
       return {
         opGapMs: readSharedGap(sharedPayloadGap.inp, NEWS_V2_CFG.PAYLOAD_GAP_MS),
         pageGapMs: readSharedGap(sharedPageGap.inp, NEWS_V2_CFG.PAGE_GAP_MS),
-        maxPages: Math.max(0, parseInt(String(sharedMaxPages.inp.value || "0"), 10) || 0),
+        pageFrom: readSharedPageFrom(),
+        pageTo: readSharedPageTo(),
         retryPauseMs: readSharedGap(sharedRetryPause.inp, NEWS_V2_CFG.RETRY_PAUSE_MS),
         retryMax: readSharedRetryMax(),
         abortLimit: readSharedAbortLimit()
@@ -2090,10 +2131,16 @@
               var statuses = editStatusCtl.getSelected();
               var blocks = editBlockCtl.getSelected();
               var settings = getSharedRequestSettings();
-              var maxPages = parseInt(String(fetchPagesInput.value || "3"), 10);
-              if (!Number.isFinite(maxPages) || maxPages < 1) maxPages = 1;
-              // Общий лимит страниц панели перекрывает локальный, если задан (>0).
-              if (settings.maxPages > 0) maxPages = settings.maxPages;
+              var localMax = parseInt(String(fetchPagesInput.value || "3"), 10);
+              if (!Number.isFinite(localMax) || localMax < 1) localMax = 1;
+              // Диапазон: Стр. с…Стр. по; если «по»=0 — localMax страниц начиная с «с».
+              var range = resolvePageRange(settings, localMax);
+              if (!range.ok) {
+                log("Отмена загрузки: " + range.error);
+                return;
+              }
+              var pageFrom = range.pageFrom;
+              var pageTo = range.pageTo;
               if (!statuses.length || !blocks.length) {
                 log("Для загрузки выберите status и business block.");
                 return;
@@ -2106,6 +2153,13 @@
               var abortedByErrors = false;
               setOpBusy(true, "загрузка для редактирования");
               try {
+                log(
+                  "Загрузка страниц " +
+                    pageFrom +
+                    "…" +
+                    pageTo +
+                    (range.pageToRaw > 0 ? "" : " (лимит вкладки: " + localMax + ")")
+                );
                 for (var si = 0; si < statuses.length; si++) {
                   if (isStopRequested()) {
                     stoppedByUser = true;
@@ -2118,8 +2172,8 @@
                     }
                     var status = statuses[si];
                     var block = blocks[bi];
-                    var pageNum = 1;
-                    while (pageNum <= maxPages) {
+                    var pageNum = pageFrom;
+                    while (pageNum <= pageTo) {
                       if (isStopRequested()) {
                         stoppedByUser = true;
                         break;
@@ -2179,7 +2233,7 @@
                       if (pageInfo.isLast === true) break;
                       if (Number(pageInfo.total || 0) > 0 && pageNum >= Number(pageInfo.total)) break;
                       pageNum++;
-                      if (pageNum <= maxPages && settings.pageGapMs > 0) {
+                      if (pageNum <= pageTo && settings.pageGapMs > 0) {
                         await delay(settings.pageGapMs);
                         if (isStopRequested()) {
                           stoppedByUser = true;
@@ -2621,7 +2675,7 @@
         "margin-top:8px;padding:6px 8px;border:1px dashed #94a3b8;border-radius:6px;" +
         "background:#f8fafc;font-size:11px;color:#475569;";
       timingHint.textContent =
-        "Паузы, попытки, макс. страниц и аварийный стоп — в общем блоке настроек над вкладками. Стоп — общая кнопка панели (и здесь).";
+        "Паузы, попытки, диапазон страниц (Стр. с / Стр. по) и аварийный стоп — в общем блоке над вкладками. Пример: с 10 по 20 — только эти pageNum.";
       payloadBox.appendChild(timingHint);
 
       function refreshRequiredUi() {
@@ -2681,11 +2735,18 @@
         setExportBusy(true);
         var env = getEnv();
         var settings = getSharedRequestSettings();
+        var range = resolvePageRange(settings, null);
+        if (!range.ok) {
+          setExportBusy(false);
+          log("Остановка выгрузки: " + range.error);
+          return;
+        }
+        var pageFrom = range.pageFrom;
+        var pageTo = range.pageToRaw; // 0 = до последней
         var payloadGapMs = settings.opGapMs;
         var pageGapMs = settings.pageGapMs;
         var retryPauseMs = settings.retryPauseMs;
         var retryMax = settings.retryMax;
-        var maxPages = settings.maxPages;
         var abortLimit = settings.abortLimit;
         var combos = [];
         for (var si = 0; si < sel.newsStatuses.length; si++) {
@@ -2697,7 +2758,16 @@
             });
           }
         }
-        log("Старт выгрузки (" + mode + ") | комбинаций: " + combos.length);
+        log(
+          "Старт выгрузки (" +
+            mode +
+            ") | комбинаций: " +
+            combos.length +
+            " | страницы: " +
+            pageFrom +
+            "…" +
+            (pageTo > 0 ? String(pageTo) : "конец")
+        );
         setStats({ tone: "run", phase: "выгрузка", progress: "0 / " + combos.length, news: "0", newsCount: "—", retries: "0", errors: "0" });
 
         var rawPages = [];
@@ -2728,10 +2798,10 @@
               block: combo.businessBlock,
               tags: tagsStat,
               progress: ci + " / " + combos.length + " завершено",
-              page: "pageNum=1…",
+              page: "pageNum=" + pageFrom + "…",
               news: String(newsTotal)
             });
-            var pageNum = 1;
+            var pageNum = pageFrom;
             var totalPages = null;
             var comboNewsCount = null;
             var mergedCombo = null;
@@ -2747,7 +2817,8 @@
               if (combo.newsTagList.length) payload.newsTagList = combo.newsTagList;
               setStats({
                 tone: consecutiveExhaustedFails >= 1 ? "retry2" : "run",
-                page: "pageNum=" + pageNum + (totalPages != null ? "/" + totalPages : ""),
+                page: "pageNum=" + pageNum + (totalPages != null ? "/" + totalPages : "") +
+                  (pageTo > 0 ? " (до " + pageTo + ")" : ""),
                 status: combo.newsStatus,
                 block: combo.businessBlock,
                 tags: tagsStat,
@@ -2778,7 +2849,9 @@
                   setStats({ tone: "done_err", phase: "ошибка — стоп", errors: String(errors) });
                   break;
                 }
-                var canNext = (maxPages <= 0 || pageNum < maxPages) && (totalPages == null || pageNum < totalPages);
+                var canNext =
+                  (pageTo <= 0 || pageNum < pageTo) &&
+                  (totalPages == null || pageNum < totalPages);
                 if (canNext) {
                   pageNum++;
                   if (pageGapMs > 0) await delay(pageGapMs);
@@ -2823,9 +2896,9 @@
                 errors: String(errors)
               });
               log("  → OK pageNum=" + pageNum + " | новостей на странице: " + (fr.data.body ? countNewsInBody(fr.data.body) : 0));
+              if (pageTo > 0 && pageNum >= pageTo) break;
               if (isLast) break;
               if (totalPages != null && pageNum >= totalPages) break;
-              if (maxPages > 0 && pageNum >= maxPages) break;
               pageNum++;
               if (pageGapMs > 0) {
                 await delay(pageGapMs);
@@ -2841,6 +2914,8 @@
                   newsTagList: combo.newsTagList || []
                 },
                 pagesFetched: comboPages.length,
+                pageFrom: pageFrom,
+                pageTo: pageTo > 0 ? pageTo : null,
                 newsCount: mergedCombo ? countNewsInBody(mergedCombo.body) : 0,
                 partial: !!stoppedByUser || !!abortedByErrors,
                 merged: mergedCombo
@@ -2880,7 +2955,8 @@
               retriesTotal: retriesTotal,
               errorsExhausted: errors,
               abortLimit: abortLimit,
-              maxPagesPerCombo: maxPages > 0 ? maxPages : null,
+              pageFrom: pageFrom,
+              pageTo: pageTo > 0 ? pageTo : null,
               mode: sel.useTags ? "businessBlock+tags" : "businessBlock",
               selection: {
                 newsStatuses: sel.newsStatuses,
