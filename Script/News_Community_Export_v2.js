@@ -617,6 +617,21 @@
     }
   }
 
+  /** Метаданные страницы из body ответа /proxy/v1/news (isLast / total / num). */
+  function readNewsPageMeta(body) {
+    var page = body && body.page && typeof body.page === "object" ? body.page : null;
+    var rawIsLast = page ? page.isLast : body && body.isLast;
+    var isLast =
+      rawIsLast === true ||
+      rawIsLast === 1 ||
+      String(rawIsLast == null ? "" : rawIsLast).toLowerCase() === "true";
+    var totalRaw = page && page.total != null ? Number(page.total) : null;
+    var total = Number.isFinite(totalRaw) && totalRaw > 0 ? totalRaw : null;
+    var numRaw = page && page.num != null ? Number(page.num) : null;
+    var num = Number.isFinite(numRaw) ? numRaw : null;
+    return { page: page, isLast: !!isLast, total: total, num: num };
+  }
+
   function escapeCsvField(s) {
     var t = String(s == null ? "" : s);
     var delim = NEWS_V2_CFG.CSV_DELIMITER || ";";
@@ -2230,10 +2245,22 @@
                           countOnPage++;
                         }
                       }
-                      var pageInfo = (res.data.body && res.data.body.page) || {};
-                      log("Загружено: " + status + "/" + block + " page=" + pageNum + " новостей=" + countOnPage);
-                      if (pageInfo.isLast === true) break;
-                      if (Number(pageInfo.total || 0) > 0 && pageNum >= Number(pageInfo.total)) break;
+                      var pageMeta = readNewsPageMeta(res.data.body);
+                      log(
+                        "Загружено: " +
+                          status +
+                          "/" +
+                          block +
+                          " page=" +
+                          pageNum +
+                          " новостей=" +
+                          countOnPage +
+                          " | isLast=" +
+                          (pageMeta.isLast ? "true" : "false")
+                      );
+                      // isLast=true → следующий pageNum не запрашиваем.
+                      if (pageMeta.isLast) break;
+                      if (pageMeta.total != null && pageNum >= pageMeta.total) break;
                       pageNum++;
                       if (pageNum <= pageTo && settings.pageGapMs > 0) {
                         await delay(settings.pageGapMs);
@@ -2868,15 +2895,14 @@
               comboPages.push(fr.data);
               mergedCombo = mergeNewsPageInto(mergedCombo, fr.data);
               mergedAll = mergeNewsPageInto(mergedAll, fr.data);
-              var pageInfo = fr.data.body && fr.data.body.page;
-              var isLast = pageInfo && pageInfo.isLast === true;
-              var total = pageInfo && pageInfo.total != null ? Number(pageInfo.total) : null;
-              if (Number.isFinite(total) && total > 0) totalPages = total;
+              var pageMeta = readNewsPageMeta(fr.data && fr.data.body);
+              var isLast = pageMeta.isLast;
+              if (pageMeta.total != null) totalPages = pageMeta.total;
               if (comboNewsCount == null && fr.data.body && fr.data.body.newsCount != null) {
                 var nc = Number(fr.data.body.newsCount);
                 if (Number.isFinite(nc)) comboNewsCount = nc;
               }
-              var pageTotalVal = totalPages != null ? totalPages : total != null ? total : "";
+              var pageTotalVal = totalPages != null ? totalPages : "";
               if (fr.data.body) {
                 forEachNewsInBody(fr.data.body, function (newsItem) {
                   flatRows.push({
@@ -2897,10 +2923,29 @@
                 retries: String(retriesTotal),
                 errors: String(errors)
               });
-              log("  → OK pageNum=" + pageNum + " | новостей на странице: " + (fr.data.body ? countNewsInBody(fr.data.body) : 0));
-              if (pageTo > 0 && pageNum >= pageTo) break;
-              if (isLast) break;
-              if (totalPages != null && pageNum >= totalPages) break;
+              log(
+                "  → OK pageNum=" +
+                  pageNum +
+                  (pageMeta.num != null ? " (page.num=" + pageMeta.num + ")" : "") +
+                  (totalPages != null ? " | total=" + totalPages : "") +
+                  " | isLast=" +
+                  (isLast ? "true" : "false") +
+                  " | новостей на странице: " +
+                  (fr.data.body ? countNewsInBody(fr.data.body) : 0)
+              );
+              // Приоритет: isLast=true — следующий запрос с большим pageNum не делаем.
+              if (isLast) {
+                log("  isLast=true — комбинация завершена, следующий pageNum не запрашиваем.");
+                break;
+              }
+              if (pageTo > 0 && pageNum >= pageTo) {
+                log("  Достигнут «Стр. по»=" + pageTo + " — остановка пагинации комбинации.");
+                break;
+              }
+              if (totalPages != null && pageNum >= totalPages) {
+                log("  pageNum >= total (" + totalPages + ") — остановка пагинации комбинации.");
+                break;
+              }
               pageNum++;
               if (pageGapMs > 0) {
                 await delay(pageGapMs);
