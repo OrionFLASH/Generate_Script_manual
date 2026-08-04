@@ -426,5 +426,6 @@
 | **1.39** | Добавлен § **6B** `HTTP_Traffic_Logger.js`: фоновый перехват fetch/XHR для сбора трафика; введение — 13 скриптов. |
 | **1.40** | `HTTP_Traffic_Logger`: заголовки + payload; `.log` с маской/фильтром; JSON ответов без маски, связь `corrId`. |
 | **1.41** | § **6A** `News_Community_Export_v2`: delete + news-detail; статусы из `/v1/news`; fix put rewards/contests; компактный UI. |
+| **1.42** | Маска ПДн: расширенные ключи (HAR news); DevToolsTrace — чекбокс маски (News v2 / Pulse); `update_devtools_trace.js`. |
 
 *Актуальность проверяйте по скриптам в `Script/`.*

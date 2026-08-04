@@ -76,6 +76,7 @@
 
 | Дата | Описание |
 |------|----------|
+| 2026-08-05 | **Маска ПДн:** расширены ключи по HAR news; в DevToolsTrace (News v2 / Pulse) — переключатель «Маска ПДн»; `update_devtools_trace.js`. |
 | 2026-08-05 | **`News_Community_Export_v2.js`**: delete + news-detail; статусы/edit/delete из `/v1/news`; fix put rewards/contests; компактный UI; Docs/ROADMAP. |
 | 2026-08-05 | **`HTTP_Traffic_Logger.js`**: fetch/XHR с заголовками и payload; `.log` (фильтр+маска) / JSON ответов без маски (`corrId`). |
 | 2026-08-05 | **`News_Community_Export_v2.js`**: Trace с маскированием ПДн; вкладки сверху на всю ширину; create — форма/файл, обязательные reward/tournament для achievement, разбор всех pages, публикация `objectId` после create, шаблон JSON по HAR; Docs/ROADMAP/справочник. |

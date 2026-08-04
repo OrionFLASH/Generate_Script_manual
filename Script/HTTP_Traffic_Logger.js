@@ -21,7 +21,7 @@
     DEFAULT_MASK: true
   };
 
-  /** Ключи JSON, значения которых маскируются при включённой маске. */
+  /** Ключи JSON, значения которых маскируются при включённой маске (news HAR + общие). */
   var TRACE_MASK_KEYS = {
     employeenumber: true,
     employeeid: true,
@@ -46,7 +46,8 @@
     password: true,
     token: true,
     authorization: true,
-    cookie: true
+    cookie: true,
+    bossnames: true
   };
 
   var prev = document.getElementById(CFG.PANEL_ID);
@@ -185,8 +186,19 @@
         var k = keys[i];
         var val = node[k];
         var lk = String(k).toLowerCase();
-        if (TRACE_MASK_KEYS[lk] && (typeof val === "string" || typeof val === "number")) {
-          out[k] = maskSensitiveValue(val);
+        if (TRACE_MASK_KEYS[lk]) {
+          if (typeof val === "string" || typeof val === "number") {
+            out[k] = maskSensitiveValue(val);
+          } else if (
+            Array.isArray(val) &&
+            val.every(function (x) {
+              return typeof x === "string" || typeof x === "number";
+            })
+          ) {
+            out[k] = val.map(maskSensitiveValue);
+          } else {
+            out[k] = maskSensitiveTree(val);
+          }
         } else if (typeof val === "string") {
           var trimmed = val.replace(/^\s+/, "");
           if (trimmed.charAt(0) === "{" || trimmed.charAt(0) === "[") {
@@ -210,7 +222,7 @@
   function maskSensitiveInPlainText(s) {
     s = String(s);
     s = s.replace(
-      /"(employeeNumber|employeeId|createdBy|lastName|firstName|midName|middleName|secondName|fullName|personUuid|userId|tabNumber|sberChatMention|alphaLink|sigmaLink|email|mail|phone|preferred_mail|preferred_phone|password|token|Authorization|Cookie)"\s*:\s*"([^"]*)"/gi,
+      /"(employeeNumber|employeeId|createdBy|lastName|firstName|midName|middleName|secondName|fullName|personUuid|userId|tabNumber|sberChatMention|alphaLink|sigmaLink|email|mail|phone|preferred_mail|preferred_phone|password|token|Authorization|Cookie|bossNames)"\s*:\s*"([^"]*)"/gi,
       function (_m, key, val) {
         return '"' + key + '": "' + maskSensitiveValue(val) + '"';
       }

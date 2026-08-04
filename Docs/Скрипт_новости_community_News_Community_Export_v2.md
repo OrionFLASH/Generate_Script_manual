@@ -66,7 +66,7 @@
 - Один буфер на всю панель: выгрузка / создание / статусы / редактирование пишут в один и тот же trace.
 - При включении пишутся HTTP (тела create/update/list), строки журнала, клики UI.
 - Выключение или **«Сохранить trace»** → `trace_News_Community_Export_v2_YYYYMMDD_HHMMSS.log`.
-- В trace **маскируются** ПДн/идентификаторы: `employeeNumber`, `createdBy`, `firstName`/`lastName`/`fullName`, `sberChatMention`, `alphaLink`/`sigmaLink`, почта/телефон; вложенные JSON-строки (`newsFeature` и т.п.) тоже разбираются и маскируются. Текст новости (`newsText`/`description`) и коды наград/турниров не маскируются.
+- В trace **маскируются** ПДн/идентификаторы (переключатель **«Маска ПДн»** рядом с Trace, по умолчанию ON): `employeeNumber`, `createdBy`, `firstName`/`lastName`/`fullName`, `sberChatMention`, `alphaLink`/`sigmaLink`, почта/телефон, `personUuid`/`userId`; вложенные JSON-строки (`newsFeature`) и объекты `authors`/`leaders` из list/detail. Текст новости и коды наград/турниров не маскируются. Маску можно выключить для локальной отладки.
 
 ## Вкладка «Создание»
 
@@ -268,3 +268,4 @@
 | 1.x | 2026-08-05 | Шаблон JSON создания: fieldNotes + 3 примера (bestPractice/achievement/publication) под реальные поля |
 | 1.x | 2026-08-05 | Шаблон и payload сверены с HAR `ToDo/NEWS/Создание новостей.txt`; `plannedDt` из источника |
 | 1.x | 2026-08-05 | По HTTP logger: вкладка Удаление (`newsDelete`); статусы из `/v1/news`; edit + опц. `news-detail`; fix put `rewards`/`contests`; компактный UI |
+| 1.x | 2026-08-05 | Trace: расширенные ключи маски по HAR; переключатель «Маска ПДн» (ON по умолчанию) |

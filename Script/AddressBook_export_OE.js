@@ -11,7 +11,9 @@
 
 /**
  * DevToolsTrace — трассировка UI, HTTP и журнала для DevTools-скриптов (один файл → вставка в консоль).
- * Использование: createDevToolsTrace({ scriptId: "MyScript" }) → mountToggleRow, attachPanel, wrapFetch, log.
+ * Использование: createDevToolsTrace({ scriptId, sanitizeForTrace?, maskEnabled? }) →
+ *   mountToggleRow, attachPanel, wrapFetch, log.
+ * При наличии sanitizeForTrace в строке Trace появляется чекбокс «Маска ПДн» (по умолчанию вкл.).
  */
 /* DevToolsTrace v1 */
 function createDevToolsTrace(opts) {
@@ -19,6 +21,11 @@ function createDevToolsTrace(opts) {
   var scriptId = (opts && opts.scriptId) || "devtools_script";
   var maxBodyLen = (opts && opts.maxBodyLen) || 16384;
   var maxLines = (opts && opts.maxLines) || 8000;
+  /** @type {((s: string) => string)|null} */
+  var userSanitize =
+    opts && typeof opts.sanitizeForTrace === "function" ? opts.sanitizeForTrace : null;
+  /** Маска ПДн: только если передан sanitizeForTrace; по умолчанию включена. */
+  var maskEnabled = userSanitize ? opts.maskEnabled !== false : false;
   var enabled = false;
   /** @type {string[]} */
   var buffer = [];
@@ -50,16 +57,28 @@ function createDevToolsTrace(opts) {
   }
 
   /**
+   * Применяет sanitize только при включённой маске.
+   * @param {string} s
+   * @returns {string}
+   */
+  function applySanitize(s) {
+    var text = String(s == null ? "" : s);
+    if (!userSanitize || !maskEnabled) return text;
+    return userSanitize(text);
+  }
+
+  /**
    * @param {string} kind
    * @param {string} message
    * @param {Record<string, unknown>|null} [detail]
    */
   function push(kind, message, detail) {
     if (!enabled) return;
-    var line = isoNow() + " [" + kind + "] " + message;
+    var safeMsg = applySanitize(String(message == null ? "" : message));
+    var line = isoNow() + " [" + kind + "] " + safeMsg;
     if (detail && typeof detail === "object") {
       try {
-        line += " " + JSON.stringify(detail);
+        line += " " + applySanitize(JSON.stringify(detail));
       } catch (_e) {
         line += " [detail unserializable]";
       }
@@ -76,7 +95,12 @@ function createDevToolsTrace(opts) {
     if (next === enabled) return;
     if (next) {
       enabled = true;
-      push("SYS", "Trace ON script=" + scriptId);
+      push(
+        "SYS",
+        "Trace ON script=" +
+          scriptId +
+          (userSanitize ? " mask=" + (maskEnabled ? "ON" : "OFF") : "")
+      );
       return;
     }
     push("SYS", "Trace OFF script=" + scriptId);
@@ -87,6 +111,21 @@ function createDevToolsTrace(opts) {
 
   function isEnabled() {
     return enabled;
+  }
+
+  /**
+   * @param {boolean} on
+   */
+  function setMaskEnabled(on) {
+    if (!userSanitize) return;
+    var next = !!on;
+    if (next === maskEnabled) return;
+    maskEnabled = next;
+    if (enabled) push("SYS", "Mask " + (maskEnabled ? "ON" : "OFF"));
+  }
+
+  function isMaskEnabled() {
+    return !!(userSanitize && maskEnabled);
   }
 
   /**
@@ -118,7 +157,7 @@ function createDevToolsTrace(opts) {
             ? String(input.url)
             : String(input);
       var method = (init && init.method) || "GET";
-      var reqBody = init && init.body != null ? truncBody(init.body) : "";
+      var reqBody = init && init.body != null ? applySanitize(truncBody(init.body)) : "";
       push("HTTP", "→ " + method + " " + url, reqBody ? { requestBody: reqBody } : null);
       var t0 = Date.now();
       var res = await nativeFetch(input, init);
@@ -126,7 +165,7 @@ function createDevToolsTrace(opts) {
       var status = res.status;
       var respText = "";
       try {
-        respText = truncBody(await res.clone().text());
+        respText = applySanitize(truncBody(await res.clone().text()));
       } catch (_e) {
         respText = "[body read error]";
       }
@@ -156,7 +195,10 @@ function createDevToolsTrace(opts) {
         }
         var cb = t.closest('input[type="checkbox"]');
         if (cb) {
-          ui("click checkbox", { checked: cb.checked, label: (cb.parentElement && cb.parentElement.textContent || "").trim().slice(0, 80) });
+          ui("click checkbox", {
+            checked: cb.checked,
+            label: ((cb.parentElement && cb.parentElement.textContent) || "").trim().slice(0, 80)
+          });
           return;
         }
         var sel = t.closest("select");
@@ -185,7 +227,7 @@ function createDevToolsTrace(opts) {
   /**
    * @param {HTMLElement} container
    * @param {HTMLElement|null} [beforeNode]
-   * @returns {{ row: HTMLElement, checkbox: HTMLInputElement, saveBtn: HTMLButtonElement }}
+   * @returns {{ row: HTMLElement, checkbox: HTMLInputElement, maskCheckbox: HTMLInputElement|null, saveBtn: HTMLButtonElement }}
    */
   function mountToggleRow(container, beforeNode) {
     var row = document.createElement("div");
@@ -198,7 +240,8 @@ function createDevToolsTrace(opts) {
     label.style.cssText = "display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;";
     var checkbox = document.createElement("input");
     checkbox.type = "checkbox";
-    checkbox.title = "Запись всех HTTP-запросов, кликов по панели и строк журнала в файл при выключении";
+    checkbox.title =
+      "Общая запись HTTP, кликов по панели и журнала со всех вкладок → файл .log при выключении";
     var span = document.createElement("span");
     span.textContent = "Trace (диагностика → файл .log)";
     label.appendChild(checkbox);
@@ -224,6 +267,26 @@ function createDevToolsTrace(opts) {
     });
 
     row.appendChild(label);
+
+    /** @type {HTMLInputElement|null} */
+    var maskCheckbox = null;
+    if (userSanitize) {
+      var maskLab = document.createElement("label");
+      maskLab.style.cssText =
+        "display:flex;align-items:center;gap:5px;cursor:pointer;user-select:none;" +
+        "padding:2px 6px;border:1px solid #cbd5e1;border-radius:4px;background:#fff;font-size:10px;";
+      maskLab.title = "Маскировать ПДн в trace (.log). Выкл. — сырые тела HTTP/журнала.";
+      maskCheckbox = document.createElement("input");
+      maskCheckbox.type = "checkbox";
+      maskCheckbox.checked = maskEnabled;
+      maskLab.appendChild(maskCheckbox);
+      maskLab.appendChild(document.createTextNode("Маска ПДн"));
+      maskCheckbox.addEventListener("change", function () {
+        setMaskEnabled(!!maskCheckbox.checked);
+      });
+      row.appendChild(maskLab);
+    }
+
     row.appendChild(saveBtn);
 
     if (beforeNode && beforeNode.parentNode) {
@@ -231,7 +294,7 @@ function createDevToolsTrace(opts) {
     } else if (container) {
       container.appendChild(row);
     }
-    return { row: row, checkbox: checkbox, saveBtn: saveBtn };
+    return { row: row, checkbox: checkbox, maskCheckbox: maskCheckbox, saveBtn: saveBtn };
   }
 
   function downloadLog() {
@@ -243,6 +306,7 @@ function createDevToolsTrace(opts) {
       isoNow() +
       " lines=" +
       buffer.length +
+      (userSanitize ? " mask=" + (maskEnabled ? "ON" : "OFF") : "") +
       "\n";
     var body = header + buffer.join("\n") + "\n";
     var fname = "trace_" + scriptId + "_" + fileTsFromIso(isoNow()) + ".log";
@@ -262,6 +326,8 @@ function createDevToolsTrace(opts) {
     scriptId: scriptId,
     isEnabled: isEnabled,
     setEnabled: setEnabled,
+    isMaskEnabled: isMaskEnabled,
+    setMaskEnabled: setMaskEnabled,
     log: log,
     ui: ui,
     wrapFetch: wrapFetch,

@@ -428,13 +428,12 @@
 - `[v]` Referer create/status/edit: `/admin/community/...` (по HAR).
 - `[v]` Шаблон JSON создания: `fieldNotes` + примеры bestPractice / achievement / publication под реальные поля и коды.
 
-### 6.13 По HAR logger: delete / detail / список для статусов + UI
+### 6.14 Маска ПДн: ключи по HAR + переключатель
 
-- `[v]` `newsDelete` (`POST …/news/newsId/newsDelete`, body `{ newsId }`) — вкладка «Удаление».
-- `[v]` `news-detail` для уточнения payload перед put (опция на «Редактирование»).
-- `[v]` Вкладка «Статусы»: загрузка списка с `POST /v1/news` (как у edit/export), не только файл/ID.
-- `[v]` Fix update: `rewardList`/`tournamentList` из `rewards`/`contests` (как create).
-- `[v]` Компактный UI: меньше отступы, мелкие подсказки, плотнее шапка/журнал.
+- `[v]` Расширены `TRACE_MASK_KEYS` (News v2 / HTTP logger / Pulse) по полям из list/detail: ТН, ФИО, createdBy, uuid/id, cookie/token…
+- `[v]` DevToolsTrace: чекбокс **«Маска ПДн»** при наличии `sanitizeForTrace`; `setMaskEnabled` / шапка `.log` с `mask=ON|OFF`.
+- `[v]` `tools/update_devtools_trace.js` — обновление встроенных копий во всех Script/*.js.
+- `[v]` Docs: DevToolsTrace.md, News v2, ROADMAP.
 
 ---
 
