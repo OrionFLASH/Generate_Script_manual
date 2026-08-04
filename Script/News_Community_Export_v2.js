@@ -324,19 +324,19 @@
   }
 
   /**
-   * Режим «болванка»: принудительно очищает leaders/authors в кандидатах создания.
-   * @param {object[]} list
+   * Режим «болванка»: для отправки очищает leaders/authors в копии payload.
+   * Счётчики отображения (authorsCount/leadersCount) не меняет.
+   * @param {object} payload
    * @param {boolean} enabled
+   * @returns {object}
    */
-  function applyCreateStubModeToCandidates(list, enabled) {
-    if (!enabled || !Array.isArray(list)) return;
-    for (var i = 0; i < list.length; i++) {
-      if (!list[i] || !list[i].payload) continue;
-      list[i].payload.authorsList = [];
-      list[i].payload.leadersList = [];
-      list[i].authorsCount = 0;
-      list[i].leadersCount = 0;
+  function payloadForCreateSend(payload, enabled) {
+    var out = Object.assign({}, payload || {});
+    if (enabled) {
+      out.authorsList = [];
+      out.leadersList = [];
     }
+    return out;
   }
 
   function compactNewsLabel(meta) {
@@ -1354,44 +1354,32 @@
         var batchStartIso = nowIso();
         var createdByValue = String(createdByInput.value || "").trim() || NEWS_V2_CFG.DEFAULT_CREATED_BY;
         var stubMode = !!stubModeCb.checked;
+        // В таблице всегда показываем фактические counts из файла; болванка влияет только на отправку.
         candidates = extractCreateCandidatesFromAnyJson(
           parsed.value,
           createdByValue,
           batchStartIso,
-          { ignoreLeadersAuthors: stubMode }
+          null
         );
         for (var ci = 0; ci < candidates.length; ci++) {
           if (!String(candidates[ci].payload.createdBy || "").trim()) {
             candidates[ci].payload.createdBy = createdByValue;
           }
         }
-        applyCreateStubModeToCandidates(candidates, stubMode);
         renderList();
         log(
           "Загружено записей для создания: " +
             candidates.length +
-            (stubMode ? " | режим болванки: без leaders/authors" : "")
+            (stubMode ? " | режим болванки: при создании leaders/authors будут []" : "")
         );
       }
 
       stubModeCb.addEventListener("change", function () {
-        if (!candidates.length) {
-          log(
-            stubModeCb.checked
-              ? "Режим болванки включён: при загрузке/создании leaders и authors будут пустыми."
-              : "Режим болванки выключен."
-          );
-          return;
-        }
-        if (stubModeCb.checked) {
-          applyCreateStubModeToCandidates(candidates, true);
-          renderList();
-          log("Режим болванки: leaders/authors очищены у загруженных записей.");
-        } else {
-          log(
-            "Режим болванки выключен. Перезагрузите JSON, чтобы восстановить leaders/authors из файла."
-          );
-        }
+        log(
+          stubModeCb.checked
+            ? "Режим болванки включён: при создании leaders и authors уйдут пустыми (в таблице counts не меняются)."
+            : "Режим болванки выключен."
+        );
       });
 
       actions.appendChild(
@@ -1450,7 +1438,6 @@
               var errors = [];
               var createdByValue = String(createdByInput.value || "").trim() || NEWS_V2_CFG.DEFAULT_CREATED_BY;
               var stubMode = !!stubModeCb.checked;
-              applyCreateStubModeToCandidates(selected, stubMode);
               for (var i = 0; i < selected.length; i++) {
                 if (!String(selected[i].payload.createdBy || "").trim()) {
                   selected[i].payload.createdBy = createdByValue;
@@ -1493,11 +1480,8 @@
                     log("Стоп: создание прервано пользователем.");
                     break;
                   }
-                  var payload = selected[si].payload;
-                  if (stubMode) {
-                    payload.authorsList = [];
-                    payload.leadersList = [];
-                  }
+                  // Копия payload: болванка чистит lists только на отправку, UI-counts не трогаем.
+                  var payload = payloadForCreateSend(selected[si].payload, stubMode);
                   sharedOpStatus.textContent =
                     "Операции: создание " + (si + 1) + "/" + selected.length;
                   var retryResult = await postJsonWithRetry(
