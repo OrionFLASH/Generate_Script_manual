@@ -51,7 +51,7 @@
 ### 0.3 DevToolsTrace (диагностика в браузере)
 
 - `[v]` **Script/lib/DevToolsTrace.js** — модуль trace (HTTP, журнал, UI → `.log`); опция `sanitizeForTrace`.
-- `[v]` Встроен во все **12** скриптов `Script/*.js` (маркер `DevToolsTrace v1`), включая `News_Community_Export_v2.js` (сквозной буфер + маски ПДн).
+- `[v]` Встроен во все скрипты `Script/*.js` рабочих панелей (маркер `DevToolsTrace v1`); отдельно — фоновый `HTTP_Traffic_Logger.js` (§ 12).
 - `[v]` **Docs/DevToolsTrace.md** — инструкция пользователя.
 - `[v]` **tools/inject_devtools_trace.js** — повторная вставка модуля в скрипты при обновлении lib.
 
@@ -428,6 +428,14 @@
 - `[v]` Referer create/status/edit: `/admin/community/...` (по HAR).
 - `[v]` Шаблон JSON создания: `fieldNotes` + примеры bestPractice / achievement / publication под реальные поля и коды.
 
+### 6.13 По HAR logger: delete / detail / список для статусов + UI
+
+- `[v]` `newsDelete` (`POST …/news/newsId/newsDelete`, body `{ newsId }`) — вкладка «Удаление».
+- `[v]` `news-detail` для уточнения payload перед put (опция на «Редактирование»).
+- `[v]` Вкладка «Статусы»: загрузка списка с `POST /v1/news` (как у edit/export), не только файл/ID.
+- `[v]` Fix update: `rewardList`/`tournamentList` из `rewards`/`contests` (как create).
+- `[v]` Компактный UI: меньше отступы, мелкие подсказки, плотнее шапка/журнал.
+
 ---
 
 ## 7. `Script/UI_AutoTest.js`
@@ -567,6 +575,32 @@
 
 ---
 
+## 12. `Script/HTTP_Traffic_Logger.js`
+
+**Сопутствующий файл документации:** [Docs/Скрипт_HTTP_Traffic_Logger.md](Docs/Скрипт_HTTP_Traffic_Logger.md)
+
+Фоновый перехватчик HTTP **отдельно** от рабочих скриптов: только запросы/ответы (fetch + XHR), без кликов UI. Для сбора HAR-подобных данных при разработке других скриптов.
+
+### 12.1 Захват сети
+
+- `[v]` Обёртка `window.fetch` и `XMLHttpRequest` на время записи.
+- `[v]` Заголовки request/response + payload/body (мягкий лимит ~2 MB), method, URL, status, durationMs.
+- `[v]` Фильтр по подстрокам URL применяется к **`.log`** (пусто = все); JSON — все ответы без фильтра.
+- `[v]` Маскирование ПДн только в `.log` (переключатель); JSON всегда без маски.
+- `[v]` Связь файлов: `corrId` / `id` / `sessionId`.
+
+### 12.2 UI
+
+- `[v]` Компактная плавающая панель (не блокирует сайт): Старт/Стоп, маска, фильтр, статистика, сохранить, очистить, свернуть, закрыть.
+- `[v]` Мини-режим с индикатором REC и счётчиком запросов.
+
+### 12.3 Выгрузка и документация
+
+- `[v]` `.log` — полный дамп; JSON — ответы (`http_traffic_responses_v2`).
+- `[v]` Docs + README + справочник + `post_mail_decode_ide.py`.
+
+---
+
 ## 9. Сводная таблица «скрипт ↔ документ ↔ раздел ROADMAP»
 
 | Файл `Script/` | Основной документ `Docs/` | Раздел ROADMAP |
@@ -584,6 +618,7 @@
 | `UI_AutoTest_LinksCrawler.js` | Скрипт_UI_AutoTest_LinksCrawler.md | § 8 |
 | `SUP_Config_Update.js` | Скрипт_SUP_Config_Update.md | § 10 |
 | `Pulse_export_OE.js` | Скрипт_Pulse_export_OE.md | § 11 |
+| `HTTP_Traffic_Logger.js` | Скрипт_HTTP_Traffic_Logger.md | § 12 |
 
 **Общий HTTP-справочник:** [Docs/Справочник_скрипты_HTTP_запросы_и_последовательность.md](Docs/Справочник_скрипты_HTTP_запросы_и_последовательность.md)
 

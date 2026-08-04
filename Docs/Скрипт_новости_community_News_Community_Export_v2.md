@@ -4,14 +4,15 @@
 
 Скрипт добавляет отдельную модалку с вкладками для массовых операций по новостям community:
 
-- **Выгрузка** новостей (обновлённый блок старого сценария `POST /proxy/v1/news`)
-- **Создание** новостей (`newsCreate`)
+- **Выгрузка** новостей (`POST /proxy/v1/news`)
+- **Создание** (`newsCreate` → `body.objectId`, черновик)
 - **Смена статуса** `draft ↔ published` (`newsUpdate`, `method: "patch"`)
-- **Редактирование (каркас)** (`newsUpdate`, `method: "put"`)
+- **Редактирование** (`newsUpdate`, `method: "put"`; опционально `news-detail`)
+- **Удаление** (`POST …/news/newsId/newsDelete`, body `{ newsId }`)
 
-Вкладки — компактная строка **сверху**; рабочая область, статистика и журнал — на всю ширину панели.
+Вкладки — компактная строка **сверху**; рабочая область и журнал — на всю ширину. Подсказки в окнах — мелкий шрифт (10px).
 
-Основной сценарий — загрузка JSON из файла, показ компактного списка кандидатов и отправка только отмеченных элементов после подтверждения.
+Основной сценарий выбора (не create): загрузка списка с **`POST /v1/news`** (`newsStatus` + `businessBlock` + `pageNum`) → чекбоксы → операция. Альтернатива — JSON/ручные ID.
 
 ## API и окружение
 
@@ -19,10 +20,13 @@
 - Контуры: `ALPHA`, `SIGMA`
 - Куки: `credentials: "include"` (сессия текущей вкладки)
 
-Запросы:
+Запросы (по HAR logger):
 
-1. `POST /bo/rmkib.gamification/proxy/v1/administration/news/newsCreate`
-2. `POST /bo/rmkib.gamification/proxy/v1/administration/news/newsUpdate` (patch/put)
+1. `POST /bo/rmkib.gamification/proxy/v1/news` — список / выгрузка
+2. `POST /bo/rmkib.gamification/proxy/v1/news-detail` — деталь перед put
+3. `POST …/administration/news/newsCreate` — создание (`body.objectId`)
+4. `POST …/administration/news/newsUpdate` — put / patch
+5. `POST …/news/newsId/newsDelete` — удаление `{ newsId }`
 
 ## Вкладка «Выгрузка (старый блок)»
 
@@ -143,6 +147,7 @@
 
 Источник данных:
 
+- **Загрузка с сервера** — `POST /v1/news` (status × businessBlock × диапазон страниц панели)
 - JSON-файл (`statusItems`, массив, либо экспортный JSON с новостями)
 - или список `newsId` из текстового поля
 
@@ -161,23 +166,23 @@
 Перед отправкой:
 
 - обязательная проверка `newsId` и `status`;
-- есть явная кнопка **«Выбрать файл JSON»**;
 - подтверждение в интерфейсе;
 - запись результата в отдельный JSON-файл.
 
-## Вкладка «Редактирование (каркас)»
+## Вкладка «Редактирование»
 
-Реализован поток с двумя источниками данных:
+1. **С сервера**: `POST /v1/news` → таблица выбора → put-payload (`buildUpdatePayloadFromNewsItem`: `rewards`/`contests` → `rewardList`/`tournamentList`).
+2. **Из файла**: `updateItems` / массив put-payload.
+3. Опция **«Перед отправкой догрузить news-detail»** (вкл. по умолчанию): перед put запрашивается `POST /news-detail` для более полного payload.
+4. Отправка: `newsUpdate` с `method: "put"`.
 
-1. **Из файла**: загрузка `updateItems` из JSON.
-2. **С сервера**: загрузка текущих новостей через `POST /proxy/v1/news` (выбор status/block, лимит страниц), затем выбор записей в таблице.
-3. Для выбранных записей формируется payload редактирования (`method: "put"`).
-4. Отправка в `newsUpdate`.
+## Вкладка «Удаление»
 
-Предусмотрен экспорт шаблона файла редактирования для дальнейшего расширения логики.
-Для загрузки из файла используется явная кнопка **«Выбрать файл JSON»**.
+- Загрузка списка с `/v1/news` или ручные ID.
+- По умолчанию при загрузке с сервера чекбоксы **сняты** (нужно отметить явно).
+- `POST …/news/newsId/newsDelete` с `{ newsId }`; подтверждение; результат в JSON.
 
-Минимально критичное поле для редактирования:
+Минимально критичное поле для редактирования / удаления:
 
 - `newsId`
 
@@ -262,3 +267,4 @@
 | 1.x | 2026-08-05 | Create: обязательные reward/tournament для achievement; разбор всех pages; публикация objectId после create |
 | 1.x | 2026-08-05 | Шаблон JSON создания: fieldNotes + 3 примера (bestPractice/achievement/publication) под реальные поля |
 | 1.x | 2026-08-05 | Шаблон и payload сверены с HAR `ToDo/NEWS/Создание новостей.txt`; `plannedDt` из источника |
+| 1.x | 2026-08-05 | По HTTP logger: вкладка Удаление (`newsDelete`); статусы из `/v1/news`; edit + опц. `news-detail`; fix put `rewards`/`contests`; компактный UI |

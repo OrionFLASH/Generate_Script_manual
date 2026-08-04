@@ -1,8 +1,9 @@
 // =============================================================================
-// News_Community_Export_v2.js — создание/статусы/редактирование news community
+// News_Community_Export_v2.js — выгрузка / создание / статусы / редактирование / удаление
 // =============================================================================
 // Запуск: DevTools Console на странице community/admin community.
 // Куки берутся из текущей вкладки (credentials: "include").
+// Список для выбора: POST /v1/news; create/update/delete — admin API (по HAR logger).
 // =============================================================================
 (function () {
   "use strict";
@@ -14,6 +15,10 @@
     NEWS_PATH: "/bo/rmkib.gamification/proxy/v1/news",
     NEWS_CREATE_PATH: "/bo/rmkib.gamification/proxy/v1/administration/news/newsCreate",
     NEWS_UPDATE_PATH: "/bo/rmkib.gamification/proxy/v1/administration/news/newsUpdate",
+    /** Удаление: POST …/news/newsId/newsDelete, body { newsId } (HAR). */
+    NEWS_DELETE_PATH: "/bo/rmkib.gamification/proxy/v1/news/newsId/newsDelete",
+    /** Детальная карточка: POST …/news-detail, body { newsId }. */
+    NEWS_DETAIL_PATH: "/bo/rmkib.gamification/proxy/v1/news-detail",
     ORIGINS: {
       PROM: {
         ALPHA: "https://efs-our-business-prom.omega.sbrf.ru",
@@ -1027,6 +1032,26 @@ function createDevToolsTrace(opts) {
     return postJson(origin + NEWS_V2_CFG.NEWS_PATH, payload, origin + "/community");
   }
 
+  /** Детальная карточка новости (для put / сверки полей). */
+  async function fetchNewsDetail(origin, newsId) {
+    var id = String(newsId || "").trim();
+    return postJson(
+      origin + NEWS_V2_CFG.NEWS_DETAIL_PATH,
+      { newsId: id },
+      origin + "/admin/community/" + id
+    );
+  }
+
+  /** Удаление новости. */
+  async function deleteNewsById(origin, newsId) {
+    var id = String(newsId || "").trim();
+    return postJson(
+      origin + NEWS_V2_CFG.NEWS_DELETE_PATH,
+      { newsId: id },
+      origin + "/admin/community/" + id
+    );
+  }
+
   function downloadJson(filename, data) {
     var text = JSON.stringify(data, null, 2);
     var blob = new Blob([text], { type: "application/json;charset=utf-8" });
@@ -1438,18 +1463,11 @@ function createDevToolsTrace(opts) {
 
   function buildUpdatePayloadFromNewsItem(newsItem) {
     var source = newsItem || {};
+    // Как create: rewards / contests[].tournaments (list и news-detail), не только tournamentList.
     return {
       bankLevel: source.bankLevel !== false,
-      rewardList: (source.rewards || [])
-        .map(function (r) {
-          return r && r.rewardCode ? { rewardCode: String(r.rewardCode) } : null;
-        })
-        .filter(Boolean),
-      tournamentList: (source.tournamentList || [])
-        .map(function (t) {
-          return t && t.tournamentCode ? { tournamentCode: String(t.tournamentCode) } : null;
-        })
-        .filter(Boolean),
+      rewardList: extractRewardList(source),
+      tournamentList: extractTournamentList(source),
       imageList: Array.isArray(source.imageList) ? source.imageList.slice() : [],
       newsFeature: normalizeNewsFeature(source.newsFeature, source.businessBlocks || []),
       type: normalizeType(source.type || source.newsType),
@@ -1477,27 +1495,28 @@ function createDevToolsTrace(opts) {
     var root = document.createElement("div");
     root.id = NEWS_V2_CFG.PANEL_ID;
     root.style.cssText =
-      "position:fixed;left:10px;top:10px;width:min(1200px,calc(100vw - 20px));height:94vh;" +
-      "z-index:999999;background:linear-gradient(165deg,#f8fafc 0%,#eef2ff 48%,#f0fdf4 100%);" +
-      "border:1px solid #94a3b8;border-radius:14px;" +
-      "box-shadow:0 16px 48px rgba(15,23,42,.18);display:flex;flex-direction:column;overflow:hidden;" +
+      "position:fixed;left:8px;top:8px;width:min(1120px,calc(100vw - 16px));height:92vh;" +
+      "z-index:999999;background:#f1f5f9;" +
+      "border:1px solid #94a3b8;border-radius:10px;" +
+      "box-shadow:0 12px 36px rgba(15,23,42,.16);display:flex;flex-direction:column;overflow:hidden;" +
       "font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;color:#0f172a;color-scheme:light;";
 
     var title = document.createElement("div");
     title.style.cssText =
-      "font-size:17px;font-weight:800;padding:12px 14px 4px;border-bottom:1px solid #e2e8f0;";
-    title.textContent = "Новости community v2 — создание / статусы / редактирование";
+      "font-size:14px;font-weight:800;padding:8px 12px 2px;letter-spacing:0.01em;";
+    title.textContent = "Новости community v2";
     root.appendChild(title);
 
     var subtitle = document.createElement("div");
-    subtitle.style.cssText = "padding:0 14px 10px;color:#475569;font-size:12px;border-bottom:1px solid #e2e8f0;";
+    subtitle.style.cssText =
+      "padding:0 12px 6px;color:#64748b;font-size:10px;line-height:1.35;border-bottom:1px solid #e2e8f0;";
     subtitle.textContent =
-      "Вкладки сверху. Рабочая область, статистика и журнал — на всю ширину панели.";
+      "Выгрузка · создание · статусы · редактирование · удаление. Список /v1/news — для выбора; create/update/delete — admin API.";
     root.appendChild(subtitle);
 
     var envRow = document.createElement("div");
     envRow.style.cssText =
-      "display:flex;gap:8px;align-items:center;padding:8px 14px;background:#f1f5f9;border-bottom:1px solid #e2e8f0;";
+      "display:flex;gap:6px;align-items:center;padding:5px 12px;background:#e2e8f0;border-bottom:1px solid #cbd5e1;font-size:11px;";
     root.appendChild(envRow);
 
     function mkSelect(values, selected) {
@@ -1539,13 +1558,13 @@ function createDevToolsTrace(opts) {
     // Общие настройки пауз/ретраев + Стоп для всех вкладок
     var sharedTimingBox = document.createElement("div");
     sharedTimingBox.style.cssText =
-      "display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px;align-items:end;" +
-      "padding:8px 14px;border-bottom:1px solid #e2e8f0;background:rgba(255,255,255,.75);";
+      "display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;align-items:end;" +
+      "padding:5px 12px;border-bottom:1px solid #e2e8f0;background:#fff;";
     root.appendChild(sharedTimingBox);
 
     function mkSharedNum(labelText, value, title) {
       var lab = document.createElement("label");
-      lab.style.cssText = "display:flex;flex-direction:column;gap:2px;font-size:10px;color:#64748b;min-width:0;";
+      lab.style.cssText = "display:flex;flex-direction:column;gap:1px;font-size:9px;color:#64748b;min-width:0;";
       lab.title = title || labelText;
       var cap = document.createElement("span");
       cap.textContent = labelText;
@@ -1554,8 +1573,8 @@ function createDevToolsTrace(opts) {
       inp.min = "0";
       inp.value = String(value);
       inp.style.cssText =
-        "width:100%;box-sizing:border-box;padding:4px 6px;font-size:11px;border:1px solid #94a3b8;" +
-        "border-radius:5px;background:#fff;color:#0f172a;";
+        "width:100%;box-sizing:border-box;padding:3px 5px;font-size:11px;border:1px solid #94a3b8;" +
+        "border-radius:4px;background:#fff;color:#0f172a;";
       lab.appendChild(cap);
       lab.appendChild(inp);
       return { lab: lab, inp: inp };
@@ -1581,10 +1600,10 @@ function createDevToolsTrace(opts) {
 
     var sharedOpRow = document.createElement("div");
     sharedOpRow.style.cssText =
-      "display:flex;gap:8px;align-items:center;padding:6px 14px;border-bottom:1px solid #e2e8f0;background:#f8fafc;";
+      "display:flex;gap:6px;align-items:center;padding:4px 12px;border-bottom:1px solid #e2e8f0;background:#f8fafc;";
     root.appendChild(sharedOpRow);
     var sharedOpStatus = document.createElement("div");
-    sharedOpStatus.style.cssText = "font-size:11px;color:#475569;flex:1;";
+    sharedOpStatus.style.cssText = "font-size:10px;color:#475569;flex:1;";
     sharedOpStatus.textContent = "Операции: ожидание";
     sharedOpRow.appendChild(sharedOpStatus);
 
@@ -1595,8 +1614,8 @@ function createDevToolsTrace(opts) {
     btnGlobalStop.textContent = "⏹ Стоп";
     btnGlobalStop.disabled = true;
     btnGlobalStop.style.cssText =
-      "padding:6px 10px;border-radius:6px;border:1px solid #dc2626;background:#dc2626;color:#fff;" +
-      "font-size:12px;font-weight:700;cursor:not-allowed;opacity:0.55;";
+      "padding:4px 8px;border-radius:5px;border:1px solid #b91c1c;background:#dc2626;color:#fff;" +
+      "font-size:11px;font-weight:700;cursor:not-allowed;opacity:0.55;";
     btnGlobalStop.addEventListener("click", function () {
       if (!opBusy) return;
       if (stopRequested) {
@@ -1684,6 +1703,195 @@ function createDevToolsTrace(opts) {
       return !!stopRequested;
     }
 
+    /**
+     * Общая загрузка новостей с POST /v1/news (status × block × page range).
+     * Используется статусами / редактированием / удалением.
+     */
+    async function fetchNewsItemsFromServer(statuses, blocks, settings, localMax, busyLabel) {
+      var range = resolvePageRange(settings, localMax);
+      if (!range.ok) {
+        return {
+          ok: false,
+          error: range.error,
+          items: [],
+          retriesTotal: 0,
+          stoppedByUser: false,
+          abortedByErrors: false
+        };
+      }
+      if (!statuses || !statuses.length || !blocks || !blocks.length) {
+        return {
+          ok: false,
+          error: "Выберите status и business block.",
+          items: [],
+          retriesTotal: 0,
+          stoppedByUser: false,
+          abortedByErrors: false
+        };
+      }
+      var env = getEnv();
+      var loaded = [];
+      var retriesTotal = 0;
+      var consecutiveFails = 0;
+      var stoppedByUser = false;
+      var abortedByErrors = false;
+      var pageFrom = range.pageFrom;
+      var pageTo = range.pageTo;
+      setOpBusy(true, busyLabel || "загрузка списка");
+      try {
+        log(
+          "Загрузка списка /v1/news стр. " +
+            pageFrom +
+            "…" +
+            pageTo +
+            (range.pageToRaw > 0 ? "" : " (лимит вкладки: " + localMax + ")")
+        );
+        for (var si = 0; si < statuses.length; si++) {
+          if (isStopRequested()) {
+            stoppedByUser = true;
+            break;
+          }
+          for (var bi = 0; bi < blocks.length; bi++) {
+            if (isStopRequested()) {
+              stoppedByUser = true;
+              break;
+            }
+            var status = statuses[si];
+            var block = blocks[bi];
+            var pageNum = pageFrom;
+            while (pageNum <= pageTo) {
+              if (isStopRequested()) {
+                stoppedByUser = true;
+                break;
+              }
+              sharedOpStatus.textContent =
+                "Операции: список " + status + "/" + block + " стр." + pageNum;
+              var payload = { newsStatus: status, businessBlock: block, pageNum: pageNum };
+              var retryResult = await fetchNewsPageWithRetry(env.origin, payload, {
+                log: log,
+                retryMax: settings.retryMax,
+                retryPauseMs: settings.retryPauseMs,
+                shouldStop: isStopRequested,
+                onAttempt: function (_a, _m, _e, meta) {
+                  if (meta && meta.isRetry) retriesTotal++;
+                }
+              });
+              if (retryResult.stopped || isStopRequested()) {
+                stoppedByUser = true;
+                break;
+              }
+              if (!retryResult.ok) {
+                consecutiveFails++;
+                log(
+                  "Ошибка списка: " +
+                    status +
+                    "/" +
+                    block +
+                    " page=" +
+                    pageNum +
+                    " | " +
+                    (retryResult.error || "ошибка")
+                );
+                if (consecutiveFails >= settings.abortLimit) {
+                  abortedByErrors = true;
+                  log("АВАРИЯ: " + consecutiveFails + " подряд ошибок — остановка загрузки.");
+                  break;
+                }
+                break;
+              }
+              consecutiveFails = 0;
+              var res = retryResult.fr;
+              var periods = Array.isArray(res.data.body.timePeriod) ? res.data.body.timePeriod : [];
+              var countOnPage = 0;
+              for (var pi = 0; pi < periods.length; pi++) {
+                var newsList = Array.isArray(periods[pi].news) ? periods[pi].news : [];
+                for (var ni = 0; ni < newsList.length; ni++) {
+                  loaded.push(newsList[ni]);
+                  countOnPage++;
+                }
+              }
+              var pageMeta = readNewsPageMeta(res.data.body);
+              log(
+                "Список: " +
+                  status +
+                  "/" +
+                  block +
+                  " page=" +
+                  pageNum +
+                  " новостей=" +
+                  countOnPage +
+                  " | isLast=" +
+                  (pageMeta.isLast ? "true" : "false")
+              );
+              if (pageMeta.isLast) break;
+              if (pageMeta.total != null && pageNum >= pageMeta.total) break;
+              pageNum++;
+              if (pageNum <= pageTo && settings.pageGapMs > 0) {
+                await delay(settings.pageGapMs);
+                if (isStopRequested()) {
+                  stoppedByUser = true;
+                  break;
+                }
+              }
+            }
+            if (stoppedByUser || abortedByErrors) break;
+            if (settings.opGapMs > 0 && !(si === statuses.length - 1 && bi === blocks.length - 1)) {
+              await delay(settings.opGapMs);
+              if (isStopRequested()) {
+                stoppedByUser = true;
+                break;
+              }
+            }
+          }
+          if (stoppedByUser || abortedByErrors) break;
+        }
+      } finally {
+        setOpBusy(false);
+      }
+      return {
+        ok: true,
+        items: loaded.filter(function (n) {
+          return String((n && n.newsId) || "").trim();
+        }),
+        retriesTotal: retriesTotal,
+        stoppedByUser: stoppedByUser,
+        abortedByErrors: abortedByErrors
+      };
+    }
+
+    function mkInlineMultiChecks(label, values, defaultValue) {
+      var row = document.createElement("div");
+      row.style.cssText = "margin-bottom:4px;";
+      var cap = document.createElement("div");
+      cap.textContent = label;
+      cap.style.cssText = "font-size:10px;color:#64748b;margin-bottom:2px;font-weight:600;";
+      row.appendChild(cap);
+      var checks = [];
+      for (var i = 0; i < values.length; i++) {
+        var lb = document.createElement("label");
+        lb.style.cssText =
+          "display:inline-flex;align-items:center;gap:3px;margin-right:8px;font-size:11px;color:#0f172a;";
+        var c = document.createElement("input");
+        c.type = "checkbox";
+        c.value = values[i];
+        c.checked = defaultValue === values[i];
+        checks.push(c);
+        lb.appendChild(c);
+        lb.appendChild(document.createTextNode(values[i]));
+        row.appendChild(lb);
+      }
+      return {
+        el: row,
+        getSelected: function () {
+          return checks.filter(function (x) {
+            return x.checked;
+          }).map(function (x) {
+            return x.value;
+          });
+        }
+      };
+    }
+
     var main = document.createElement("div");
     main.style.cssText =
       "flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;width:100%;";
@@ -1692,31 +1900,33 @@ function createDevToolsTrace(opts) {
     // Вкладки — компактная строка сверху на всю ширину
     var tabBar = document.createElement("div");
     tabBar.style.cssText =
-      "display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:6px 10px;" +
-      "border-bottom:1px solid #e2e8f0;background:#f8fafc;flex-shrink:0;width:100%;box-sizing:border-box;";
+      "display:flex;flex-wrap:wrap;align-items:center;gap:3px;padding:4px 8px;" +
+      "border-bottom:1px solid #cbd5e1;background:#e2e8f0;flex-shrink:0;width:100%;box-sizing:border-box;";
     main.appendChild(tabBar);
 
     var work = document.createElement("div");
     work.style.cssText =
-      "flex:1;min-height:0;min-width:0;display:flex;flex-direction:column;overflow:hidden;width:100%;";
+      "flex:1;min-height:0;min-width:0;display:flex;flex-direction:column;overflow:hidden;width:100%;background:#f8fafc;";
     main.appendChild(work);
 
     var content = document.createElement("div");
     content.style.cssText =
-      "flex:1;min-height:0;min-width:0;overflow:auto;padding:10px 12px;width:100%;box-sizing:border-box;";
+      "flex:1;min-height:0;min-width:0;overflow:auto;padding:8px 10px;width:100%;box-sizing:border-box;";
     work.appendChild(content);
 
     var logWrap = document.createElement("div");
     logWrap.style.cssText =
-      "height:190px;border-top:1px solid #e2e8f0;background:#fff;padding:8px 12px;" +
+      "height:140px;border-top:1px solid #cbd5e1;background:#fff;padding:5px 10px;" +
       "display:flex;flex-direction:column;width:100%;box-sizing:border-box;flex-shrink:0;";
     work.appendChild(logWrap);
     var logTitle = document.createElement("div");
-    logTitle.textContent = "Журнал (общий для всех вкладок)";
-    logTitle.style.cssText = "font-size:11px;font-weight:700;color:#334155;margin-bottom:6px;";
+    logTitle.textContent = "Журнал";
+    logTitle.style.cssText = "font-size:10px;font-weight:700;color:#475569;margin-bottom:3px;";
     logWrap.appendChild(logTitle);
     var logEl = document.createElement("div");
-    logEl.style.cssText = "flex:1;overflow:auto;border:1px solid #cbd5e1;border-radius:6px;background:#f8fafc;padding:6px;font-family:ui-monospace,monospace;font-size:11px;";
+    logEl.style.cssText =
+      "flex:1;overflow:auto;border:1px solid #cbd5e1;border-radius:5px;background:#f8fafc;padding:4px 6px;" +
+      "font-family:ui-monospace,monospace;font-size:10px;line-height:1.35;";
     logWrap.appendChild(logEl);
 
     // Один общий Trace на всю панель (все вкладки → один буфер / один .log)
@@ -1743,10 +1953,54 @@ function createDevToolsTrace(opts) {
       b.type = "button";
       b.textContent = text;
       b.style.cssText =
-        "padding:6px 9px;border-radius:6px;border:1px solid #94a3b8;background:#fff;color:#0f172a;cursor:pointer;font-size:12px;font-weight:600;" +
+        "padding:4px 8px;border-radius:5px;border:1px solid #94a3b8;background:#fff;color:#0f172a;" +
+        "cursor:pointer;font-size:11px;font-weight:600;line-height:1.2;" +
         (extraCss || "");
       b.addEventListener("click", onClick);
       return b;
+    }
+
+    function mkHint(text, tone) {
+      var el = document.createElement("div");
+      var bg = "#f8fafc";
+      var bd = "#e2e8f0";
+      var fg = "#64748b";
+      if (tone === "warn") {
+        bg = "#fffbeb";
+        bd = "#fde68a";
+        fg = "#92400e";
+      } else if (tone === "danger") {
+        bg = "#fef2f2";
+        bd = "#fecaca";
+        fg = "#991b1b";
+      } else if (tone === "info") {
+        bg = "#eff6ff";
+        bd = "#bfdbfe";
+        fg = "#1e40af";
+      }
+      el.style.cssText =
+        "padding:5px 7px;border:1px solid " +
+        bd +
+        ";border-radius:5px;background:" +
+        bg +
+        ";font-size:10px;line-height:1.35;color:" +
+        fg +
+        ";";
+      el.textContent = text;
+      return el;
+    }
+
+    function mkSectionCard(titleText) {
+      var box = document.createElement("div");
+      box.style.cssText =
+        "padding:6px 8px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;";
+      if (titleText) {
+        var t = document.createElement("div");
+        t.textContent = titleText;
+        t.style.cssText = "font-size:11px;font-weight:700;color:#334155;margin-bottom:5px;";
+        box.appendChild(t);
+      }
+      return box;
     }
 
     function clearContent() {
@@ -1848,9 +2102,9 @@ function createDevToolsTrace(opts) {
         "border:1px solid #cbd5e1;border-radius:8px;background:#fff;";
       wrap.appendChild(modeRow);
       var modeHint = document.createElement("div");
-      modeHint.style.cssText = "font-size:11px;color:#64748b;width:100%;";
+      modeHint.style.cssText = "font-size:10px;color:#64748b;width:100%;line-height:1.35;";
       modeHint.textContent =
-        "Одна новость — форма или файл. Несколько новостей — только файл JSON.";
+        "Одна новость — форма или файл. Несколько — только файл JSON. Create → draft + objectId; публикация — patch.";
       modeRow.appendChild(modeHint);
 
       function mkModeRadio(id, value, labelText, checked) {
@@ -2885,16 +3139,24 @@ function createDevToolsTrace(opts) {
     function renderStatusTab() {
       clearContent();
       var wrap = document.createElement("div");
-      wrap.style.cssText = "display:flex;flex-direction:column;gap:10px;";
+      wrap.style.cssText = "display:flex;flex-direction:column;gap:8px;";
       content.appendChild(wrap);
 
+      wrap.appendChild(
+        mkHint(
+          "Смена статуса: patch { newsId, status, method:\"patch\" }. Список — POST /v1/news (status×block), либо JSON/ID.",
+          "info"
+        )
+      );
+
       var top = document.createElement("div");
-      top.style.cssText = "display:flex;gap:8px;flex-wrap:wrap;align-items:center;";
+      top.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;align-items:center;";
       wrap.appendChild(top);
 
       var targetSel = document.createElement("select");
-      targetSel.style.cssText = "padding:6px 8px;border:1px solid #94a3b8;border-radius:6px;";
-      [{ v: "published", t: "published (Опубликована)" }, { v: "draft", t: "draft (Черновик)" }].forEach(function (x) {
+      targetSel.style.cssText =
+        "padding:4px 7px;border:1px solid #94a3b8;border-radius:5px;font-size:11px;background:#fff;";
+      [{ v: "published", t: "→ published" }, { v: "draft", t: "→ draft" }].forEach(function (x) {
         var opt = document.createElement("option");
         opt.value = x.v;
         opt.textContent = x.t;
@@ -2909,19 +3171,48 @@ function createDevToolsTrace(opts) {
       fileInput.style.display = "none";
       top.appendChild(fileInput);
       top.appendChild(
-        mkBtn("Выбрать файл JSON", function () {
+        mkBtn("Файл JSON", function () {
           fileInput.click();
         })
       );
 
+      var fetchBox = mkSectionCard("Загрузка с сервера (/v1/news)");
+      wrap.appendChild(fetchBox);
+      var statusCtl = mkInlineMultiChecks(
+        "Status",
+        optionValues(NEWS_V2_CFG.STATUS_OPTIONS),
+        "draft"
+      );
+      var blockCtl = mkInlineMultiChecks(
+        "Business block",
+        optionValues(NEWS_V2_CFG.BUSINESS_BLOCK_OPTIONS),
+        "KMKKSB"
+      );
+      fetchBox.appendChild(statusCtl.el);
+      fetchBox.appendChild(blockCtl.el);
+      var fetchPagesInput = document.createElement("input");
+      fetchPagesInput.type = "number";
+      fetchPagesInput.min = "1";
+      fetchPagesInput.value = "3";
+      fetchPagesInput.style.cssText =
+        "padding:3px 5px;border:1px solid #94a3b8;border-radius:4px;width:72px;font-size:11px;margin-right:6px;";
+      var pagesRow = document.createElement("div");
+      pagesRow.style.cssText = "display:flex;align-items:center;gap:4px;margin-top:4px;font-size:10px;color:#64748b;";
+      pagesRow.appendChild(fetchPagesInput);
+      pagesRow.appendChild(
+        document.createTextNode("стр. если «Стр. по»=0 (общий блок панели)")
+      );
+      fetchBox.appendChild(pagesRow);
+
       var idsInput = document.createElement("textarea");
-      idsInput.rows = 5;
-      idsInput.placeholder = "ID новостей: по одному на строку или через ;";
-      idsInput.style.cssText = "width:100%;padding:8px;border:1px solid #94a3b8;border-radius:6px;font-family:ui-monospace,monospace;font-size:12px;";
+      idsInput.rows = 3;
+      idsInput.placeholder = "Или ID вручную: по одному на строку / через ;";
+      idsInput.style.cssText =
+        "width:100%;padding:6px;border:1px solid #94a3b8;border-radius:5px;font-family:ui-monospace,monospace;font-size:11px;box-sizing:border-box;";
       wrap.appendChild(idsInput);
 
       var actions = document.createElement("div");
-      actions.style.cssText = "display:flex;flex-wrap:wrap;gap:8px;";
+      actions.style.cssText = "display:flex;flex-wrap:wrap;gap:5px;";
       wrap.appendChild(actions);
 
       var tableHost = document.createElement("div");
@@ -2931,10 +3222,11 @@ function createDevToolsTrace(opts) {
       var searchInput = document.createElement("input");
       searchInput.type = "text";
       searchInput.placeholder = "Поиск по типу / заголовку / ID";
-      searchInput.style.cssText = "width:100%;padding:8px;border:1px solid #94a3b8;border-radius:6px;font-size:12px;";
+      searchInput.style.cssText =
+        "width:100%;padding:5px 7px;border:1px solid #94a3b8;border-radius:5px;font-size:11px;box-sizing:border-box;";
       wrap.appendChild(searchInput);
       var selectionInfo = document.createElement("div");
-      selectionInfo.style.cssText = "font-size:11px;color:#475569;";
+      selectionInfo.style.cssText = "font-size:10px;color:#64748b;";
       wrap.appendChild(selectionInfo);
       function renderList() {
         tableHost.innerHTML = "";
@@ -3018,13 +3310,61 @@ function createDevToolsTrace(opts) {
       }
 
       actions.appendChild(
+        mkBtn(
+          "Загрузить с сервера",
+          function () {
+            void (async function () {
+              if (opBusy) {
+                log("Уже выполняется другая операция — дождитесь завершения или нажмите Стоп.");
+                return;
+              }
+              var settings = getSharedRequestSettings();
+              var localMax = parseInt(String(fetchPagesInput.value || "3"), 10);
+              if (!Number.isFinite(localMax) || localMax < 1) localMax = 1;
+              var result = await fetchNewsItemsFromServer(
+                statusCtl.getSelected(),
+                blockCtl.getSelected(),
+                settings,
+                localMax,
+                "загрузка для статусов"
+              );
+              if (!result.ok) {
+                log("Отмена загрузки: " + (result.error || "ошибка"));
+                return;
+              }
+              candidates = result.items.map(function (row) {
+                return {
+                  selected: true,
+                  newsId: ensureString(row.newsId),
+                  type: normalizeType(row.newsType || row.type),
+                  summary: compactNewsLabel(row),
+                  targetStatus: targetSel.value,
+                  currentStatus: ensureString(row.newsStatus || "")
+                };
+              });
+              renderList();
+              log(
+                "К смене статуса с сервера: " +
+                  candidates.length +
+                  ", повторов=" +
+                  result.retriesTotal +
+                  (result.stoppedByUser ? " | стоп" : "") +
+                  (result.abortedByErrors ? " | авария" : "") +
+                  "."
+              );
+            })();
+          },
+          "background:#0ea5e9;color:#fff;border-color:#0ea5e9;"
+        )
+      );
+      actions.appendChild(
         mkBtn("Шаблон JSON", function () {
           downloadJson("news_status_template_" + tsShort() + ".json", buildStatusTemplate(targetSel.value));
           log("Скачан шаблон статусов.");
         })
       );
       actions.appendChild(
-        mkBtn("Разобрать JSON из файла/поля", function () {
+        mkBtn("Разобрать ID/JSON", function () {
           if (idsInput.value.trim()) {
             var list = parseLinesToList(idsInput.value).map(function (id) {
               return { newsId: id, status: targetSel.value };
@@ -3041,7 +3381,7 @@ function createDevToolsTrace(opts) {
       actions.appendChild(mkBtn("Отметить в фильтре", function () { setFilteredSelected(true); }));
       actions.appendChild(mkBtn("Снять всё", function () { setAllSelected(false); }));
       actions.appendChild(mkBtn("Снять в фильтре", function () { setFilteredSelected(false); }));
-      actions.appendChild(mkBtn("Очистить загруженное", function () { clearLoadedSelection(); }));
+      actions.appendChild(mkBtn("Очистить", function () { clearLoadedSelection(); }));
       actions.appendChild(
         mkBtn(
           "Применить статус",
@@ -3058,6 +3398,10 @@ function createDevToolsTrace(opts) {
                 log("Нет выбранных записей для смены статуса.");
                 return;
               }
+              // целевой статус берём из селекта на момент применения
+              for (var uj = 0; uj < selected.length; uj++) {
+                selected[uj].targetStatus = targetSel.value;
+              }
               var errs = [];
               for (var i = 0; i < selected.length; i++) {
                 var e = validateStatusItem(selected[i]);
@@ -3068,7 +3412,7 @@ function createDevToolsTrace(opts) {
                 for (var ei = 0; ei < errs.length; ei++) log("  " + errs[ei]);
                 return;
               }
-              if (!window.confirm("Сменить статус для " + selected.length + " новостей?")) {
+              if (!window.confirm("Сменить статус на «" + targetSel.value + "» для " + selected.length + " новостей?")) {
                 log("Операция отменена пользователем.");
                 return;
               }
@@ -3198,58 +3542,25 @@ function createDevToolsTrace(opts) {
     function renderEditTab() {
       clearContent();
       var wrap = document.createElement("div");
-      wrap.style.cssText = "display:flex;flex-direction:column;gap:10px;";
+      wrap.style.cssText = "display:flex;flex-direction:column;gap:8px;";
       content.appendChild(wrap);
 
-      var note = document.createElement("div");
-      note.style.cssText = "padding:8px;border:1px solid #fde68a;border-radius:6px;background:#fffbeb;font-size:12px;color:#713f12;";
-      note.textContent =
-        "Редактирование: можно загрузить JSON updateItems или сначала загрузить текущие новости с сервера, выбрать нужные и сформировать payload.";
-      wrap.appendChild(note);
+      wrap.appendChild(
+        mkHint(
+          "Редактирование: put-полный payload на newsUpdate. Список — /v1/news; опционально догрузка news-detail перед отправкой (точнее rewards/contests/imageList).",
+          "warn"
+        )
+      );
 
-      var fetchBox = document.createElement("div");
-      fetchBox.style.cssText = "padding:8px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;";
+      var fetchBox = mkSectionCard("Загрузка с сервера (/v1/news)");
       wrap.appendChild(fetchBox);
 
-      var fetchTitle = document.createElement("div");
-      fetchTitle.textContent = "Загрузка текущих новостей для редактирования";
-      fetchTitle.style.cssText = "font-size:12px;font-weight:700;margin-bottom:8px;";
-      fetchBox.appendChild(fetchTitle);
-
-      function mkInlineMulti(label, values, defaultValue) {
-        var row = document.createElement("div");
-        row.style.cssText = "margin-bottom:6px;";
-        var cap = document.createElement("div");
-        cap.textContent = label;
-        cap.style.cssText = "font-size:11px;color:#334155;margin-bottom:4px;";
-        row.appendChild(cap);
-        var checks = [];
-        for (var i = 0; i < values.length; i++) {
-          var lb = document.createElement("label");
-          lb.style.cssText = "display:inline-flex;align-items:center;gap:4px;margin-right:10px;font-size:12px;";
-          var c = document.createElement("input");
-          c.type = "checkbox";
-          c.value = values[i];
-          c.checked = defaultValue === values[i];
-          checks.push(c);
-          lb.appendChild(c);
-          lb.appendChild(document.createTextNode(values[i]));
-          row.appendChild(lb);
-        }
-        return {
-          el: row,
-          getSelected: function () {
-            return checks.filter(function (c) { return c.checked; }).map(function (c) { return c.value; });
-          }
-        };
-      }
-
-      var editStatusCtl = mkInlineMulti(
+      var editStatusCtl = mkInlineMultiChecks(
         "Status",
         optionValues(NEWS_V2_CFG.STATUS_OPTIONS),
         "published"
       );
-      var editBlockCtl = mkInlineMulti(
+      var editBlockCtl = mkInlineMultiChecks(
         "Business block",
         optionValues(NEWS_V2_CFG.BUSINESS_BLOCK_OPTIONS),
         "KMKKSB"
@@ -3261,31 +3572,42 @@ function createDevToolsTrace(opts) {
       fetchPagesInput.type = "number";
       fetchPagesInput.min = "1";
       fetchPagesInput.value = "3";
-      fetchPagesInput.style.cssText = "padding:4px 6px;border:1px solid #94a3b8;border-radius:6px;width:90px;margin-right:8px;";
-      fetchBox.appendChild(fetchPagesInput);
-      fetchBox.appendChild(
-        document.createTextNode(" страниц (если «Стр. по»=0 — сколько взять начиная со «Стр. с»)")
+      fetchPagesInput.style.cssText =
+        "padding:3px 5px;border:1px solid #94a3b8;border-radius:4px;width:72px;font-size:11px;margin-right:6px;";
+      var pagesRow = document.createElement("div");
+      pagesRow.style.cssText = "display:flex;align-items:center;gap:4px;margin-top:4px;font-size:10px;color:#64748b;";
+      pagesRow.appendChild(fetchPagesInput);
+      pagesRow.appendChild(
+        document.createTextNode("стр. если «Стр. по»=0")
       );
+      fetchBox.appendChild(pagesRow);
+
+      var detailLab = document.createElement("label");
+      detailLab.style.cssText =
+        "display:inline-flex;align-items:center;gap:5px;font-size:10px;color:#334155;margin-top:6px;cursor:pointer;";
+      detailLab.title = "Перед put запросить news-detail по каждому выбранному newsId";
+      var detailCb = document.createElement("input");
+      detailCb.type = "checkbox";
+      detailCb.checked = true;
+      detailLab.appendChild(detailCb);
+      detailLab.appendChild(document.createTextNode("Перед отправкой догрузить news-detail"));
+      fetchBox.appendChild(detailLab);
 
       var fileInput = document.createElement("input");
       fileInput.type = "file";
       fileInput.accept = ".json,application/json";
       fileInput.style.display = "none";
       wrap.appendChild(fileInput);
-      wrap.appendChild(
-        mkBtn("Выбрать файл JSON", function () {
-          fileInput.click();
-        })
-      );
 
       var manualInput = document.createElement("textarea");
-      manualInput.rows = 7;
-      manualInput.placeholder = "JSON: { updateItems: [...] } или массив payload";
-      manualInput.style.cssText = "width:100%;padding:8px;border:1px solid #94a3b8;border-radius:6px;font-family:ui-monospace,monospace;font-size:12px;";
+      manualInput.rows = 4;
+      manualInput.placeholder = "Или JSON: { updateItems: [...] } / массив put-payload";
+      manualInput.style.cssText =
+        "width:100%;padding:6px;border:1px solid #94a3b8;border-radius:5px;font-family:ui-monospace,monospace;font-size:11px;box-sizing:border-box;";
       wrap.appendChild(manualInput);
 
       var actions = document.createElement("div");
-      actions.style.cssText = "display:flex;gap:8px;flex-wrap:wrap;";
+      actions.style.cssText = "display:flex;gap:5px;flex-wrap:wrap;";
       wrap.appendChild(actions);
 
       var tableHost = document.createElement("div");
@@ -3295,10 +3617,11 @@ function createDevToolsTrace(opts) {
       var searchInput = document.createElement("input");
       searchInput.type = "text";
       searchInput.placeholder = "Поиск по типу / заголовку / ID";
-      searchInput.style.cssText = "width:100%;padding:8px;border:1px solid #94a3b8;border-radius:6px;font-size:12px;";
+      searchInput.style.cssText =
+        "width:100%;padding:5px 7px;border:1px solid #94a3b8;border-radius:5px;font-size:11px;box-sizing:border-box;";
       wrap.appendChild(searchInput);
       var selectionInfo = document.createElement("div");
-      selectionInfo.style.cssText = "font-size:11px;color:#475569;";
+      selectionInfo.style.cssText = "font-size:10px;color:#64748b;";
       wrap.appendChild(selectionInfo);
       function renderList() {
         tableHost.innerHTML = "";
@@ -3402,176 +3725,47 @@ function createDevToolsTrace(opts) {
 
       actions.appendChild(
         mkBtn(
-          "Загрузить с сервера для выбора",
+          "Загрузить с сервера",
           function () {
             void (async function () {
               if (opBusy) {
                 log("Уже выполняется другая операция — дождитесь завершения или нажмите Стоп.");
                 return;
               }
-              var statuses = editStatusCtl.getSelected();
-              var blocks = editBlockCtl.getSelected();
               var settings = getSharedRequestSettings();
               var localMax = parseInt(String(fetchPagesInput.value || "3"), 10);
               if (!Number.isFinite(localMax) || localMax < 1) localMax = 1;
-              // Диапазон: Стр. с…Стр. по; если «по»=0 — localMax страниц начиная с «с».
-              var range = resolvePageRange(settings, localMax);
-              if (!range.ok) {
-                log("Отмена загрузки: " + range.error);
+              var result = await fetchNewsItemsFromServer(
+                editStatusCtl.getSelected(),
+                editBlockCtl.getSelected(),
+                settings,
+                localMax,
+                "загрузка для редактирования"
+              );
+              if (!result.ok) {
+                log("Отмена загрузки: " + (result.error || "ошибка"));
                 return;
               }
-              var pageFrom = range.pageFrom;
-              var pageTo = range.pageTo;
-              if (!statuses.length || !blocks.length) {
-                log("Для загрузки выберите status и business block.");
-                return;
-              }
-              var env = getEnv();
-              var loaded = [];
-              var retriesTotal = 0;
-              var consecutiveFails = 0;
-              var stoppedByUser = false;
-              var abortedByErrors = false;
-              setOpBusy(true, "загрузка для редактирования");
-              try {
-                log(
-                  "Загрузка страниц " +
-                    pageFrom +
-                    "…" +
-                    pageTo +
-                    (range.pageToRaw > 0 ? "" : " (лимит вкладки: " + localMax + ")")
-                );
-                for (var si = 0; si < statuses.length; si++) {
-                  if (isStopRequested()) {
-                    stoppedByUser = true;
-                    break;
-                  }
-                  for (var bi = 0; bi < blocks.length; bi++) {
-                    if (isStopRequested()) {
-                      stoppedByUser = true;
-                      break;
-                    }
-                    var status = statuses[si];
-                    var block = blocks[bi];
-                    var pageNum = pageFrom;
-                    while (pageNum <= pageTo) {
-                      if (isStopRequested()) {
-                        stoppedByUser = true;
-                        break;
-                      }
-                      sharedOpStatus.textContent =
-                        "Операции: загрузка " + status + "/" + block + " стр." + pageNum;
-                      var payload = { newsStatus: status, businessBlock: block, pageNum: pageNum };
-                      var retryResult = await fetchNewsPageWithRetry(env.origin, payload, {
-                        log: log,
-                        retryMax: settings.retryMax,
-                        retryPauseMs: settings.retryPauseMs,
-                        shouldStop: isStopRequested,
-                        onAttempt: function (attempt, maxAttempts, err, meta) {
-                          if (meta && meta.isRetry) retriesTotal++;
-                        }
-                      });
-                      if (retryResult.stopped || isStopRequested()) {
-                        stoppedByUser = true;
-                        break;
-                      }
-                      if (!retryResult.ok) {
-                        consecutiveFails++;
-                        log(
-                          "Ошибка загрузки: " +
-                            status +
-                            "/" +
-                            block +
-                            " page=" +
-                            pageNum +
-                            " | " +
-                            (retryResult.error || "ошибка")
-                        );
-                        if (consecutiveFails >= settings.abortLimit) {
-                          abortedByErrors = true;
-                          log(
-                            "АВАРИЯ: " +
-                              consecutiveFails +
-                              " подряд исчерпанных ошибок — остановка загрузки."
-                          );
-                          break;
-                        }
-                        break;
-                      }
-                      consecutiveFails = 0;
-                      var res = retryResult.fr;
-                      var periods = Array.isArray(res.data.body.timePeriod) ? res.data.body.timePeriod : [];
-                      var countOnPage = 0;
-                      for (var pi = 0; pi < periods.length; pi++) {
-                        var newsList = Array.isArray(periods[pi].news) ? periods[pi].news : [];
-                        for (var ni = 0; ni < newsList.length; ni++) {
-                          loaded.push(newsList[ni]);
-                          countOnPage++;
-                        }
-                      }
-                      var pageMeta = readNewsPageMeta(res.data.body);
-                      log(
-                        "Загружено: " +
-                          status +
-                          "/" +
-                          block +
-                          " page=" +
-                          pageNum +
-                          " новостей=" +
-                          countOnPage +
-                          " | isLast=" +
-                          (pageMeta.isLast ? "true" : "false")
-                      );
-                      // isLast=true → следующий pageNum не запрашиваем.
-                      if (pageMeta.isLast) break;
-                      if (pageMeta.total != null && pageNum >= pageMeta.total) break;
-                      pageNum++;
-                      if (pageNum <= pageTo && settings.pageGapMs > 0) {
-                        await delay(settings.pageGapMs);
-                        if (isStopRequested()) {
-                          stoppedByUser = true;
-                          break;
-                        }
-                      }
-                    }
-                    if (stoppedByUser || abortedByErrors) break;
-                    if (settings.opGapMs > 0 && !(si === statuses.length - 1 && bi === blocks.length - 1)) {
-                      await delay(settings.opGapMs);
-                      if (isStopRequested()) {
-                        stoppedByUser = true;
-                        break;
-                      }
-                    }
-                  }
-                  if (stoppedByUser || abortedByErrors) break;
-                }
-              } finally {
-                setOpBusy(false);
-              }
-              candidates = loaded
-                .filter(function (n) {
-                  return String(n && n.newsId || "").trim();
-                })
-                .map(function (row) {
-                  var payload = buildUpdatePayloadFromNewsItem(row);
-                  return {
-                    selected: true,
-                    sourceNewsId: ensureString(payload.newsId || ""),
-                    sourceType: normalizeType(payload.type || payload.newsType),
-                    summary: compactNewsLabel(row),
-                    authorsCount: Array.isArray(payload.authorsList) ? payload.authorsList.length : 0,
-                    leadersCount: Array.isArray(payload.leadersList) ? payload.leadersList.length : 0,
-                    payload: payload
-                  };
-                });
+              candidates = result.items.map(function (row) {
+                var payload = buildUpdatePayloadFromNewsItem(row);
+                return {
+                  selected: true,
+                  sourceNewsId: ensureString(payload.newsId || ""),
+                  sourceType: normalizeType(payload.type || payload.newsType),
+                  summary: compactNewsLabel(row),
+                  authorsCount: Array.isArray(payload.authorsList) ? payload.authorsList.length : 0,
+                  leadersCount: Array.isArray(payload.leadersList) ? payload.leadersList.length : 0,
+                  payload: payload
+                };
+              });
               renderList();
               log(
-                "Подготовлено записей к редактированию из сервера: " +
+                "К редактированию с сервера: " +
                   candidates.length +
                   ", повторов=" +
-                  retriesTotal +
-                  (stoppedByUser ? " | стоп" : "") +
-                  (abortedByErrors ? " | авария" : "") +
+                  result.retriesTotal +
+                  (result.stoppedByUser ? " | стоп" : "") +
+                  (result.abortedByErrors ? " | авария" : "") +
                   "."
               );
             })();
@@ -3581,13 +3775,18 @@ function createDevToolsTrace(opts) {
       );
 
       actions.appendChild(
-        mkBtn("Шаблон редактирования", function () {
+        mkBtn("Файл JSON", function () {
+          fileInput.click();
+        })
+      );
+      actions.appendChild(
+        mkBtn("Шаблон", function () {
           downloadJson("news_edit_template_" + tsShort() + ".json", buildEditTemplate());
           log("Скачан шаблон редактирования.");
         })
       );
       actions.appendChild(
-        mkBtn("Разобрать JSON из поля", function () {
+        mkBtn("Разобрать JSON", function () {
           parseUpdateJson(manualInput.value);
         })
       );
@@ -3664,6 +3863,51 @@ function createDevToolsTrace(opts) {
                     break;
                   }
                   var payload = selected[si].payload;
+                  if (detailCb.checked) {
+                    sharedOpStatus.textContent =
+                      "Операции: news-detail " + (si + 1) + "/" + selected.length;
+                    var detailRes = await postJsonWithRetry(
+                      env.origin + NEWS_V2_CFG.NEWS_DETAIL_PATH,
+                      { newsId: String(payload.newsId || "").trim() },
+                      env.origin + "/admin/community/" + payload.newsId,
+                      {
+                        log: log,
+                        retryMax: settings.retryMax,
+                        retryPauseMs: settings.retryPauseMs,
+                        requireBody: true,
+                        shouldStop: isStopRequested,
+                        onAttempt: function (_a, _m, _e, meta) {
+                          if (meta && meta.isRetry) retriesTotal++;
+                        }
+                      }
+                    );
+                    if (detailRes.stopped || isStopRequested()) {
+                      stoppedByUser = true;
+                      dump.push({ payload: payload, response: detailRes.fr, stopped: true, phase: "detail" });
+                      break;
+                    }
+                    if (
+                      detailRes.ok &&
+                      detailRes.fr &&
+                      detailRes.fr.data &&
+                      detailRes.fr.data.body
+                    ) {
+                      // Сохраняем статус/правки из текущего payload, поля контента — из detail.
+                      var enriched = buildUpdatePayloadFromNewsItem(detailRes.fr.data.body);
+                      enriched.status = payload.status || enriched.status;
+                      enriched.newsId = payload.newsId || enriched.newsId;
+                      if (payload.description) enriched.description = payload.description;
+                      if (payload.summary != null) enriched.summary = payload.summary;
+                      payload = enriched;
+                      selected[si].payload = payload;
+                    } else {
+                      log(
+                        "news-detail не получен для " +
+                          payload.newsId +
+                          " — put по данным списка/файла."
+                      );
+                    }
+                  }
                   payload.method = "put";
                   sharedOpStatus.textContent =
                     "Операции: редактирование " + (si + 1) + "/" + selected.length;
@@ -3766,6 +4010,332 @@ function createDevToolsTrace(opts) {
           parseUpdateJson(text);
         })();
       });
+      searchInput.addEventListener("input", renderList);
+    }
+
+    function renderDeleteTab() {
+      clearContent();
+      var wrap = document.createElement("div");
+      wrap.style.cssText = "display:flex;flex-direction:column;gap:8px;";
+      content.appendChild(wrap);
+
+      wrap.appendChild(
+        mkHint(
+          "Удаление: POST …/news/newsId/newsDelete, body { newsId }. Безвозвратно. Список — /v1/news или ручные ID.",
+          "danger"
+        )
+      );
+
+      var fetchBox = mkSectionCard("Загрузка с сервера (/v1/news)");
+      wrap.appendChild(fetchBox);
+      var delStatusCtl = mkInlineMultiChecks(
+        "Status",
+        optionValues(NEWS_V2_CFG.STATUS_OPTIONS),
+        "draft"
+      );
+      var delBlockCtl = mkInlineMultiChecks(
+        "Business block",
+        optionValues(NEWS_V2_CFG.BUSINESS_BLOCK_OPTIONS),
+        "KMKKSB"
+      );
+      fetchBox.appendChild(delStatusCtl.el);
+      fetchBox.appendChild(delBlockCtl.el);
+      var fetchPagesInput = document.createElement("input");
+      fetchPagesInput.type = "number";
+      fetchPagesInput.min = "1";
+      fetchPagesInput.value = "3";
+      fetchPagesInput.style.cssText =
+        "padding:3px 5px;border:1px solid #94a3b8;border-radius:4px;width:72px;font-size:11px;margin-right:6px;";
+      var pagesRow = document.createElement("div");
+      pagesRow.style.cssText =
+        "display:flex;align-items:center;gap:4px;margin-top:4px;font-size:10px;color:#64748b;";
+      pagesRow.appendChild(fetchPagesInput);
+      pagesRow.appendChild(document.createTextNode("стр. если «Стр. по»=0"));
+      fetchBox.appendChild(pagesRow);
+
+      var idsInput = document.createElement("textarea");
+      idsInput.rows = 3;
+      idsInput.placeholder = "Или ID вручную: по одному / через ;";
+      idsInput.style.cssText =
+        "width:100%;padding:6px;border:1px solid #94a3b8;border-radius:5px;font-family:ui-monospace,monospace;font-size:11px;box-sizing:border-box;";
+      wrap.appendChild(idsInput);
+
+      var actions = document.createElement("div");
+      actions.style.cssText = "display:flex;flex-wrap:wrap;gap:5px;";
+      wrap.appendChild(actions);
+
+      var tableHost = document.createElement("div");
+      wrap.appendChild(tableHost);
+
+      var candidates = [];
+      var searchInput = document.createElement("input");
+      searchInput.type = "text";
+      searchInput.placeholder = "Поиск по типу / заголовку / ID";
+      searchInput.style.cssText =
+        "width:100%;padding:5px 7px;border:1px solid #94a3b8;border-radius:5px;font-size:11px;box-sizing:border-box;";
+      wrap.appendChild(searchInput);
+      var selectionInfo = document.createElement("div");
+      selectionInfo.style.cssText = "font-size:10px;color:#64748b;";
+      wrap.appendChild(selectionInfo);
+
+      function renderList() {
+        tableHost.innerHTML = "";
+        if (!candidates.length) {
+          selectionInfo.textContent = "Записей: 0";
+          return;
+        }
+        var q = String(searchInput.value || "").trim().toLowerCase();
+        var filtered = candidates.filter(function (item) {
+          if (!q) return true;
+          var hay = [ensureString(item.type), ensureString(item.summary), ensureString(item.newsId)]
+            .join(" ")
+            .toLowerCase();
+          return hay.indexOf(q) >= 0;
+        });
+        tableHost.appendChild(
+          renderCandidatesTable(filtered, "status", { onSelectionChange: updateSelectionInfo })
+        );
+        updateSelectionInfo(filtered.length);
+      }
+      function updateSelectionInfo(filteredCount) {
+        var selectedCount = candidates.filter(function (x) {
+          return x.selected !== false;
+        }).length;
+        var countForView = typeof filteredCount === "number" ? filteredCount : candidates.length;
+        selectionInfo.textContent =
+          "Записей: " +
+          candidates.length +
+          " | В фильтре: " +
+          countForView +
+          " | Выбрано: " +
+          selectedCount;
+      }
+      function setAllSelected(next) {
+        for (var i = 0; i < candidates.length; i++) candidates[i].selected = !!next;
+        renderList();
+      }
+      function setFilteredSelected(next) {
+        var q = String(searchInput.value || "").trim().toLowerCase();
+        for (var i = 0; i < candidates.length; i++) {
+          if (!q) {
+            candidates[i].selected = !!next;
+            continue;
+          }
+          var hay = [
+            ensureString(candidates[i].type),
+            ensureString(candidates[i].summary),
+            ensureString(candidates[i].newsId)
+          ]
+            .join(" ")
+            .toLowerCase();
+          if (hay.indexOf(q) >= 0) candidates[i].selected = !!next;
+        }
+        renderList();
+      }
+      function clearLoadedSelection() {
+        candidates = [];
+        searchInput.value = "";
+        idsInput.value = "";
+        renderList();
+        log("Список выбора (удаление) очищен.");
+      }
+
+      actions.appendChild(
+        mkBtn(
+          "Загрузить с сервера",
+          function () {
+            void (async function () {
+              if (opBusy) {
+                log("Уже выполняется другая операция — дождитесь завершения или нажмите Стоп.");
+                return;
+              }
+              var settings = getSharedRequestSettings();
+              var localMax = parseInt(String(fetchPagesInput.value || "3"), 10);
+              if (!Number.isFinite(localMax) || localMax < 1) localMax = 1;
+              var result = await fetchNewsItemsFromServer(
+                delStatusCtl.getSelected(),
+                delBlockCtl.getSelected(),
+                settings,
+                localMax,
+                "загрузка для удаления"
+              );
+              if (!result.ok) {
+                log("Отмена загрузки: " + (result.error || "ошибка"));
+                return;
+              }
+              candidates = result.items.map(function (row) {
+                return {
+                  selected: false,
+                  newsId: ensureString(row.newsId),
+                  type: normalizeType(row.newsType || row.type),
+                  summary: compactNewsLabel(row),
+                  currentStatus: ensureString(row.newsStatus || "")
+                };
+              });
+              renderList();
+              log(
+                "К удалению с сервера: " +
+                  candidates.length +
+                  " (по умолчанию снято — отметьте нужные)."
+              );
+            })();
+          },
+          "background:#0ea5e9;color:#fff;border-color:#0ea5e9;"
+        )
+      );
+      actions.appendChild(
+        mkBtn("Разобрать ID", function () {
+          var list = parseLinesToList(idsInput.value);
+          if (!list.length) {
+            log("Поле ID пустое.");
+            return;
+          }
+          candidates = list.map(function (id) {
+            return {
+              selected: true,
+              newsId: id,
+              type: "",
+              summary: id,
+              currentStatus: ""
+            };
+          });
+          renderList();
+          log("К удалению из ID: " + candidates.length);
+        })
+      );
+      actions.appendChild(mkBtn("Отметить всё", function () { setAllSelected(true); }));
+      actions.appendChild(mkBtn("Отметить в фильтре", function () { setFilteredSelected(true); }));
+      actions.appendChild(mkBtn("Снять всё", function () { setAllSelected(false); }));
+      actions.appendChild(mkBtn("Очистить", function () { clearLoadedSelection(); }));
+      actions.appendChild(
+        mkBtn(
+          "Удалить выбранные",
+          function () {
+            void (async function () {
+              if (opBusy) {
+                log("Уже выполняется другая операция — дождитесь завершения или нажмите Стоп.");
+                return;
+              }
+              var selected = candidates.filter(function (c) {
+                return c.selected !== false && String(c.newsId || "").trim();
+              });
+              if (!selected.length) {
+                log("Нет выбранных новостей для удаления.");
+                return;
+              }
+              if (
+                !window.confirm(
+                  "УДАЛИТЬ безвозвратно " + selected.length + " новостей?\nЭто действие необратимо."
+                )
+              ) {
+                log("Удаление отменено пользователем.");
+                return;
+              }
+              var env = getEnv();
+              var settings = getSharedRequestSettings();
+              var okCount = 0;
+              var failCount = 0;
+              var retriesTotal = 0;
+              var consecutiveFails = 0;
+              var stoppedByUser = false;
+              var abortedByErrors = false;
+              var dump = [];
+              setOpBusy(true, "удаление");
+              try {
+                for (var si = 0; si < selected.length; si++) {
+                  if (isStopRequested()) {
+                    stoppedByUser = true;
+                    log("Стоп: удаление прервано.");
+                    break;
+                  }
+                  var item = selected[si];
+                  var payload = { newsId: item.newsId };
+                  sharedOpStatus.textContent =
+                    "Операции: удаление " + (si + 1) + "/" + selected.length;
+                  var retryResult = await postJsonWithRetry(
+                    env.origin + NEWS_V2_CFG.NEWS_DELETE_PATH,
+                    payload,
+                    env.origin + "/admin/community/" + item.newsId,
+                    {
+                      log: log,
+                      retryMax: settings.retryMax,
+                      retryPauseMs: settings.retryPauseMs,
+                      requireBody: false,
+                      shouldStop: isStopRequested,
+                      onAttempt: function (_a, _m, _e, meta) {
+                        if (meta && meta.isRetry) retriesTotal++;
+                      }
+                    }
+                  );
+                  if (retryResult.stopped || isStopRequested()) {
+                    stoppedByUser = true;
+                    dump.push({ payload: payload, response: retryResult.fr, stopped: true });
+                    break;
+                  }
+                  dump.push({
+                    payload: payload,
+                    response: retryResult.fr,
+                    attempts: retryResult.attempts,
+                    retries: retryResult.retries
+                  });
+                  if (retryResult.ok) {
+                    consecutiveFails = 0;
+                    okCount++;
+                    log("Удалено: newsId=" + item.newsId);
+                  } else {
+                    failCount++;
+                    consecutiveFails++;
+                    log(
+                      "Ошибка удаления: newsId=" +
+                        item.newsId +
+                        " | " +
+                        (retryResult.error || ("HTTP " + (retryResult.fr && retryResult.fr.status)))
+                    );
+                    if (consecutiveFails >= settings.abortLimit) {
+                      abortedByErrors = true;
+                      log("АВАРИЯ: остановка удаления после " + consecutiveFails + " ошибок подряд.");
+                      break;
+                    }
+                  }
+                  if (si < selected.length - 1 && settings.opGapMs > 0) {
+                    await delay(settings.opGapMs);
+                    if (isStopRequested()) {
+                      stoppedByUser = true;
+                      break;
+                    }
+                  }
+                }
+              } finally {
+                setOpBusy(false);
+              }
+              downloadJson(
+                "news_delete_result_" + env.stand + "_" + env.contour + "_" + tsShort() + ".json",
+                {
+                  env: env,
+                  settings: settings,
+                  total: selected.length,
+                  okCount: okCount,
+                  failCount: failCount,
+                  retriesTotal: retriesTotal,
+                  stoppedByUser: stoppedByUser,
+                  abortedByErrors: abortedByErrors,
+                  results: dump
+                }
+              );
+              log(
+                "Удаление завершено. OK=" +
+                  okCount +
+                  ", FAIL=" +
+                  failCount +
+                  (stoppedByUser ? " | стоп" : "") +
+                  (abortedByErrors ? " | авария" : "") +
+                  "."
+              );
+            })();
+          },
+          "background:#b91c1c;color:#fff;border-color:#b91c1c;"
+        )
+      );
       searchInput.addEventListener("input", renderList);
     }
 
@@ -4310,11 +4880,12 @@ function createDevToolsTrace(opts) {
       { key: "export", label: "Выгрузка", render: renderExportTab },
       { key: "create", label: "Создание", render: renderCreateTab },
       { key: "status", label: "Статусы", render: renderStatusTab },
-      { key: "edit", label: "Редактирование", render: renderEditTab }
+      { key: "edit", label: "Редактирование", render: renderEditTab },
+      { key: "delete", label: "Удаление", render: renderDeleteTab }
     ];
 
     var tabBtnBaseCss =
-      "padding:3px 9px;border-radius:999px;border:1px solid #94a3b8;background:#fff;color:#334155;" +
+      "padding:3px 8px;border-radius:5px;border:1px solid #94a3b8;background:#fff;color:#334155;" +
       "cursor:pointer;font-size:11px;font-weight:600;line-height:1.2;white-space:nowrap;";
 
     var activeTab = "";
@@ -4324,9 +4895,20 @@ function createDevToolsTrace(opts) {
         var btn = tabBar.children[i];
         if (!btn.getAttribute || !btn.getAttribute("data-tab")) continue;
         var isOn = btn.getAttribute("data-tab") === nextKey;
-        btn.style.background = isOn ? "#2563eb" : "#fff";
-        btn.style.color = isOn ? "#fff" : "#334155";
-        btn.style.borderColor = isOn ? "#2563eb" : "#94a3b8";
+        var isDel = btn.getAttribute("data-tab") === "delete";
+        if (isOn && isDel) {
+          btn.style.background = "#b91c1c";
+          btn.style.color = "#fff";
+          btn.style.borderColor = "#b91c1c";
+        } else if (isOn) {
+          btn.style.background = "#1d4ed8";
+          btn.style.color = "#fff";
+          btn.style.borderColor = "#1d4ed8";
+        } else {
+          btn.style.background = "#fff";
+          btn.style.color = "#334155";
+          btn.style.borderColor = "#94a3b8";
+        }
       }
       for (var ti = 0; ti < tabs.length; ti++) {
         if (tabs[ti].key === nextKey) {
