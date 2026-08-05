@@ -1177,19 +1177,47 @@ function createDevToolsTrace(opts) {
     };
   }
 
-  function buildCreateTemplateFromCandidates(candidates, createdObjectIdsByIndex) {
-    var items = (candidates || []).map(function (candidate, idx) {
-      var item = normalizeCreateTemplateItem(
+  function buildCreateTemplateFromCandidates(candidates) {
+    var items = (candidates || []).map(function (candidate) {
+      return normalizeCreateTemplateItem(
         candidate && candidate.payload ? candidate.payload : {}
       );
-      if (Array.isArray(createdObjectIdsByIndex) && createdObjectIdsByIndex[idx]) {
-        item.createdObjectId = ensureString(createdObjectIdsByIndex[idx]);
-      }
-      return item;
     });
     return {
-      info: "Нормализованный шаблон createItems (подготовлено скриптом).",
+      info: "Нормализованный шаблон createItems (подготовлено скриптом при загрузке).",
       createItems: items
+    };
+  }
+
+  /**
+   * Шаблон по итогам создания: только успешные + новые ID из ответа newsCreate.
+   * @param {object[]} candidates
+   * @param {(string|null|undefined)[]} createdObjectIdsByIndex
+   */
+  function buildCreatedNewsTemplate(candidates, createdObjectIdsByIndex) {
+    var items = [];
+    var list = candidates || [];
+    var ids = Array.isArray(createdObjectIdsByIndex) ? createdObjectIdsByIndex : [];
+    for (var i = 0; i < list.length; i++) {
+      var newId = ensureString(ids[i] || "").trim();
+      if (!newId) continue;
+      var item = normalizeCreateTemplateItem(
+        list[i] && list[i].payload ? list[i].payload : {}
+      );
+      item.objectId = newId;
+      item.newsId = newId;
+      item.status = "draft";
+      items.push(item);
+    }
+    return {
+      info:
+        "Шаблон createItems после newsCreate: objectId/newsId — из ответа API (body.objectId).",
+      createItems: items,
+      _meta: {
+        generatedAt: nowIso(),
+        source: "newsCreate",
+        itemsCount: items.length
+      }
     };
   }
 
@@ -1594,6 +1622,49 @@ function createDevToolsTrace(opts) {
       }
     }
     return { ok: false, fr: lastFr, error: lastErr, attempts: maxAttempts, retries: retriesDone };
+  }
+
+  /**
+   * Извлечь ID созданной новости из ответа newsCreate.
+   * @param {{ data?: * }|null|undefined} fr
+   * @returns {string}
+   */
+  function extractNewsCreateObjectId(fr) {
+    var data = fr && fr.data;
+    if (data == null) return "";
+    if (typeof data === "string") return String(data).trim();
+    if (typeof data !== "object") return "";
+    var body = data.body;
+    if (typeof body === "string" && String(body).trim()) return String(body).trim();
+    if (body && typeof body === "object") {
+      var fromBody = body.objectId != null ? body.objectId : body.newsId != null ? body.newsId : body.id;
+      if (fromBody != null && String(fromBody).trim()) return String(fromBody).trim();
+    }
+    var top = data.objectId != null ? data.objectId : data.newsId != null ? data.newsId : null;
+    if (top != null && String(top).trim()) return String(top).trim();
+    return "";
+  }
+
+  /**
+   * Смена статуса новости (тот же контракт, что вкладка «Статусы»).
+   * @param {string} origin
+   * @param {string} newsId
+   * @param {string} status
+   * @param {object} [hooks]
+   */
+  function patchNewsStatus(origin, newsId, status, hooks) {
+    var id = String(newsId || "").trim();
+    var payload = {
+      newsId: id,
+      status: status === "draft" ? "draft" : "published",
+      method: "patch"
+    };
+    return postJsonWithRetry(
+      origin + NEWS_V2_CFG.NEWS_UPDATE_PATH,
+      payload,
+      origin + "/admin/community/" + id,
+      hooks || {}
+    );
   }
 
   function buildCreateTemplate() {
@@ -2483,7 +2554,8 @@ function createDevToolsTrace(opts) {
       var modeHint = document.createElement("div");
       modeHint.style.cssText = "font-size:10px;color:#64748b;width:100%;line-height:1.35;";
       modeHint.textContent =
-        "Одна новость — форма или файл. Несколько — только файл JSON. Create → draft + objectId; публикация — patch.";
+        "Одна новость — форма или файл. Несколько — только файл JSON. " +
+        "Шаблон — при загрузке; после create — файл с новыми objectId + предложение опубликовать.";
       modeRow.appendChild(modeHint);
 
       function mkModeRadio(id, value, labelText, checked) {
@@ -2855,6 +2927,13 @@ function createDevToolsTrace(opts) {
       actions.appendChild(rowSelect);
       actions.appendChild(rowRun);
 
+      // Блок публикации — сразу под кнопками запуска (не под длинной таблицей).
+      var publishBox = document.createElement("div");
+      publishBox.style.cssText =
+        "display:none;flex-direction:column;gap:8px;padding:10px;border:1px solid #86efac;" +
+        "border-radius:8px;background:#f0fdf4;";
+      wrap.appendChild(publishBox);
+
       var tableHost = document.createElement("div");
       wrap.appendChild(tableHost);
 
@@ -2869,12 +2948,6 @@ function createDevToolsTrace(opts) {
       var selectionInfo = document.createElement("div");
       selectionInfo.style.cssText = "font-size:11px;color:#475569;";
       wrap.appendChild(selectionInfo);
-
-      var publishBox = document.createElement("div");
-      publishBox.style.cssText =
-        "display:none;flex-direction:column;gap:8px;padding:10px;border:1px solid #86efac;" +
-        "border-radius:8px;background:#f0fdf4;";
-      wrap.appendChild(publishBox);
 
       /** @type {{ newsId: string, type: string, summary: string, selected: boolean }[]} */
       var createdDrafts = [];
@@ -2964,6 +3037,11 @@ function createDevToolsTrace(opts) {
             log("Публикация созданных черновиков пропущена.");
           })
         );
+        try {
+          publishBox.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        } catch (_eScroll) {
+          /* ignore */
+        }
       }
 
       async function publishCreatedDrafts() {
@@ -3000,19 +3078,13 @@ function createDevToolsTrace(opts) {
             }
             var newsId = toPub[i].newsId;
             sharedOpStatus.textContent = "Операции: публикация " + (i + 1) + "/" + toPub.length;
-            var payload = { newsId: newsId, status: "published", method: "patch" };
-            var retryResult = await postJsonWithRetry(
-              env.origin + NEWS_V2_CFG.NEWS_UPDATE_PATH,
-              payload,
-              env.origin + "/admin/community/" + newsId,
-              {
-                log: log,
-                retryMax: settings.retryMax,
-                retryPauseMs: settings.retryPauseMs,
-                requireBody: false,
-                shouldStop: isStopRequested
-              }
-            );
+            var retryResult = await patchNewsStatus(env.origin, newsId, "published", {
+              log: log,
+              retryMax: settings.retryMax,
+              retryPauseMs: settings.retryPauseMs,
+              requireBody: false,
+              shouldStop: isStopRequested
+            });
             if (retryResult.stopped) break;
             if (retryResult.ok) {
               ok++;
@@ -3037,19 +3109,27 @@ function createDevToolsTrace(opts) {
       }
 
       function showCreatedDraftsForPublish(items) {
-        createdDrafts = (items || []).map(function (x) {
-          return {
-            newsId: ensureString(x.newsId),
-            type: ensureString(x.type),
-            summary: ensureString(x.summary),
-            selected: true
-          };
-        });
+        createdDrafts = (items || [])
+          .map(function (x) {
+            return {
+              newsId: ensureString(x.newsId || x.objectId || "").trim(),
+              type: ensureString(x.type),
+              summary: ensureString(x.summary),
+              selected: true
+            };
+          })
+          .filter(function (x) {
+            return !!x.newsId;
+          });
         renderPublishBox();
         if (createdDrafts.length) {
           log(
-            "Можно опубликовать созданные черновики: отметьте нужные и нажмите «Опубликовать выбранные»."
+            "Можно опубликовать созданные черновики (" +
+              createdDrafts.length +
+              "): отметьте нужные под кнопками и нажмите «Опубликовать выбранные»."
           );
+        } else {
+          log("Создание завершено, но не удалось получить objectId из ответов — публикация недоступна.");
         }
       }
 
@@ -3275,7 +3355,7 @@ function createDevToolsTrace(opts) {
         if (saveNormalized && candidates.length) {
           var fname = "news_create_template_normalized_" + tsShort() + ".json";
           downloadJson(fname, lastNormalizedCreateTemplate);
-          log("Сохранён нормализованный шаблон createItems: " + fname);
+          log("При загрузке сохранён нормализованный шаблон createItems: " + fname);
         }
       }
 
@@ -3485,8 +3565,8 @@ function createDevToolsTrace(opts) {
                       requireBody: true,
                       shouldStop: isStopRequested,
                       successCheck: function (fr) {
-                        if (!(fr && fr.data && fr.data.body && fr.data.body.objectId)) {
-                          return "нет objectId в ответе";
+                        if (!extractNewsCreateObjectId(fr)) {
+                          return "нет objectId в ответе newsCreate";
                         }
                         return null;
                       },
@@ -3509,10 +3589,11 @@ function createDevToolsTrace(opts) {
                   if (retryResult.ok) {
                     consecutiveFails = 0;
                     okCount++;
-                    var newId = String(retryResult.fr.data.body.objectId);
+                    var newId = extractNewsCreateObjectId(retryResult.fr);
                     createdObjectIdsByIndex[si] = newId;
                     createdIds.push({
                       newsId: newId,
+                      objectId: newId,
                       type: payload.type,
                       summary: compactNewsLabel(payload)
                     });
@@ -3585,11 +3666,14 @@ function createDevToolsTrace(opts) {
                   ".json";
                 downloadJson(
                   createdTemplateName,
-                  buildCreateTemplateFromCandidates(selected, createdObjectIdsByIndex)
+                  buildCreatedNewsTemplate(selected, createdObjectIdsByIndex)
                 );
                 log(
-                  "Сохранён шаблон созданных новостей с createdObjectId: " +
-                    createdTemplateName
+                  "Сохранён шаблон созданных новостей с новыми objectId/newsId: " +
+                    createdTemplateName +
+                    " (" +
+                    createdIds.length +
+                    ")"
                 );
               }
               log(
@@ -3926,13 +4010,12 @@ function createDevToolsTrace(opts) {
                     break;
                   }
                   var item = selected[si];
-                  var payload = { newsId: item.newsId, status: item.targetStatus, method: "patch" };
                   sharedOpStatus.textContent =
                     "Операции: статус " + (si + 1) + "/" + selected.length;
-                  var retryResult = await postJsonWithRetry(
-                    env.origin + NEWS_V2_CFG.NEWS_UPDATE_PATH,
-                    payload,
-                    env.origin + "/admin/community/" + item.newsId,
+                  var retryResult = await patchNewsStatus(
+                    env.origin,
+                    item.newsId,
+                    item.targetStatus,
                     {
                       log: log,
                       retryMax: settings.retryMax,
@@ -3946,11 +4029,23 @@ function createDevToolsTrace(opts) {
                   );
                   if (retryResult.stopped || isStopRequested()) {
                     stoppedByUser = true;
-                    dump.push({ payload: payload, response: retryResult.fr, stopped: true });
+                    dump.push({
+                      payload: {
+                        newsId: item.newsId,
+                        status: item.targetStatus,
+                        method: "patch"
+                      },
+                      response: retryResult.fr,
+                      stopped: true
+                    });
                     break;
                   }
                   dump.push({
-                    payload: payload,
+                    payload: {
+                      newsId: item.newsId,
+                      status: item.targetStatus,
+                      method: "patch"
+                    },
                     response: retryResult.fr,
                     attempts: retryResult.attempts,
                     retries: retryResult.retries
