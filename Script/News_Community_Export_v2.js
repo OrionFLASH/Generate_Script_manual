@@ -527,10 +527,10 @@
     var p = payload || {};
     return {
       bankLevel: p.bankLevel !== false,
-      rewardList: toUniqueCodes(p.rewardList, "rewardCode").map(function (x) {
+      rewardList: extractUniqueCodes(p.rewardList, "rewardCode").map(function (x) {
         return { rewardCode: x };
       }),
-      tournamentList: toUniqueCodes(p.tournamentList, "tournamentCode").map(function (x) {
+      tournamentList: extractUniqueCodes(p.tournamentList, "tournamentCode").map(function (x) {
         return { tournamentCode: x };
       }),
       newsFeature: normalizeNewsFeature(p.newsFeature, parseMaybeJsonArray((p.newsFeatureObj || {}).businessBlock)),
@@ -542,7 +542,7 @@
       tbCodeList: parseMaybeJsonArray(p.tbCodeList != null ? p.tbCodeList : p.tbCode),
       gosbCodeList: parseMaybeJsonArray(p.gosbCodeList != null ? p.gosbCodeList : p.gosbCode),
       leadersList: mapEmployeesList(p.leadersList || p.leaders || []),
-      createdBy: ensureString(p.createdBy),
+      createdBy: ensureString(p.createdBy || NEWS_V2_CFG.DEFAULT_CREATED_BY),
       plannedDt: ensureString(p.plannedDt || p.plannedDateTime || nowIso()),
       status: "draft",
       createDt: ensureString(p.createDt || nowIso())
@@ -553,10 +553,10 @@
     var p = payload || {};
     return {
       bankLevel: p.bankLevel !== false,
-      rewardList: toUniqueCodes(p.rewardList || p.rewards || [], "rewardCode").map(function (x) {
+      rewardList: extractUniqueCodes(p.rewardList || p.rewards || [], "rewardCode").map(function (x) {
         return { rewardCode: x };
       }),
-      tournamentList: toUniqueCodes(p.tournamentList, "tournamentCode").map(function (x) {
+      tournamentList: extractUniqueCodes(p.tournamentList, "tournamentCode").map(function (x) {
         return { tournamentCode: x };
       }),
       newsFeature: normalizeNewsFeature(p.newsFeature, parseMaybeJsonArray((p.newsFeatureObj || {}).businessBlock)),
@@ -597,6 +597,45 @@
     return {
       info: "Нормализованный шаблон updateItems (подготовлено скриптом).",
       updateItems: items
+    };
+  }
+
+  /**
+   * Из полной выгрузки / списка новостей собрать шаблон для create и edit.
+   * @param {*} source
+   * @param {string} [defaultCreatedBy]
+   * @returns {{ info: string, createItems: object[], updateItems: object[], _meta: object }}
+   */
+  function buildCreateEditTemplateFromExportSource(source, defaultCreatedBy) {
+    var batchIso = nowIso();
+    var createdBy =
+      String(defaultCreatedBy || "").trim() || NEWS_V2_CFG.DEFAULT_CREATED_BY;
+    var rows = collectNewsRowsFromExportJson(source);
+    var createItems = [];
+    var updateItems = [];
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      if (!row || typeof row !== "object") continue;
+      var createPayload = buildCreatePayloadFromSourceItem(row, createdBy, batchIso, null);
+      createItems.push(normalizeCreateTemplateItem(createPayload));
+      var updatePayload = buildUpdatePayloadFromNewsItem(row);
+      if (!String(updatePayload.createdBy || "").trim()) {
+        updatePayload.createdBy = createdBy;
+      }
+      updateItems.push(normalizeUpdateTemplateItem(updatePayload));
+    }
+    return {
+      info:
+        "Нормализованный шаблон из выгрузки: createItems — для вкладки Создание, " +
+        "updateItems — для вкладки Редактирование.",
+      createItems: createItems,
+      updateItems: updateItems,
+      _meta: {
+        generatedAt: batchIso,
+        source: "export",
+        itemsCount: createItems.length,
+        defaultCreatedBy: createdBy
+      }
     };
   }
 
@@ -3199,6 +3238,7 @@
           var suffix =
             abortedByErrors || stoppedByUser ? "_partial" : "";
           var fnameJson = prefix + stamp + suffix + ".json";
+          var fnameTemplate = prefix + stamp + suffix + "_create_edit_template.json";
           try {
             downloadJson(fnameJson, bundle);
             log(
@@ -3220,6 +3260,26 @@
             log(
               "Не удалось сохранить JSON: " +
                 (saveEx && saveEx.message ? saveEx.message : String(saveEx))
+            );
+          }
+          try {
+            var workTemplate = buildCreateEditTemplateFromExportSource(
+              bundle,
+              NEWS_V2_CFG.DEFAULT_CREATED_BY
+            );
+            downloadJson(fnameTemplate, workTemplate);
+            log(
+              "  Шаблон create/edit: " +
+                fnameTemplate +
+                " | createItems=" +
+                (workTemplate.createItems || []).length +
+                " | updateItems=" +
+                (workTemplate.updateItems || []).length
+            );
+          } catch (tplEx) {
+            log(
+              "Не удалось сохранить шаблон create/edit: " +
+                (tplEx && tplEx.message ? tplEx.message : String(tplEx))
             );
           }
           if (mode === "JSON+CSV") {

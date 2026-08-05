@@ -75,6 +75,7 @@
 
 | Дата | Описание |
 |------|----------|
+| 2026-08-05 | **`News_Community_Export_v2.js`**: при выгрузке скачиваются два JSON — полный исходный и шаблон create/edit (`*_create_edit_template.json` с `createItems`/`updateItems`). |
 | 2026-08-04 | **`News_Community_Export_v2.js`**: в таблице создания/редактирования — NewsType, число тегов, коды reward/tournament по типу (несколько через перевод строки), заголовок до 50 символов. |
 | 2026-08-04 | **`News_Community_Export_v2.js`**: при аварии/Стопе выгрузки сохраняется JSON/CSV только из успешных страниц (суффикс `_partial`). |
 | 2026-08-04 | **`News_Community_Export_v2.js`**: диапазон страниц выгрузки **Стр. с / Стр. по** (например 10…20) — в payload только эти `pageNum`. |
