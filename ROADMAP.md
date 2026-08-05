@@ -449,7 +449,8 @@
 - `[v]` `terDivisionName` по маппингу `tbCode -> name` из конфига; выходные файлы с префиксом `REPL_EmpID_`.
 - `[v]` Запуск без обязательного `--config`: автопоиск `config_emp_replace.json` / `config_*.json` рядом со скриптом.
 - `[v]` В конфиге явный список входных файлов `input_files` (один или несколько имён в `IN`).
-- `[v]` После замен — Excel-отчёт `excel_report_file` (по умолчанию `REPL_EmpID_mapping.xlsx`): колонки **Было / Стало / Файлы / ID новостей**; несколько файлов и ID — через перевод строки; фиксированный заголовок + автофильтр (`openpyxl`).
+- `[v]` После замен — Excel-отчёт `excel_report_file` (по умолчанию `REPL_EmpID_mapping.xlsx`): фиксированный заголовок + автофильтр (`openpyxl`).
+- `[v]` Excel «было/стало» по всем заменяемым полям (`employeeNumber`, `lastName`, `firstName`, `gosbCode`, `tbCode`, `terDivisionName`); порядок: все «было» → все «стало» → ID новостей → файлы (несколько значений — через перевод строки).
 
 ---
 
@@ -590,6 +591,16 @@
 
 ---
 
+## 12. `Script/HTTP_Traffic_Logger.js`
+
+**Сопутствующий файл документации:** [Docs/Скрипт_HTTP_Traffic_Logger.md](Docs/Скрипт_HTTP_Traffic_Logger.md)
+
+- `[v]` Фоновый перехват fetch/XHR; панель Старт/Стоп; маска ПДн для `.log`; фильтр URL.
+- `[v]` Экспорт JSON (ответы без маски) и `.log` (полный дамп); связь по `corrId`.
+- `[v]` Одна кнопка **⬇ JSON + .log** — оба файла с общим timestamp.
+
+---
+
 ## 9. Сводная таблица «скрипт ↔ документ ↔ раздел ROADMAP»
 
 | Файл `Script/` | Основной документ `Docs/` | Раздел ROADMAP |
@@ -607,6 +618,7 @@
 | `UI_AutoTest_LinksCrawler.js` | Скрипт_UI_AutoTest_LinksCrawler.md | § 8 |
 | `SUP_Config_Update.js` | Скрипт_SUP_Config_Update.md | § 10 |
 | `Pulse_export_OE.js` | Скрипт_Pulse_export_OE.md | § 11 |
+| `HTTP_Traffic_Logger.js` | Скрипт_HTTP_Traffic_Logger.md | § 12 |
 
 **Общий HTTP-справочник:** [Docs/Справочник_скрипты_HTTP_запросы_и_последовательность.md](Docs/Справочник_скрипты_HTTP_запросы_и_последовательность.md)
 

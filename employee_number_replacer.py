@@ -35,19 +35,42 @@ class EmployeeRow:
 
 @dataclass(frozen=True)
 class ReplacementOccurrence:
-    """Одно вхождение исходного табельного в файле/новости."""
+    """Одно вхождение исходного сотрудника в файле/новости (снимок «было»)."""
 
     source_emp: str
     file_name: str
     news_id: str
+    last_name: str
+    first_name: str
+    gosb_code: str
+    tb_code: str
+    ter_division_name: str
 
 
-# Фиксированные заголовки Excel-отчёта (не менять без согласования).
+# Порядок полей в Excel: сначала все «было», затем все «стало», затем новости, затем файлы.
+BEFORE_FIELD_KEYS: tuple[str, ...] = (
+    "employeeNumber",
+    "lastName",
+    "firstName",
+    "gosbCode",
+    "tbCode",
+    "terDivisionName",
+)
 EXCEL_HEADERS: tuple[str, ...] = (
-    "Было",
-    "Стало",
-    "Файлы",
+    "Было employeeNumber",
+    "Было lastName",
+    "Было firstName",
+    "Было gosbCode",
+    "Было tbCode",
+    "Было terDivisionName",
+    "Стало employeeNumber",
+    "Стало lastName",
+    "Стало firstName",
+    "Стало gosbCode",
+    "Стало tbCode",
+    "Стало terDivisionName",
     "ID новостей",
+    "Файлы",
 )
 
 
@@ -260,7 +283,7 @@ def replace_in_document(
 def collect_occurrences(
     docs: list[tuple[Path, Any]],
 ) -> list[ReplacementOccurrence]:
-    """Собрать вхождения табельных до замены: файл + ID новости."""
+    """Собрать вхождения до замены: файл, ID новости и снимок заменяемых полей."""
     result: list[ReplacementOccurrence] = []
     for path, payload in docs:
         for node, news_id in iter_employee_occurrences(payload):
@@ -272,6 +295,11 @@ def collect_occurrences(
                     source_emp=source_emp,
                     file_name=path.name,
                     news_id=str(news_id or "").strip(),
+                    last_name=str(node.get("lastName", "") or "").strip(),
+                    first_name=str(node.get("firstName", "") or "").strip(),
+                    gosb_code=str(node.get("gosbCode", "") or "").strip(),
+                    tb_code=str(node.get("tbCode", "") or "").strip(),
+                    ter_division_name=str(node.get("terDivisionName", "") or "").strip(),
                 )
             )
     return result
@@ -290,23 +318,47 @@ def multiline_join(values: list[str]) -> str:
     return "\n".join(unique)
 
 
+def target_after_values(
+    target: EmployeeRow, tb_to_ter: dict[str, str]
+) -> dict[str, str]:
+    """Значения «стало» по заменяемым полям из строки пула."""
+    return {
+        "employeeNumber": target.person_number_8,
+        "lastName": target.surname,
+        "firstName": target.first_name,
+        "gosbCode": target.gosb_code,
+        "tbCode": target.tb_code,
+        "terDivisionName": str(tb_to_ter.get(target.tb_code, "")),
+    }
+
+
 def write_excel_report(
     report_path: Path,
     mapping: dict[str, EmployeeRow],
     occurrences: list[ReplacementOccurrence],
+    tb_to_ter: dict[str, str],
 ) -> None:
     """
-    Записать Excel: было/стало, файлы, ID новостей.
-    Несколько файлов/ID — через перевод строки; заголовок зафиксирован + автофильтр.
+    Записать Excel: все поля «было», затем все «стало», затем ID новостей, затем файлы.
+    Несколько значений/файлов/ID — через перевод строки; заголовок зафиксирован + автофильтр.
     """
     files_by_src: dict[str, list[str]] = defaultdict(list)
     news_by_src: dict[str, list[str]] = defaultdict(list)
+    before_by_src: dict[str, dict[str, list[str]]] = defaultdict(
+        lambda: {key: [] for key in BEFORE_FIELD_KEYS}
+    )
     for hit in occurrences:
         if hit.source_emp not in mapping:
             continue
         files_by_src[hit.source_emp].append(hit.file_name)
         if hit.news_id:
             news_by_src[hit.source_emp].append(hit.news_id)
+        before_by_src[hit.source_emp]["employeeNumber"].append(hit.source_emp)
+        before_by_src[hit.source_emp]["lastName"].append(hit.last_name)
+        before_by_src[hit.source_emp]["firstName"].append(hit.first_name)
+        before_by_src[hit.source_emp]["gosbCode"].append(hit.gosb_code)
+        before_by_src[hit.source_emp]["tbCode"].append(hit.tb_code)
+        before_by_src[hit.source_emp]["terDivisionName"].append(hit.ter_division_name)
 
     wb = Workbook()
     ws = wb.active
@@ -322,24 +374,25 @@ def write_excel_report(
     row_idx: int = 2
     for source_emp in sorted(mapping.keys()):
         target: EmployeeRow = mapping[source_emp]
-        files_text: str = multiline_join(files_by_src.get(source_emp, []))
-        news_text: str = multiline_join(news_by_src.get(source_emp, []))
-        values: tuple[str, str, str, str] = (
-            source_emp,
-            target.person_number_8,
-            files_text,
-            news_text,
+        after: dict[str, str] = target_after_values(target, tb_to_ter)
+        before_map: dict[str, list[str]] = before_by_src.get(
+            source_emp, {key: [] for key in BEFORE_FIELD_KEYS}
         )
+        before_vals: list[str] = [
+            multiline_join(before_map.get(key, [])) for key in BEFORE_FIELD_KEYS
+        ]
+        after_vals: list[str] = [after[key] for key in BEFORE_FIELD_KEYS]
+        news_text: str = multiline_join(news_by_src.get(source_emp, []))
+        files_text: str = multiline_join(files_by_src.get(source_emp, []))
+        values: list[str] = before_vals + after_vals + [news_text, files_text]
         for col_idx, value in enumerate(values, start=1):
             cell = ws.cell(row=row_idx, column=col_idx, value=value)
             cell.alignment = wrap_align
-        # Высота строки под число переносов в «Файлы» / «ID новостей».
-        line_count: int = max(
-            1,
-            files_text.count("\n") + 1 if files_text else 1,
-            news_text.count("\n") + 1 if news_text else 1,
-        )
-        ws.row_dimensions[row_idx].height = min(15 * line_count, 120)
+        line_count: int = 1
+        for text in values:
+            if text:
+                line_count = max(line_count, text.count("\n") + 1)
+        ws.row_dimensions[row_idx].height = min(15 * line_count, 150)
         row_idx += 1
 
     last_row: int = max(1, row_idx - 1)
@@ -347,7 +400,22 @@ def write_excel_report(
     ws.auto_filter.ref = f"A1:{last_col}{last_row}"
     ws.freeze_panes = "A2"
 
-    widths: tuple[int, ...] = (14, 14, 36, 36)
+    widths: tuple[int, ...] = (
+        16,
+        16,
+        14,
+        12,
+        10,
+        16,
+        16,
+        16,
+        14,
+        12,
+        10,
+        16,
+        28,
+        28,
+    )
     for col_idx, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(col_idx)].width = width
 
@@ -450,7 +518,7 @@ def main() -> None:
     report_path: Path = Path(excel_report_name)
     if not report_path.is_absolute():
         report_path = output_dir / report_path
-    write_excel_report(report_path, mapping, occurrences)
+    write_excel_report(report_path, mapping, occurrences, tb_to_ter)
     print(f"[OK] Excel-отчёт: {report_path.name} | строк: {len(mapping)}")
 
     print(

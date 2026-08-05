@@ -805,11 +805,10 @@
   rowActions.style.cssText = "display:flex;flex-wrap:wrap;gap:6px;";
   body.appendChild(rowActions);
 
-  var btnSaveJson = mkBtn("⬇ JSON");
-  var btnSaveLog = mkBtn("⬇ .log");
+  var btnSaveBoth = mkBtn("⬇ JSON + .log");
+  btnSaveBoth.title = "Сохранить оба файла с одним timestamp: .json (без маски) и .log (фильтр + маска)";
   var btnClear = mkBtn("Очистить");
-  rowActions.appendChild(btnSaveJson);
-  rowActions.appendChild(btnSaveLog);
+  rowActions.appendChild(btnSaveBoth);
   rowActions.appendChild(btnClear);
 
   // мини-бар
@@ -906,12 +905,11 @@
     refreshStats();
   });
 
-  btnSaveJson.addEventListener("click", function () {
-    downloadJson(CFG.FILE_PREFIX + tsShort() + ".json", buildJsonResponses());
-  });
-
-  btnSaveLog.addEventListener("click", function () {
-    downloadText(CFG.FILE_PREFIX + tsShort() + ".log", buildLogText());
+  btnSaveBoth.addEventListener("click", function () {
+    var stamp = tsShort();
+    var base = CFG.FILE_PREFIX + stamp;
+    downloadJson(base + ".json", buildJsonResponses());
+    downloadText(base + ".log", buildLogText());
   });
 
   btnMin.addEventListener("click", function () {
@@ -963,6 +961,6 @@
   installHooks(); // готовы к старту; запись только после ▶
   refreshStats();
   console.log(
-    "[HTTP_Traffic_Logger] Панель открыта. Нажмите «Старт», ходите по сайту, затем «⬇ JSON» / «⬇ .log»."
+    "[HTTP_Traffic_Logger] Панель открыта. Нажмите «Старт», ходите по сайту, затем «⬇ JSON + .log»."
   );
 })();
