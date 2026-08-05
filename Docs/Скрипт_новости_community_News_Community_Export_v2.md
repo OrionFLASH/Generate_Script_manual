@@ -4,12 +4,15 @@
 
 Скрипт добавляет отдельную модалку с вкладками для массовых операций по новостям community:
 
-- **Выгрузка** новостей (обновлённый блок старого сценария `POST /proxy/v1/news`)
-- **Создание** новостей (`newsCreate`)
+- **Выгрузка** новостей (`POST /proxy/v1/news`)
+- **Создание** (`newsCreate` → `body.objectId`, черновик)
 - **Смена статуса** `draft ↔ published` (`newsUpdate`, `method: "patch"`)
-- **Редактирование (каркас)** (`newsUpdate`, `method: "put"`)
+- **Редактирование** (`newsUpdate`, `method: "put"`; опционально `news-detail`)
+- **Удаление** (`POST …/news/newsId/newsDelete`, body `{ newsId }`)
 
-Основной сценарий — загрузка JSON из файла, показ компактного списка кандидатов и отправка только отмеченных элементов после подтверждения.
+Вкладки — компактная строка **сверху**; рабочая область и журнал — на всю ширину. Подсказки в окнах — мелкий шрифт (10px).
+
+Основной сценарий выбора (не create): загрузка списка с **`POST /v1/news`** (`newsStatus` + `businessBlock` + `pageNum`) → чекбоксы → операция. Альтернатива — JSON/ручные ID.
 
 ## API и окружение
 
@@ -17,10 +20,13 @@
 - Контуры: `ALPHA`, `SIGMA`
 - Куки: `credentials: "include"` (сессия текущей вкладки)
 
-Запросы:
+Запросы (по HAR logger):
 
-1. `POST /bo/rmkib.gamification/proxy/v1/administration/news/newsCreate`
-2. `POST /bo/rmkib.gamification/proxy/v1/administration/news/newsUpdate` (patch/put)
+1. `POST /bo/rmkib.gamification/proxy/v1/news` — список / выгрузка
+2. `POST /bo/rmkib.gamification/proxy/v1/news-detail` — деталь перед put
+3. `POST …/administration/news/newsCreate` — создание (`body.objectId`)
+4. `POST …/administration/news/newsUpdate` — put / patch
+5. `POST …/news/newsId/newsDelete` — удаление `{ newsId }`
 
 ## Вкладка «Выгрузка (старый блок)»
 
@@ -54,18 +60,49 @@
 
 Кнопка **⏹ Стоп** на панели (и на вкладке выгрузки) прерывает текущий пакет после текущего запроса. Одновременно может идти только одна операция.
 
+## DevToolsTrace (общий на все вкладки)
+
+Над общим журналом — переключатель **Trace (диагностика → файл .log)** (как в `Pulse_export_OE.js`).
+
+- Один буфер на всю панель: выгрузка / создание / статусы / редактирование пишут в один и тот же trace.
+- При включении пишутся HTTP (тела create/update/list), строки журнала, клики UI.
+- Выключение или **«Сохранить trace»** → `trace_News_Community_Export_v2_YYYYMMDD_HHMMSS.log`.
+- В trace **маскируются** ПДн/идентификаторы (переключатель **«Маска ПДн»** рядом с Trace, по умолчанию ON): `employeeNumber`, `createdBy`, `firstName`/`lastName`/`fullName`, `sberChatMention`, `alphaLink`/`sigmaLink`, почта/телефон, `personUuid`/`userId`; вложенные JSON-строки (`newsFeature`) и объекты `authors`/`leaders` из list/detail. Текст новости и коды наград/турниров не маскируются. Маску можно выключить для локальной отладки.
+
 ## Вкладка «Создание»
 
-Поддерживает два основных формата входного JSON:
+Два режима источника (переключатель на вкладке):
 
-1. **Шаблонный формат**:
+| Режим | Когда | Как |
+|-------|--------|-----|
+| **Форма (одна новость)** | Создаём **одну** новость | Поля в модалке: тип (select), заголовок, текст, bankLevel, businessBlock (чекбоксы), теги, награды/турниры, авторы/лидеры, tb/gosb, createdBy → «Добавить в список из формы» |
+| **Файл JSON (несколько)** | **Несколько** новостей (или одна из файла) | Файл `.json` или вставка JSON → «Разобрать JSON» |
+
+В режиме формы вставка большого JSON **не нужна** — значения задаются отдельными полями. Несколько новостей через форму не создаются: для пакета используйте файл.
+
+**Достижения (`achievement`):** поля наград (`rewardList` / `rewardCode`) и турниров (`tournamentList` / `tournamentCode`) **обязательны**. Из файла выгрузки коды берутся из `rewards[].rewardCode` и `contests[].tournaments[].tournamentCode`.
+
+**Разбор файла выгрузки:** читаются **все** элементы `pages[]`, плюс `comboResults[].pages` / `merged` (с дедупликацией по `newsId`). В журнале пишется, сколько страниц API реально разобрано. Если бы бралась только первая страница, из типичного файла ушло бы ~10 записей вместо 30–41.
+
+**После создания:** новости создаются в `draft`; в ответе приходит `body.objectId`. Скрипт показывает список созданных ID с чекбоксами — можно сразу **опубликовать выбранные** (`newsUpdate`, `method: "patch"`, `status: "published"`) или пропустить.
+
+Поддерживаемые форматы файла / JSON:
+
+1. **Шаблонный формат** (кнопка «Шаблон JSON» на вкладке Создание):
 
 ```json
 {
-  "createItems": [ ... ]
+  "info": "…",
+  "fieldNotes": { "type": "…", "rewardList": "…" },
+  "createItems": [
+    { "type": "bestPractice", "description": "…", "summary": "…", "bankLevel": false, "newsFeature": {}, "rewardList": [], "tournamentList": [], "authorsList": [], "leadersList": [], "tagList": [], "tbCodeList": [], "gosbCodeList": [], "createdBy": "…" },
+    { "type": "achievement", "rewardList": [{ "rewardCode": "r_…" }], "tournamentList": [{ "tournamentCode": "t_…" }], "…": "…" },
+    { "type": "publication", "…": "…" }
+  ]
 }
 ```
 
+В шаблоне три примера под реальные типы (bestPractice / achievement / publication) и коды наград/турниров из выгрузок. Поля `_example` / `fieldNotes` / `info` — только подсказки, в create не уходят.
 2. **Формат выгрузки** (`News_Community_Export.js` / v2):
    - `pages[].body.timePeriod[].news` — **все страницы**;
    - `comboResults[].merged.body.timePeriod[].news`;
@@ -85,7 +122,8 @@
 Минимальные критичные поля для создания:
 
 - `type` (из допустимого набора)
-- `createdBy` (если в файле пусто — подставляется значение из интерфейса/дефолт)
+- `createdBy` (если в файле/форме пусто — подставляется значение из интерфейса/дефолт)
+- в форме также нужен хотя бы один `businessBlock` и заголовок или текст
 
 ### `createdBy` по умолчанию
 
@@ -114,6 +152,7 @@
 
 Источник данных:
 
+- **Загрузка с сервера** — `POST /v1/news` (status × businessBlock × диапазон страниц панели)
 - JSON-файл (`statusItems`, массив, либо экспортный JSON с новостями)
 - или список `newsId` из текстового поля
 
@@ -132,23 +171,23 @@
 Перед отправкой:
 
 - обязательная проверка `newsId` и `status`;
-- есть явная кнопка **«Выбрать файл JSON»**;
 - подтверждение в интерфейсе;
 - запись результата в отдельный JSON-файл.
 
-## Вкладка «Редактирование (каркас)»
+## Вкладка «Редактирование»
 
-Реализован поток с двумя источниками данных:
+1. **С сервера**: `POST /v1/news` → таблица выбора → put-payload (`buildUpdatePayloadFromNewsItem`: `rewards`/`contests` → `rewardList`/`tournamentList`).
+2. **Из файла**: `updateItems` / массив put-payload.
+3. Опция **«Перед отправкой догрузить news-detail»** (вкл. по умолчанию): перед put запрашивается `POST /news-detail` для более полного payload.
+4. Отправка: `newsUpdate` с `method: "put"`.
 
-1. **Из файла**: загрузка `updateItems` из JSON.
-2. **С сервера**: загрузка текущих новостей через `POST /proxy/v1/news` (выбор status/block, лимит страниц), затем выбор записей в таблице.
-3. Для выбранных записей формируется payload редактирования (`method: "put"`).
-4. Отправка в `newsUpdate`.
+## Вкладка «Удаление»
 
-Предусмотрен экспорт шаблона файла редактирования для дальнейшего расширения логики.
-Для загрузки из файла используется явная кнопка **«Выбрать файл JSON»**.
+- Загрузка списка с `/v1/news` или ручные ID.
+- По умолчанию при загрузке с сервера чекбоксы **сняты** (нужно отметить явно).
+- `POST …/news/newsId/newsDelete` с `{ newsId }`; подтверждение; результат в JSON.
 
-Минимально критичное поле для редактирования:
+Минимально критичное поле для редактирования / удаления:
 
 - `newsId`
 
@@ -189,3 +228,51 @@
 - Результаты выполнения сохраняются в JSON (`*_result_*.json`) с payload и ответами API.
 - Создание / статусы / редактирование / выгрузка используют общие паузы, ретраи, аварийный стоп и кнопку **Стоп**.
 - При `success: true` без `body` (типично для patch/put статуса) ответ считается успешным; для create дополнительно проверяется `body.objectId`.
+
+## Маппинг полей: выгрузка → create / edit
+
+По примерам `ToDo/NEWS/news_community_PROM_SIGMA_20260804_*.json` (82 уникальных `newsId`):
+
+| Выгрузка | Create / форма | Edit (put) |
+|----------|----------------|------------|
+| `newsId` | не нужен | обязателен |
+| `newsType` | `type` (см. нормализацию ниже) | `type` |
+| `newsText` | `description` | `description` |
+| `summary` | `summary` (часто пусто у achievement/publication) | `summary` |
+| `newsStatus` | create всегда `draft` | `status` |
+| `businessBlocks` + `newsFeature.businessBlock` | чекбоксы → `newsFeature.businessBlock` | то же |
+| `newsFeature` (JSON-строка: alphaLink, sigmaLink, …) | поля ALPHA/SIGMA + blocks | целиком / поля |
+| `authors[]`.`employeeNumber` | textarea → `authorsList` | `authorsList` |
+| `leaders[]`.`employeeNumber` | textarea → `leadersList` | `leadersList` |
+| `rewards[]`.`rewardCode` | textarea → `rewardList` | `rewardList` |
+| `contests[].tournaments[].tournamentCode` | textarea → `tournamentList` | `tournamentList` |
+| `newsTagList[]`.`tagValue` (чаще `tagType=TEXT`) | textarea TEXT-тегов | `tagList` |
+| `tbCode` / `gosbCode` (часто `"[]"`) | `tbCodeList` / `gosbCodeList` | то же |
+| `bankLevel` | чекбокс (в данных чаще `true`) | `bankLevel` |
+| `imageList` | нет в create-форме | `imageList` |
+| `plannedDateTime` / `plannedDt` | `plannedDt` (из источника или now) | `plannedDt` |
+
+**Типы в выгрузке vs create API:**
+
+| `newsType` в выгрузке | В create уходит как |
+|----------------------|---------------------|
+| `bestPractice` | `bestPractice` |
+| `publication` | `publication` |
+| `individualAchievement` | `achievement` |
+| `tournamentAchievement` | `achievement` |
+
+В выборках: bestPractice≈41, individualAchievement≈18, tournamentAchievement≈12, publication≈11; статусы все `published`. Теги почти все `TEXT` (ДРИМФ, Гарантии, Лизинг…), не NEWS_TYPE.
+
+## История версий
+
+| Версия | Дата | Изменения |
+|--------|------|-----------|
+| 1.x | 2026-08-04 | Создание: форма полей для одной новости; несколько — только файл JSON |
+| 1.x | 2026-08-04 | Форма create сверена с выгрузкой PROM/SIGMA: типы, TEXT-теги, alpha/sigma, bankLevel |
+| 1.x | 2026-08-04 | DevToolsTrace: общий на все вкладки + маскирование ПДн (как Pulse OE) |
+| 1.x | 2026-08-05 | UI: вкладки сверху в строку; контент/статистика/журнал на всю ширину |
+| 1.x | 2026-08-05 | Create: обязательные reward/tournament для achievement; разбор всех pages; публикация objectId после create |
+| 1.x | 2026-08-05 | Шаблон JSON создания: fieldNotes + 3 примера (bestPractice/achievement/publication) под реальные поля |
+| 1.x | 2026-08-05 | Шаблон и payload сверены с HAR `ToDo/NEWS/Создание новостей.txt`; `plannedDt` из источника |
+| 1.x | 2026-08-05 | По HTTP logger: вкладка Удаление (`newsDelete`); статусы из `/v1/news`; edit + опц. `news-detail`; fix put `rewards`/`contests`; компактный UI |
+| 1.x | 2026-08-05 | Trace: расширенные ключи маски по HAR; переключатель «Маска ПДн» (ON по умолчанию) |

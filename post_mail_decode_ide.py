@@ -29,6 +29,8 @@ FILES_TO_DECODE: list[tuple[str, str]] = [
     ("File_DB_Load_GP.js.txt", "File_DB_Load_GP.js"),
     ("File_DB_Load_GP_v2.js.txt", "File_DB_Load_GP_v2.js"),
     ("News_Community_Export.js.txt", "News_Community_Export.js"),
+    ("News_Community_Export_v2.js.txt", "News_Community_Export_v2.js"),
+    ("HTTP_Traffic_Logger.js.txt", "HTTP_Traffic_Logger.js"),
     ("Parameters_Actual_Export.js.txt", "Parameters_Actual_Export.js"),
     ("Profile_GP_LOAD_file.js.txt", "Profile_GP_LOAD_file.js"),
     ("Pulse_export_OE.js.txt", "Pulse_export_OE.js"),
