@@ -517,6 +517,89 @@
     return "";
   }
 
+  function validateUpdatePayload(payload) {
+    if (!payload || typeof payload !== "object") return "payload отсутствует";
+    if (!String(payload.newsId || "").trim()) return "пустой newsId";
+    return "";
+  }
+
+  function normalizeCreateTemplateItem(payload) {
+    var p = payload || {};
+    return {
+      bankLevel: p.bankLevel !== false,
+      rewardList: toUniqueCodes(p.rewardList, "rewardCode").map(function (x) {
+        return { rewardCode: x };
+      }),
+      tournamentList: toUniqueCodes(p.tournamentList, "tournamentCode").map(function (x) {
+        return { tournamentCode: x };
+      }),
+      newsFeature: normalizeNewsFeature(p.newsFeature, parseMaybeJsonArray((p.newsFeatureObj || {}).businessBlock)),
+      type: normalizeType(p.type),
+      description: ensureString(p.description || p.newsText),
+      summary: ensureString(p.summary),
+      authorsList: mapEmployeesList(p.authorsList || p.authors || []),
+      tagList: toTagList(p.tagList || p.newsTagList || []),
+      tbCodeList: parseMaybeJsonArray(p.tbCodeList != null ? p.tbCodeList : p.tbCode),
+      gosbCodeList: parseMaybeJsonArray(p.gosbCodeList != null ? p.gosbCodeList : p.gosbCode),
+      leadersList: mapEmployeesList(p.leadersList || p.leaders || []),
+      createdBy: ensureString(p.createdBy),
+      plannedDt: ensureString(p.plannedDt || p.plannedDateTime || nowIso()),
+      status: "draft",
+      createDt: ensureString(p.createDt || nowIso())
+    };
+  }
+
+  function normalizeUpdateTemplateItem(payload) {
+    var p = payload || {};
+    return {
+      bankLevel: p.bankLevel !== false,
+      rewardList: toUniqueCodes(p.rewardList || p.rewards || [], "rewardCode").map(function (x) {
+        return { rewardCode: x };
+      }),
+      tournamentList: toUniqueCodes(p.tournamentList, "tournamentCode").map(function (x) {
+        return { tournamentCode: x };
+      }),
+      newsFeature: normalizeNewsFeature(p.newsFeature, parseMaybeJsonArray((p.newsFeatureObj || {}).businessBlock)),
+      type: normalizeType(p.type || p.newsType),
+      description: ensureString(p.description || p.newsText),
+      summary: ensureString(p.summary),
+      authorsList: mapEmployeesList(p.authorsList || p.authors || []),
+      tagList: toTagList(p.tagList || p.newsTagList || []),
+      tbCodeList: parseMaybeJsonArray(p.tbCodeList != null ? p.tbCodeList : p.tbCode),
+      gosbCodeList: parseMaybeJsonArray(p.gosbCodeList != null ? p.gosbCodeList : p.gosbCode),
+      leadersList: mapEmployeesList(p.leadersList || p.leaders || []),
+      createdBy: ensureString(p.createdBy || NEWS_V2_CFG.DEFAULT_CREATED_BY),
+      plannedDt: ensureString(p.plannedDt || p.plannedDateTime || nowIso()),
+      newsId: ensureString(p.newsId),
+      method: "put",
+      status: ensureString(p.newsStatus || p.status || "draft")
+    };
+  }
+
+  function buildCreateTemplateFromCandidates(candidates, createdObjectIdsByIndex) {
+    var items = (candidates || []).map(function (c, idx) {
+      var item = normalizeCreateTemplateItem(c && c.payload ? c.payload : {});
+      if (Array.isArray(createdObjectIdsByIndex) && createdObjectIdsByIndex[idx]) {
+        item.createdObjectId = ensureString(createdObjectIdsByIndex[idx]);
+      }
+      return item;
+    });
+    return {
+      info: "Нормализованный шаблон createItems (подготовлено скриптом).",
+      createItems: items
+    };
+  }
+
+  function buildUpdateTemplateFromCandidates(candidates) {
+    var items = (candidates || []).map(function (c) {
+      return normalizeUpdateTemplateItem(c && c.payload ? c.payload : {});
+    });
+    return {
+      info: "Нормализованный шаблон updateItems (подготовлено скриптом).",
+      updateItems: items
+    };
+  }
+
   function buildStatusCandidatesFromAnyJson(inputJson, defaultStatus) {
     var rows;
     if (inputJson && Array.isArray(inputJson.statusItems)) {
@@ -1449,6 +1532,8 @@
       wrap.appendChild(tableHost);
 
       var candidates = [];
+      var lastNormalizedUpdateTemplate = null;
+      var lastNormalizedCreateTemplate = null;
       var searchInput = document.createElement("input");
       searchInput.type = "text";
       searchInput.placeholder = "Поиск по типу / заголовку / ID";
@@ -1607,6 +1692,7 @@
 
       function clearLoadedSelection() {
         candidates = [];
+        lastNormalizedCreateTemplate = null;
         manualInput.value = "";
         fileInput.value = "";
         searchInput.value = "";
@@ -2319,6 +2405,7 @@
 
       function clearLoadedSelection() {
         candidates = [];
+        lastNormalizedUpdateTemplate = null;
         manualInput.value = "";
         fileInput.value = "";
         searchInput.value = "";
@@ -2362,8 +2449,23 @@
           view.payload = payload;
           return view;
         });
+        var validationErrors = [];
+        for (var i = 0; i < candidates.length; i++) {
+          var err = validateUpdatePayload(candidates[i].payload);
+          if (err) validationErrors.push("[" + (i + 1) + "] " + err);
+        }
+        if (validationErrors.length) {
+          log("Найдены ошибки в загруженных данных (редактирование):");
+          for (var vi = 0; vi < validationErrors.length; vi++) log("  " + validationErrors[vi]);
+        }
+        lastNormalizedUpdateTemplate = buildUpdateTemplateFromCandidates(candidates);
         renderList();
         log("Загружено payload для редактирования: " + candidates.length);
+        if (!validationErrors.length) {
+          var fname = "news_edit_template_normalized_" + tsShort() + ".json";
+          downloadJson(fname, lastNormalizedUpdateTemplate);
+          log("Сохранён нормализованный шаблон updateItems: " + fname);
+        }
       }
 
       actions.appendChild(
