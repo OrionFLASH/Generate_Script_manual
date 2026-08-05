@@ -7,6 +7,7 @@
   ],
   "input_glob": "*.json",
   "output_prefix": "REPL_EmpID_",
+  "excel_report_file": "REPL_EmpID_mapping.xlsx",
   "employee_csv_file": "custom_cib_kksb_dvl.dm_gamification_list_employee.csv",
   "csv_delimiter": ";",
   "filter_business_block": "KMKKSB",

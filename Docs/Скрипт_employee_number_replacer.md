@@ -2,6 +2,14 @@
 
 Независимый однофайловый скрипт: обезличивает табельные номера и связанные поля сотрудника в JSON-выгрузках новостей.
 
+## Зависимости
+
+```bash
+pip install -r requirements.txt
+```
+
+Нужен пакет `openpyxl` (Excel-отчёт).
+
 ## Запуск
 
 Из корня репозитория (или каталога, где лежат скрипт и конфиг):
@@ -29,6 +37,7 @@ python3 employee_number_replacer.py --config ./config_emp_replace.json
 | `input_files` | **Список имён файлов** (один или несколько). Имена относительно `input_dir` |
 | `input_glob` | Fallback, если `input_files` пуст/`null`: маска в `input_dir` |
 | `output_prefix` | Префикс выходного имени (`REPL_EmpID_`) |
+| `excel_report_file` | Имя Excel-отчёта в `output_dir` (по умолчанию `REPL_EmpID_mapping.xlsx`) |
 | `employee_csv_file` | CSV-справочник табельных |
 | `filter_*` | Фильтры строк CSV (`BUSINESS_BLOCK`, `ROLE_CODE`, `UCH_CODE`) |
 | `tb_to_ter_division_name` | Соответствие `TB_CODE` → `terDivisionName` |
@@ -56,13 +65,31 @@ python3 employee_number_replacer.py --config ./config_emp_replace.json
    - `tbCode` ← `TB_CODE`
    - `terDivisionName` ← маппинг по `tbCode` из конфига
 6. Пишет в `OUT` файлы с префиксом `REPL_EmpID_`.
+7. Пишет Excel-отчёт замен (см. ниже).
+
+## Excel-отчёт
+
+После замен создаётся файл `OUT/REPL_EmpID_mapping.xlsx` (имя из `excel_report_file`).
+
+| Колонка | Содержание |
+|---------|------------|
+| **Было** | Исходный `employeeNumber` |
+| **Стало** | Заменяющий `employeeNumber` |
+| **Файлы** | Имена входных JSON, где встречался табельный; несколько — через перевод строки |
+| **ID новостей** | `objectId` / `newsId` новостей, в которых меняли; несколько — через перевод строки |
+
+Формат листа:
+- заголовки зафиксированы (`freeze` первой строки);
+- включён автофильтр по всей таблице;
+- в ячейках с несколькими значениями включён перенос текста.
 
 ## Структура каталогов
 
 ```
 IN/          — исходные JSON (имена из input_files)
-OUT/         — результаты REPL_EmpID_*
+OUT/         — результаты REPL_EmpID_* + Excel-отчёт
 config_emp_replace.json
 employee_number_replacer.py
+requirements.txt
 custom_cib_kksb_dvl.dm_gamification_list_employee.csv
 ```
