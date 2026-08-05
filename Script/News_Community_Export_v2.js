@@ -882,12 +882,29 @@ function createDevToolsTrace(opts) {
     }
   }
 
-  function compactNewsLabel(meta) {
+  function compactNewsLabel(meta, limit) {
+    var maxLen = Number(limit);
+    if (!Number.isFinite(maxLen) || maxLen < 1) maxLen = 100;
     var summary = ensureString(meta && meta.summary).trim();
-    if (summary) return summary.slice(0, 100);
+    if (summary) return summary.slice(0, maxLen);
     var text = ensureString(meta && (meta.newsText || meta.description)).trim();
-    if (text) return text.slice(0, 100);
+    if (text) return text.slice(0, maxLen);
     return "без заголовка";
+  }
+
+  function toUniqueCodes(list, key) {
+    if (!Array.isArray(list)) return [];
+    var out = [];
+    var seen = {};
+    for (var i = 0; i < list.length; i++) {
+      var raw = "";
+      if (list[i] && typeof list[i] === "object") raw = ensureString(list[i][key]).trim();
+      else raw = ensureString(list[i]).trim();
+      if (!raw || seen[raw]) continue;
+      seen[raw] = true;
+      out.push(raw);
+    }
+    return out;
   }
 
   /**
@@ -1035,6 +1052,89 @@ function createDevToolsTrace(opts) {
       }
     }
     return "";
+  }
+
+  function validateUpdatePayload(payload) {
+    if (!payload || typeof payload !== "object") return "payload отсутствует";
+    if (!String(payload.newsId || "").trim()) return "пустой newsId";
+    return "";
+  }
+
+  function normalizeCreateTemplateItem(payload) {
+    var p = payload || {};
+    return {
+      bankLevel: p.bankLevel !== false,
+      rewardList: toUniqueCodes(p.rewardList, "rewardCode").map(function (x) {
+        return { rewardCode: x };
+      }),
+      tournamentList: toUniqueCodes(p.tournamentList, "tournamentCode").map(function (x) {
+        return { tournamentCode: x };
+      }),
+      newsFeature: normalizeNewsFeature(p.newsFeature, parseMaybeJsonArray((p.newsFeatureObj || {}).businessBlock)),
+      type: normalizeType(p.type),
+      description: ensureString(p.description || p.newsText),
+      summary: ensureString(p.summary),
+      authorsList: mapEmployeesList(p.authorsList || p.authors || []),
+      tagList: toTagList(p.tagList || p.newsTagList || []),
+      tbCodeList: parseMaybeJsonArray(p.tbCodeList != null ? p.tbCodeList : p.tbCode),
+      gosbCodeList: parseMaybeJsonArray(p.gosbCodeList != null ? p.gosbCodeList : p.gosbCode),
+      leadersList: mapEmployeesList(p.leadersList || p.leaders || []),
+      createdBy: ensureString(p.createdBy),
+      plannedDt: ensureString(p.plannedDt || p.plannedDateTime || nowIso()),
+      status: "draft",
+      createDt: ensureString(p.createDt || nowIso())
+    };
+  }
+
+  function normalizeUpdateTemplateItem(payload) {
+    var p = payload || {};
+    return {
+      bankLevel: p.bankLevel !== false,
+      rewardList: toUniqueCodes(p.rewardList || p.rewards || [], "rewardCode").map(function (x) {
+        return { rewardCode: x };
+      }),
+      tournamentList: toUniqueCodes(p.tournamentList, "tournamentCode").map(function (x) {
+        return { tournamentCode: x };
+      }),
+      newsFeature: normalizeNewsFeature(p.newsFeature, parseMaybeJsonArray((p.newsFeatureObj || {}).businessBlock)),
+      type: normalizeType(p.type || p.newsType),
+      description: ensureString(p.description || p.newsText),
+      summary: ensureString(p.summary),
+      authorsList: mapEmployeesList(p.authorsList || p.authors || []),
+      tagList: toTagList(p.tagList || p.newsTagList || []),
+      tbCodeList: parseMaybeJsonArray(p.tbCodeList != null ? p.tbCodeList : p.tbCode),
+      gosbCodeList: parseMaybeJsonArray(p.gosbCodeList != null ? p.gosbCodeList : p.gosbCode),
+      leadersList: mapEmployeesList(p.leadersList || p.leaders || []),
+      createdBy: ensureString(p.createdBy || NEWS_V2_CFG.DEFAULT_CREATED_BY),
+      plannedDt: ensureString(p.plannedDt || p.plannedDateTime || nowIso()),
+      newsId: ensureString(p.newsId),
+      method: "put",
+      status: ensureString(p.newsStatus || p.status || "draft")
+    };
+  }
+
+  function buildCreateTemplateFromCandidates(candidates, createdObjectIdsByIndex) {
+    var items = (candidates || []).map(function (c, idx) {
+      var item = normalizeCreateTemplateItem(c && c.payload ? c.payload : {});
+      if (Array.isArray(createdObjectIdsByIndex) && createdObjectIdsByIndex[idx]) {
+        item.createdObjectId = ensureString(createdObjectIdsByIndex[idx]);
+      }
+      return item;
+    });
+    return {
+      info: "Нормализованный шаблон createItems (подготовлено скриптом).",
+      createItems: items
+    };
+  }
+
+  function buildUpdateTemplateFromCandidates(candidates) {
+    var items = (candidates || []).map(function (c) {
+      return normalizeUpdateTemplateItem(c && c.payload ? c.payload : {});
+    });
+    return {
+      info: "Нормализованный шаблон updateItems (подготовлено скриптом).",
+      updateItems: items
+    };
   }
 
   function buildStatusCandidatesFromAnyJson(inputJson, defaultStatus) {
@@ -1993,9 +2093,9 @@ function createDevToolsTrace(opts) {
 
     var logWrap = document.createElement("div");
     logWrap.style.cssText =
-      "height:140px;border-top:1px solid #cbd5e1;background:#fff;padding:5px 10px;" +
+      "height:130px;border-top:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;background:#fff;padding:5px 12px;" +
       "display:flex;flex-direction:column;width:100%;box-sizing:border-box;flex-shrink:0;";
-    work.appendChild(logWrap);
+    root.insertBefore(logWrap, main);
     var logTitle = document.createElement("div");
     logTitle.textContent = "Журнал";
     logTitle.style.cssText = "font-size:10px;font-weight:700;color:#475569;margin-bottom:3px;";
@@ -2554,6 +2654,8 @@ function createDevToolsTrace(opts) {
       wrap.appendChild(tableHost);
 
       var candidates = [];
+      var lastNormalizedUpdateTemplate = null;
+      var lastNormalizedCreateTemplate = null;
       var searchInput = document.createElement("input");
       searchInput.type = "text";
       searchInput.placeholder = "Поиск по типу / заголовку / ID";
@@ -2792,6 +2894,7 @@ function createDevToolsTrace(opts) {
 
       function clearLoadedSelection() {
         candidates = [];
+        lastNormalizedCreateTemplate = null;
         manualInput.value = "";
         fileInput.value = "";
         searchInput.value = "";
@@ -2836,6 +2939,7 @@ function createDevToolsTrace(opts) {
           }
         }
         applyCreateStubModeToCandidates(candidates, stubMode);
+        lastNormalizedCreateTemplate = buildCreateTemplateFromCandidates(candidates);
         renderList();
         var achMissing = 0;
         var achOk = 0;
@@ -2875,6 +2979,23 @@ function createDevToolsTrace(opts) {
         }
       }
 
+      function saveCreateTemplateSnapshot(reasonLabel) {
+        if (!candidates.length) {
+          log("Шаблон не создан: нет загруженных записей.");
+          return null;
+        }
+        var tpl = buildCreateTemplateFromCandidates(candidates);
+        lastNormalizedCreateTemplate = tpl;
+        var fname = "news_create_template_normalized_" + tsShort() + ".json";
+        downloadJson(fname, tpl);
+        log(
+          "Сохранён нормализованный шаблон createItems: " +
+            fname +
+            (reasonLabel ? " (" + reasonLabel + ")" : "")
+        );
+        return tpl;
+      }
+
       async function parseFromText(text) {
         var parsed = safeParseJson(text);
         if (!parsed.ok) {
@@ -2882,6 +3003,17 @@ function createDevToolsTrace(opts) {
           return;
         }
         applyCandidatesFromSourceList(parsed.value, "JSON");
+        var validationErrors = [];
+        for (var i = 0; i < candidates.length; i++) {
+          var err = validateCreatePayload(candidates[i].payload);
+          if (err) validationErrors.push("[" + (i + 1) + "] " + err);
+        }
+        if (validationErrors.length) {
+          log("Найдены ошибки в загруженных данных (создание):");
+          for (var vi = 0; vi < validationErrors.length; vi++) log("  " + validationErrors[vi]);
+        } else {
+          saveCreateTemplateSnapshot("автосохранение после разбора");
+        }
       }
 
       function addFromForm() {
@@ -2968,6 +3100,11 @@ function createDevToolsTrace(opts) {
         }
       });
 
+      actions.appendChild(
+        mkBtn("Создать шаблон из загруженного", function () {
+          saveCreateTemplateSnapshot("по кнопке");
+        })
+      );
       actions.appendChild(
         mkBtn("Разобрать JSON из поля", function () {
           if (getCreateMode() !== "file") {
@@ -3065,6 +3202,7 @@ function createDevToolsTrace(opts) {
               var abortedByErrors = false;
               var resultDump = [];
               var createdIds = [];
+              var createdBySelectedIndex = [];
               clearPublishBox();
               setOpBusy(true, "создание");
               try {
@@ -3117,6 +3255,7 @@ function createDevToolsTrace(opts) {
                     consecutiveFails = 0;
                     okCount++;
                     var newId = String(retryResult.fr.data.body.objectId);
+                    createdBySelectedIndex[si] = newId;
                     createdIds.push({
                       newsId: newId,
                       type: payload.type,
@@ -3192,6 +3331,22 @@ function createDevToolsTrace(opts) {
                   "."
               );
               if (createdIds.length) showCreatedDraftsForPublish(createdIds);
+              if (selected.length) {
+                var templateWithIds = buildCreateTemplateFromCandidates(
+                  selected,
+                  createdBySelectedIndex
+                );
+                var templateFile =
+                  "news_create_template_with_ids_" +
+                  env.stand +
+                  "_" +
+                  env.contour +
+                  "_" +
+                  tsShort() +
+                  ".json";
+                downloadJson(templateFile, templateWithIds);
+                log("Сохранён шаблон с objectId после create: " + templateFile);
+              }
             })();
           },
           "background:#16a34a;color:#fff;border-color:#16a34a;"
@@ -3747,6 +3902,7 @@ function createDevToolsTrace(opts) {
 
       function clearLoadedSelection() {
         candidates = [];
+        lastNormalizedUpdateTemplate = null;
         manualInput.value = "";
         fileInput.value = "";
         searchInput.value = "";
@@ -3784,8 +3940,9 @@ function createDevToolsTrace(opts) {
         else if (parsed.value && Array.isArray(parsed.value.updateItems)) rows = parsed.value.updateItems;
         else rows = [parsed.value];
         candidates = rows.map(function (row) {
-          var payload = Object.assign({}, row || {});
-          payload.method = "put";
+          var payload = normalizeUpdateTemplateItem(
+            buildUpdatePayloadFromNewsItem(Object.assign({}, row || {}))
+          );
           return {
             selected: true,
             sourceNewsId: ensureString(payload.newsId || ""),
@@ -3796,8 +3953,23 @@ function createDevToolsTrace(opts) {
             payload: payload
           };
         });
+        var validationErrors = [];
+        for (var i = 0; i < candidates.length; i++) {
+          var err = validateUpdatePayload(candidates[i].payload);
+          if (err) validationErrors.push("[" + (i + 1) + "] " + err);
+        }
+        if (validationErrors.length) {
+          log("Найдены ошибки в загруженных данных (редактирование):");
+          for (var vi = 0; vi < validationErrors.length; vi++) log("  " + validationErrors[vi]);
+        }
+        lastNormalizedUpdateTemplate = buildUpdateTemplateFromCandidates(candidates);
         renderList();
         log("Загружено payload для редактирования: " + candidates.length);
+        if (!validationErrors.length) {
+          var fname = "news_edit_template_normalized_" + tsShort() + ".json";
+          downloadJson(fname, lastNormalizedUpdateTemplate);
+          log("Сохранён нормализованный шаблон updateItems: " + fname);
+        }
       }
 
       actions.appendChild(
@@ -3835,6 +4007,7 @@ function createDevToolsTrace(opts) {
                   payload: payload
                 };
               });
+              lastNormalizedUpdateTemplate = buildUpdateTemplateFromCandidates(candidates);
               renderList();
               log(
                 "К редактированию с сервера: " +
@@ -3860,6 +4033,18 @@ function createDevToolsTrace(opts) {
         mkBtn("Шаблон", function () {
           downloadJson("news_edit_template_" + tsShort() + ".json", buildEditTemplate());
           log("Скачан шаблон редактирования.");
+        })
+      );
+      actions.appendChild(
+        mkBtn("Создать шаблон из загруженного", function () {
+          if (!candidates.length) {
+            log("Шаблон не создан: нет загруженных записей для редактирования.");
+            return;
+          }
+          lastNormalizedUpdateTemplate = buildUpdateTemplateFromCandidates(candidates);
+          var fname = "news_edit_template_normalized_" + tsShort() + ".json";
+          downloadJson(fname, lastNormalizedUpdateTemplate);
+          log("Сохранён нормализованный шаблон updateItems: " + fname + " (по кнопке)");
         })
       );
       actions.appendChild(
