@@ -1,6 +1,10 @@
 {
   "input_dir": "IN",
   "output_dir": "OUT",
+  "input_files": [
+    "news_export_1.json",
+    "news_export_2.json"
+  ],
   "input_glob": "*.json",
   "output_prefix": "REPL_EmpID_",
   "employee_csv_file": "custom_cib_kksb_dvl.dm_gamification_list_employee.csv",
