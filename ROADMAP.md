@@ -436,6 +436,7 @@
 - `[v]` Восстановить базу `b7fdc11`: DevToolsTrace + «Маска ПДн», tabBar сверху, контент на всю ширину, журнал у параметров, вкладка Удаление.
 - `[v]` Поверх базы сохранить все последующие фичи: stub UI-counts, цветные кнопки create, NewsType/теги/коды, partial-save, нормализация шаблонов, dual-export.
 - `[v]` Свести всё в один PR и обновить документацию.
+- `[v]` **PR #23 смержен в `main`** (2026-08-05): Trace/UI + dual-export + `employee_number_replacer` (`input_files`, запуск без `--config`); PR #24 закрыт как дубликат.
 
 ### 11. Python-утилита замены employeeNumber по CSV-справочнику
 

@@ -76,6 +76,7 @@
 
 | Дата | Описание |
 |------|----------|
+| 2026-08-05 | **PR #23 смержен в `main`**: News v2 Trace/UI + dual-export + `employee_number_replacer` (без `--config`, `input_files`); PR #24 закрыт как дубликат. |
 | 2026-08-05 | **`News_Community_Export_v2.js`**: восстановлены Trace+«Маска ПДн», вкладки сверху, full-width, журнал у параметров и вкладка Удаление (были затёрты при merge PR #21); сохранены dual-export, UX create, partial-save, шаблоны. |
 | 2026-08-05 | **`News_Community_Export_v2.js`**: при выгрузке скачиваются два JSON — полный исходный и шаблон create/edit (`*_create_edit_template.json` с `createItems`/`updateItems`). |
 | 2026-08-05 | **`employee_number_replacer.py`**: запуск без обязательного `--config` (автопоиск `config_emp_replace.json`); в конфиге явный список `input_files` (один или несколько). Док.: [Docs/Скрипт_employee_number_replacer.md](Docs/Скрипт_employee_number_replacer.md). |
