@@ -8,9 +8,20 @@ import csv
 import json
 import random
 import sys
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
+
+try:
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font
+    from openpyxl.utils import get_column_letter
+except ImportError as exc:  # pragma: no cover
+    raise SystemExit(
+        "[ERROR] Нужен пакет openpyxl. Установите: pip install openpyxl\n"
+        "или: pip install -r requirements.txt"
+    ) from exc
 
 
 @dataclass(frozen=True)
@@ -20,6 +31,24 @@ class EmployeeRow:
     first_name: str
     gosb_code: str
     tb_code: str
+
+
+@dataclass(frozen=True)
+class ReplacementOccurrence:
+    """Одно вхождение исходного табельного в файле/новости."""
+
+    source_emp: str
+    file_name: str
+    news_id: str
+
+
+# Фиксированные заголовки Excel-отчёта (не менять без согласования).
+EXCEL_HEADERS: tuple[str, ...] = (
+    "Было",
+    "Стало",
+    "Файлы",
+    "ID новостей",
+)
 
 
 def normalize_person_number(raw: Any) -> str:
@@ -94,18 +123,52 @@ def load_employee_pool(csv_path: Path, cfg: dict[str, Any]) -> dict[str, Employe
     return pool
 
 
-def walk_employee_nodes(node: Any) -> list[dict[str, Any]]:
-    """Найти все объекты, где присутствует employeeNumber."""
-    found: list[dict[str, Any]] = []
+def extract_news_id(node: dict[str, Any]) -> str:
+    """
+    Извлечь ID новости из объекта, похожего на news-item.
+    objectId / newsId при наличии типичных полей новости.
+    """
+    news_markers: tuple[str, ...] = (
+        "leadersList",
+        "authorsList",
+        "newsText",
+        "newsStatus",
+        "summary",
+        "description",
+        "newsType",
+        "newsTagList",
+        "businessBlock",
+    )
+    if not any(marker in node for marker in news_markers):
+        return ""
+    for key in ("objectId", "newsId", "id"):
+        raw: Any = node.get(key)
+        if raw is None:
+            continue
+        text: str = str(raw).strip()
+        if text:
+            return text
+    return ""
+
+
+def iter_employee_occurrences(
+    node: Any, news_id: str = ""
+) -> Iterator[tuple[dict[str, Any], str]]:
+    """Обойти дерево: каждый узел с employeeNumber + текущий ID новости."""
     if isinstance(node, dict):
+        local_news_id: str = extract_news_id(node) or news_id
         if "employeeNumber" in node:
-            found.append(node)
+            yield node, local_news_id
         for value in node.values():
-            found.extend(walk_employee_nodes(value))
+            yield from iter_employee_occurrences(value, local_news_id)
     elif isinstance(node, list):
         for item in node:
-            found.extend(walk_employee_nodes(item))
-    return found
+            yield from iter_employee_occurrences(item, news_id)
+
+
+def walk_employee_nodes(node: Any) -> list[dict[str, Any]]:
+    """Найти все объекты, где присутствует employeeNumber."""
+    return [emp_node for emp_node, _news_id in iter_employee_occurrences(node)]
 
 
 def collect_input_files(input_dir: Path, cfg: dict[str, Any]) -> list[Path]:
@@ -194,6 +257,104 @@ def replace_in_document(
     return replaced_total, replaced_emp_nodes
 
 
+def collect_occurrences(
+    docs: list[tuple[Path, Any]],
+) -> list[ReplacementOccurrence]:
+    """Собрать вхождения табельных до замены: файл + ID новости."""
+    result: list[ReplacementOccurrence] = []
+    for path, payload in docs:
+        for node, news_id in iter_employee_occurrences(payload):
+            source_emp: str = normalize_person_number(node.get("employeeNumber", ""))
+            if not source_emp:
+                continue
+            result.append(
+                ReplacementOccurrence(
+                    source_emp=source_emp,
+                    file_name=path.name,
+                    news_id=str(news_id or "").strip(),
+                )
+            )
+    return result
+
+
+def multiline_join(values: list[str]) -> str:
+    """Склеить уникальные значения через перевод строки (порядок стабильный)."""
+    unique: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text: str = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        unique.append(text)
+    return "\n".join(unique)
+
+
+def write_excel_report(
+    report_path: Path,
+    mapping: dict[str, EmployeeRow],
+    occurrences: list[ReplacementOccurrence],
+) -> None:
+    """
+    Записать Excel: было/стало, файлы, ID новостей.
+    Несколько файлов/ID — через перевод строки; заголовок зафиксирован + автофильтр.
+    """
+    files_by_src: dict[str, list[str]] = defaultdict(list)
+    news_by_src: dict[str, list[str]] = defaultdict(list)
+    for hit in occurrences:
+        if hit.source_emp not in mapping:
+            continue
+        files_by_src[hit.source_emp].append(hit.file_name)
+        if hit.news_id:
+            news_by_src[hit.source_emp].append(hit.news_id)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Замены"
+
+    header_font = Font(bold=True)
+    wrap_align = Alignment(wrap_text=True, vertical="top")
+    for col_idx, header in enumerate(EXCEL_HEADERS, start=1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.font = header_font
+        cell.alignment = Alignment(wrap_text=False, vertical="center")
+
+    row_idx: int = 2
+    for source_emp in sorted(mapping.keys()):
+        target: EmployeeRow = mapping[source_emp]
+        files_text: str = multiline_join(files_by_src.get(source_emp, []))
+        news_text: str = multiline_join(news_by_src.get(source_emp, []))
+        values: tuple[str, str, str, str] = (
+            source_emp,
+            target.person_number_8,
+            files_text,
+            news_text,
+        )
+        for col_idx, value in enumerate(values, start=1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=value)
+            cell.alignment = wrap_align
+        # Высота строки под число переносов в «Файлы» / «ID новостей».
+        line_count: int = max(
+            1,
+            files_text.count("\n") + 1 if files_text else 1,
+            news_text.count("\n") + 1 if news_text else 1,
+        )
+        ws.row_dimensions[row_idx].height = min(15 * line_count, 120)
+        row_idx += 1
+
+    last_row: int = max(1, row_idx - 1)
+    last_col: str = get_column_letter(len(EXCEL_HEADERS))
+    ws.auto_filter.ref = f"A1:{last_col}{last_row}"
+    ws.freeze_panes = "A2"
+
+    widths: tuple[int, ...] = (14, 14, 36, 36)
+    for col_idx, width in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(col_idx)].width = width
+
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(report_path)
+
+
 def main() -> None:
     """Точка входа CLI."""
     parser = argparse.ArgumentParser(
@@ -223,6 +384,9 @@ def main() -> None:
         base_dir / str(cfg.get("employee_csv_file", "custom_cib_kksb_dvl.dm_gamification_list_employee.csv"))
     ).resolve()
     output_prefix: str = str(cfg.get("output_prefix", "REPL_EmpID_"))
+    excel_report_name: str = str(
+        cfg.get("excel_report_file", "REPL_EmpID_mapping.xlsx")
+    )
     seed: int = int(cfg.get("random_seed", 20260805))
     tb_to_ter: dict[str, str] = {
         str(k): str(v) for k, v in dict(cfg.get("tb_to_ter_division_name", {})).items()
@@ -268,6 +432,8 @@ def main() -> None:
         print("[ERROR] Во входных файлах не найдено ни одного employeeNumber", file=sys.stderr)
         raise SystemExit(2)
 
+    occurrences: list[ReplacementOccurrence] = collect_occurrences(docs)
+
     rng = random.Random(seed)
     mapping: dict[str, EmployeeRow] = build_mapping(all_source_numbers, pool, rng)
 
@@ -280,6 +446,12 @@ def main() -> None:
             json.dump(payload, fp, ensure_ascii=False, indent=2)
             fp.write("\n")
         print(f"[OK] {path.name} -> {out_path.name} | замен: {replaced_total}")
+
+    report_path: Path = Path(excel_report_name)
+    if not report_path.is_absolute():
+        report_path = output_dir / report_path
+    write_excel_report(report_path, mapping, occurrences)
+    print(f"[OK] Excel-отчёт: {report_path.name} | строк: {len(mapping)}")
 
     print(
         f"Готово. Файлов: {len(docs)}, уникальных исходных employeeNumber: {len(set(all_source_numbers))}, "
