@@ -2196,22 +2196,22 @@ function createDevToolsTrace(opts) {
 
     var content = document.createElement("div");
     content.style.cssText =
-      "flex:1;min-height:0;min-width:0;overflow:auto;padding:8px 10px;width:100%;box-sizing:border-box;";
+      "flex:0 1 auto;min-height:0;min-width:0;overflow:auto;padding:8px 10px 0;width:100%;box-sizing:border-box;";
     work.appendChild(content);
 
     var logWrap = document.createElement("div");
     logWrap.style.cssText =
-      "height:130px;border-top:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;background:#fff;padding:5px 12px;" +
-      "display:flex;flex-direction:column;width:100%;box-sizing:border-box;flex-shrink:0;";
-    // Журнал + Trace ближе к общим параметрам (без пустого разрыва).
-    root.insertBefore(logWrap, main);
+      "flex:1 1 130px;min-height:130px;margin:0;border-top:1px solid #e2e8f0;background:#fff;padding:5px 12px 6px;" +
+      "display:flex;flex-direction:column;width:100%;box-sizing:border-box;";
+    // Журнал — последний блок (под контентом вкладок), без пустого зазора после параметров.
+    work.appendChild(logWrap);
     var logTitle = document.createElement("div");
     logTitle.textContent = "Журнал";
-    logTitle.style.cssText = "font-size:10px;font-weight:700;color:#475569;margin-bottom:3px;";
+    logTitle.style.cssText = "font-size:10px;font-weight:700;color:#475569;margin:0 0 3px;";
     logWrap.appendChild(logTitle);
     var logEl = document.createElement("div");
     logEl.style.cssText =
-      "flex:1;overflow:auto;border:1px solid #cbd5e1;border-radius:5px;background:#f8fafc;padding:4px 6px;" +
+      "flex:1;min-height:0;overflow:auto;border:1px solid #cbd5e1;border-radius:5px;background:#f8fafc;padding:4px 6px;" +
       "font-family:ui-monospace,monospace;font-size:10px;line-height:1.35;";
     logWrap.appendChild(logEl);
 
