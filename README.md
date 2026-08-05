@@ -76,6 +76,9 @@
 
 | Дата | Описание |
 |------|----------|
+| 2026-08-06 | **`HTTP_Traffic_Logger.js`**: запись + Play (накопление тест-лога без автосохранения), стабильные UI-селекторы, имена `httplog_<хост>_<http\|json\|ui\|test>_…`; подробный Docs. |
+| 2026-08-06 | **`HTTP_Traffic_Logger.js`**: режим **Play** — загрузка `_ui.log`, прокликивание, сбор HTTP/ошибок/slow, Стоп, отчёт. |
+| 2026-08-06 | **`HTTP_Traffic_Logger.js`**: тоглы состава `.log`; JSON по флагу; `_ui.log` кликов UI; связь `sessionId` / `eventId` / `afterUiEventId`. |
 | 2026-08-05 | **`HTTP_Traffic_Logger.js`**: одна кнопка **⬇ JSON + .log** — сохраняет оба файла с общим timestamp. |
 | 2026-08-05 | **`News_Community_Export_v2.js`**: после create — список черновиков для публикации (ID из `newsCreate`, общий `patchNewsStatus`); шаблон при загрузке; итог create — шаблон с новыми `objectId`/`newsId`. |
 | 2026-08-05 | **`News_Community_Export_v2.js`**: журнал — последний блок панели (под контентом вкладок), без пустого промежутка после параметров; Trace остаётся у журнала. |
