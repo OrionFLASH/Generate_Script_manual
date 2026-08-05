@@ -1,8 +1,8 @@
 # Справочник: скрипты каталога `Script/` — HTTP-запросы, payload и порядок выполнения
 
-Документ описывает **все скрипты** из `Script/` (сейчас **13** файлов `.js`): какие обращения к сети выполняются, **тело запроса (payload)** где применимо, и **логическая последовательность** шагов. Аутентификация везде опирается на **куки текущей вкладки** (`credentials: "include"`); URL-ы стендов приведены как в коде (без реальных секретов).
+Документ описывает **все скрипты** из `Script/` (сейчас **12** файлов `.js`): какие обращения к сети выполняются, **тело запроса (payload)** где применимо, и **логическая последовательность** шагов. Аутентификация везде опирается на **куки текущей вкладки** (`credentials: "include"`); URL-ы стендов приведены как в коде (без реальных секретов).
 
-**DevToolsTrace:** на рабочих панелях — переключатель «Trace (диагностика → файл .log)» для записи HTTP, журнала и кликов при отладке. Отдельный фоновый сбор трафика сайта: [Docs/Скрипт_HTTP_Traffic_Logger.md](Скрипт_HTTP_Traffic_Logger.md). См. также [Docs/DevToolsTrace.md](DevToolsTrace.md).
+**DevToolsTrace:** на каждой панели — переключатель «Trace (диагностика → файл .log)» для записи HTTP, журнала и кликов при отладке. См. [Docs/DevToolsTrace.md](DevToolsTrace.md).
 
 Подробные ТЗ по отдельным скриптам остаются в профильных файлах `Docs/*.md`; здесь — **единая сводка для быстрого поиска**. Маршрутный план по модулям и подпунктам — в корневом [ROADMAP.md](../ROADMAP.md).
 
@@ -249,42 +249,30 @@
 
 ## 6A. `News_Community_Export_v2.js`
 
-**Назначение:** единая панель: выгрузка + создание + статусы + редактирование (put) + удаление. Список для выбора — `POST /v1/news`.
+**Назначение:** обновление старого скрипта новостей в единой модалке: выгрузка news (паритет с исходником: статистика, Стоп, JSON+CSV, ретраи) + создание + смена статусов + базовое редактирование.
 
-**Origin:** `ORIGINS[стенд][контур]` (`PROM/PSI/IFT-SB/IFT-GF × ALPHA/SIGMA`), автоопределение по `window.location.origin`, `credentials: "include"`. Referer create: `/admin/community/create`.
+**Origin:** `ORIGINS[стенд][контур]` (`PROM/PSI/IFT-SB/IFT-GF × ALPHA/SIGMA`), автоопределение по `window.location.origin`, `credentials: "include"`.
 
 | Операция | Метод | Путь | Payload |
 |----------|-------|------|---------|
-| Выгрузка / список выбора | **POST** | `/bo/rmkib.gamification/proxy/v1/news` | `{ newsStatus, businessBlock, pageNum }` + опц. `newsTagList[]` |
-| Деталь | **POST** | `/bo/rmkib.gamification/proxy/v1/news-detail` | `{ newsId }` |
-| Создание | **POST** | `/bo/rmkib.gamification/proxy/v1/administration/news/newsCreate` | полный draft; ответ: `body.objectId` |
-| Смена статуса | **POST** | `/bo/rmkib.gamification/proxy/v1/administration/news/newsUpdate` | `{ newsId, status, method: "patch" }` |
-| Редактирование | **POST** | `/bo/rmkib.gamification/proxy/v1/administration/news/newsUpdate` | полный payload + `method: "put"` (+опц. detail) |
-| Удаление | **POST** | `/bo/rmkib.gamification/proxy/v1/news/newsId/newsDelete` | `{ newsId }` |
+| Выгрузка списка | **POST** | `/bo/rmkib.gamification/proxy/v1/news` | `{ newsStatus, businessBlock, pageNum }` + опц. `newsTagList[]` |
+| Создание новости | **POST** | `/bo/rmkib.gamification/proxy/v1/administration/news/newsCreate` | payload создания (`type`, `description`, `leadersList`, `createdBy`, и др.) |
+| Смена статуса | **POST** | `/bo/rmkib.gamification/proxy/v1/administration/news/newsUpdate` | `{ "newsId": "...", "status": "published\|draft", "method": "patch" }` |
+| Редактирование (каркас) | **POST** | `/bo/rmkib.gamification/proxy/v1/administration/news/newsUpdate` | payload редактирования + `"method": "put"` |
 
 **Последовательность:**
 
-1. Общий блок панели: паузы, **Стр. с / Стр. по**, ретраи, **Стоп**; вкладки сверху; **Trace** общий.
-2. Выгрузка: status/block/tag + пагинация → JSON/CSV.
-3. Создание: форма/файл → `newsCreate` → опц. publish по `objectId`.
-4. Статусы / редактирование / удаление: загрузка списка с `/v1/news` (или JSON/ID) → выбор → POST с ретраями → `*_result_*.json`.
+1. Общий блок панели: паузы операций/страниц, диапазон **Стр. с / Стр. по**, пауза повтора, число попыток, аварийный стоп после N ошибок подряд, кнопка **Стоп**.
+2. Вкладка «Выгрузка»: выбор status/block/tag, POST-пагинация только по указанному диапазону `pageNum` с общими ретраями/паузами и сохранение JSON. При аварии/Стопе сохраняются только успешные страницы (`_partial`).
+3. Вкладки операций: загрузка JSON (файл/поле) и разбор в кандидаты.
+4. Показ компактного списка с чекбоксами выбора (по умолчанию выбраны все).
+5. Предвалидация критичных полей.
+6. Подтверждение пользователем.
+7. Последовательная отправка POST с ретраями / паузами / Стоп и сохранение `*_result_*.json`.
+
+Для «Создания» задан дефолт `createdBy = 00673892` (можно изменить в интерфейсе).
 
 Подробности: [Docs/Скрипт_новости_community_News_Community_Export_v2.md](Скрипт_новости_community_News_Community_Export_v2.md).
-
----
-
-## 6B. `HTTP_Traffic_Logger.js`
-
-**Назначение:** фоновый перехват **всех** (или отфильтрованных) HTTP-запросов страницы для анализа при разработке других скриптов. Не вызывает API сам по себе.
-
-**Механика:** на время работы панели подменяются `window.fetch` и `XMLHttpRequest`; при **Старт** пишутся method/URL/status/duration + **заголовки и тела** request/response; клики UI не пишутся. **`.log`** — полный дамп с фильтром URL и маской ПДн; **JSON** — ответы без маски, связь по `corrId`.
-
-| Действие | Сеть |
-|----------|------|
-| Запись | Пассивный перехват исходящих fetch/XHR вкладки |
-| Выгрузка | Локальное скачивание `http_traffic_*.json` / `.log` (без POST на сервер) |
-
-**Фильтр URL:** только для `.log`. **Маска ПДн:** только для `.log`. Подробности: [Docs/Скрипт_HTTP_Traffic_Logger.md](Скрипт_HTTP_Traffic_Logger.md).
 
 ---
 
@@ -371,8 +359,7 @@
 | `Parameters_Actual_Export.js` | POST JSON | `{ status }`, `{ objectIds }`, create body, update body |
 | `Tournament_LeadersForAdmin.js` | GET JSON | — |
 | `News_Community_Export.js` | POST JSON | всегда `{ newsStatus, businessBlock, pageNum }`; опционально `newsTagList[]` |
-| `News_Community_Export_v2.js` | POST JSON | `news` list, `news-detail`, `newsCreate`, `newsUpdate` (patch/put), `newsDelete` |
-| `HTTP_Traffic_Logger.js` | перехват fetch/XHR | пассивный лог (без своих API-вызовов) |
+| `News_Community_Export_v2.js` | POST JSON | `newsCreate`, `newsUpdate` (`method: patch/put`) |
 | `UI_AutoTest.js` | — | — (клики по меню, без `fetch`) |
 | `UI_AutoTest_LinksCrawler.js` | — | — (клики по ссылкам этапов, без `fetch`) |
 | `SUP_Config_Update.js` | POST JSON + GET | list/export/bundle/add; `cfg-rn`, `x-cfga-location` |
@@ -422,10 +409,6 @@
 | **1.35** | § **6A** `News_Community_Export_v2.js`: паритет выгрузки с исходником (статус/Стоп/JSON+CSV), разбор всех `pages` при создании, пустой summary → 100 символов `newsText`. |
 | **1.36** | § **6A** `News_Community_Export_v2.js`: общие паузы/ретраи/Стоп на все вкладки (создание, статусы, редактирование, выгрузка). |
 | **1.37** | § **6A** `News_Community_Export_v2.js`: диапазон страниц выгрузки **Стр. с / Стр. по** (пример: 10…20) вместо «Макс. страниц». |
-| **1.38** | § **6A** `News_Community_Export_v2.js`: Trace+маски ПДн; вкладки сверху; create form/файл; achievement reward+tournament; разбор всех pages; публикация по `objectId`; шаблон JSON по HAR. |
-| **1.39** | Добавлен § **6B** `HTTP_Traffic_Logger.js`: фоновый перехват fetch/XHR для сбора трафика; введение — 13 скриптов. |
-| **1.40** | `HTTP_Traffic_Logger`: заголовки + payload; `.log` с маской/фильтром; JSON ответов без маски, связь `corrId`. |
-| **1.41** | § **6A** `News_Community_Export_v2`: delete + news-detail; статусы из `/v1/news`; fix put rewards/contests; компактный UI. |
-| **1.42** | Маска ПДн: расширенные ключи (HAR news); DevToolsTrace — чекбокс маски (News v2 / Pulse); `update_devtools_trace.js`. |
+| **1.38** | § **6A** `News_Community_Export_v2.js`: при ошибке/Стопе выгрузки сохранять JSON/CSV только из успешных страниц (`_partial`). |
 
 *Актуальность проверяйте по скриптам в `Script/`.*
