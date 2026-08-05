@@ -71,12 +71,14 @@ python3 employee_number_replacer.py --config ./config_emp_replace.json
 
 После замен создаётся файл `OUT/REPL_EmpID_mapping.xlsx` (имя из `excel_report_file`).
 
+Порядок колонок: **сначала все «было»**, затем **все «стало»**, затем **ID новостей**, затем **файлы**.
+
 | Колонка | Содержание |
 |---------|------------|
-| **Было** | Исходный `employeeNumber` |
-| **Стало** | Заменяющий `employeeNumber` |
-| **Файлы** | Имена входных JSON, где встречался табельный; несколько — через перевод строки |
-| **ID новостей** | `objectId` / `newsId` новостей, в которых меняли; несколько — через перевод строки |
+| **Было employeeNumber** … **Было terDivisionName** | Снимок исходных полей до замены (`employeeNumber`, `lastName`, `firstName`, `gosbCode`, `tbCode`, `terDivisionName`) |
+| **Стало employeeNumber** … **Стало terDivisionName** | Значения из пула замены (и `terDivisionName` по `tbCode` из конфига) |
+| **ID новостей** | `objectId` / `newsId` новостей; несколько — через перевод строки |
+| **Файлы** | Имена входных JSON; несколько — через перевод строки |
 
 Формат листа:
 - заголовки зафиксированы (`freeze` первой строки);
