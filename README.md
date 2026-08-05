@@ -76,6 +76,7 @@
 
 | Дата | Описание |
 |------|----------|
+| 2026-08-05 | **`HTTP_Traffic_Logger.js`**: одна кнопка **⬇ JSON + .log** — сохраняет оба файла с общим timestamp. |
 | 2026-08-05 | **`News_Community_Export_v2.js`**: после create — список черновиков для публикации (ID из `newsCreate`, общий `patchNewsStatus`); шаблон при загрузке; итог create — шаблон с новыми `objectId`/`newsId`. |
 | 2026-08-05 | **`News_Community_Export_v2.js`**: журнал — последний блок панели (под контентом вкладок), без пустого промежутка после параметров; Trace остаётся у журнала. |
 | 2026-08-05 | **PR #23 смержен в `main`**: News v2 Trace/UI + dual-export + `employee_number_replacer` (без `--config`, `input_files`); PR #24 закрыт как дубликат. |
