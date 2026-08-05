@@ -34,7 +34,9 @@
     /** Макс. ожидание settle (мс), чтобы не зависнуть. */
     PLAY_SETTLE_MAX_MS: 15000,
     /** Сколько ждать появления элемента при Play (модалки и т.п.), мс. */
-    PLAY_FIND_TIMEOUT_MS: 5000
+    PLAY_FIND_TIMEOUT_MS: 5000,
+    /** Ожидание появления модалки/поповера перед шагом внутри overlay. */
+    PLAY_OVERLAY_TIMEOUT_MS: 4000
   };
 
   /** Ключи JSON, значения которых маскируются при включённой маске (news HAR + общие). */
@@ -545,16 +547,20 @@
     }
     var tag = String(el.tagName || "").toLowerCase();
     var id = el.id ? String(el.id) : "";
-    // нестабильные react-id вроде _r_a4_ не используем как #id
-    if (id && /^_r_/i.test(id)) id = "";
+    // нестабильные react-id и react-select-N-option-M не как #id
+    var reactSelectOption = /^react-select-\d+-option-\d+$/i.test(id);
+    if (id && (/^_r_/i.test(id) || reactSelectOption)) id = "";
     var clsRaw =
       el.className && typeof el.className === "string"
         ? el.className.replace(/\s+/g, " ").trim().slice(0, 160)
         : "";
     var name = el.getAttribute && el.getAttribute("name") ? String(el.getAttribute("name")) : "";
+    // нестабильные name=_r_…
+    var nameUnstable = !!(name && /^_r_/i.test(name));
     var type = el.getAttribute && el.getAttribute("type") ? String(el.getAttribute("type")) : "";
     var href = el.getAttribute && el.getAttribute("href") ? String(el.getAttribute("href")).slice(0, 200) : "";
     var role = el.getAttribute && el.getAttribute("role") ? String(el.getAttribute("role")) : "";
+    if (reactSelectOption && !role) role = "option";
     var ariaLabel =
       el.getAttribute && el.getAttribute("aria-label")
         ? String(el.getAttribute("aria-label")).slice(0, 120)
@@ -569,6 +575,14 @@
       el.getAttribute && el.getAttribute("placeholder")
         ? String(el.getAttribute("placeholder")).slice(0, 80)
         : "";
+    var inputValue = "";
+    try {
+      if (el instanceof HTMLInputElement || el instanceof HTMLSelectElement) {
+        inputValue = String(el.value || "").slice(0, 120);
+      }
+    } catch (_v) {
+      inputValue = "";
+    }
     var checked = null;
     try {
       if (el instanceof HTMLInputElement && (type === "checkbox" || type === "radio")) {
@@ -576,6 +590,17 @@
       }
     } catch (_c) {
       checked = null;
+    }
+    var inOverlay = false;
+    try {
+      inOverlay = !!(
+        el.closest &&
+        el.closest(
+          '#dialog, dialog, [role="dialog"], [aria-modal="true"], #popover, [data-radix-popper-content-wrapper]'
+        )
+      );
+    } catch (_o) {
+      inOverlay = false;
     }
     var text = "";
     try {
@@ -586,16 +611,31 @@
     } catch (_e) {
       text = "";
     }
+    // целый dialog даёт огромный text — для цели бесполезен
+    if (tag === "dialog" || (text.length > 80 && tag === "div" && !role)) {
+      /* оставим короткий кусок */
+      if (tag === "dialog") text = text.slice(0, 40);
+    }
     if (!text && ariaLabel) text = ariaLabel;
     if (!text && title) text = title;
 
-    // Стабильный селектор: name / testid / aria / href / #id / безопасные классы
+    // Стабильный селектор
     var sel = tag;
-    if (id && !/^_r_/i.test(id)) {
+    if (id && !/^_r_/i.test(id) && !reactSelectOption) {
       sel = tag + "#" + cssEscapeIdent(id);
-    } else if (name) {
+    } else if (name && !nameUnstable) {
       sel = tag + '[name="' + name.replace(/"/g, '\\"') + '"]';
       if (type) sel += '[type="' + type.replace(/"/g, '\\"') + '"]';
+    } else if (inputValue && (type === "radio" || type === "checkbox")) {
+      sel =
+        (tag || "input") +
+        '[type="' +
+        type +
+        '"][value="' +
+        inputValue.replace(/"/g, '\\"') +
+        '"]';
+    } else if (role === "option" && text) {
+      sel = '[role="option"]';
     } else if (testId) {
       sel = tag + '[data-testid="' + testId.replace(/"/g, '\\"') + '"]';
     } else if (ariaLabel) {
@@ -615,7 +655,8 @@
       tag: tag,
       id: id,
       className: clsRaw,
-      name: name,
+      name: nameUnstable ? "" : name,
+      nameRaw: name,
       type: type,
       href: href,
       role: role,
@@ -623,7 +664,10 @@
       title: title,
       testId: testId,
       placeholder: placeholder,
+      inputValue: inputValue,
       checked: checked,
+      inOverlay: inOverlay,
+      reactSelectOption: reactSelectOption,
       text: text,
       selector: sel,
       xpath: getXPath(el)
@@ -642,23 +686,61 @@
   var UI_CLICK_CLOSEST =
     "button,a,[role='button'],[role='tab'],[role='menuitem'],[role='menuitemcheckbox']," +
     "[role='option'],[role='checkbox'],[role='switch'],[role='radio'],[role='listitem']," +
-    "input,select,textarea,label,summary,[contenteditable='true']";
+    "input,select,textarea,label,summary,[contenteditable='true']," +
+    "[id*='-option-']";
 
   function resolveClickTarget(el) {
     if (!el || !el.closest) return el;
+    var tag = String(el.tagName || "").toLowerCase();
+    // SVG-декор (path/rect/…) → ближайшая кнопка/ссылка
+    if (/^(path|rect|circle|ellipse|line|polyline|polygon|use|g)$/i.test(tag) || tag === "svg") {
+      var fromSvg = el.closest(
+        "button,a,[role='button'],[role='menuitem'],[role='tab'],label,summary"
+      );
+      if (fromSvg) return fromSvg;
+    }
+    // option react-select
+    var opt = el.closest("[role='option'],[id*='-option-']");
+    if (opt) return opt;
+
     var focus = el.closest(UI_CLICK_CLOSEST);
-    if (focus) return focus;
+    if (focus) {
+      var ft = String(focus.tagName || "").toLowerCase();
+      // клик по оболочке dialog — ищем реальный контрол
+      if (ft === "dialog" || focus.id === "dialog") {
+        var inner = el.closest(
+          "button,a,input,label,[role='button'],[role='option'],[role='menuitem'],[id*='-option-']"
+        );
+        if (inner && inner !== focus) return inner;
+        return null;
+      }
+      return focus;
+    }
     var p = el;
     for (var i = 0; i < 6 && p; i++) {
       try {
         var st = window.getComputedStyle(p);
-        if (st && st.cursor === "pointer") return p;
+        if (st && st.cursor === "pointer") {
+          var pt = String(p.tagName || "").toLowerCase();
+          if (pt !== "dialog") return p;
+        }
       } catch (_e) {
         /* ignore */
       }
       p = p.parentElement;
     }
+    if (tag === "dialog") return null;
     return el;
+  }
+
+  function isNoiseUiTarget(target) {
+    var t = target || {};
+    var tag = String(t.tag || "").toLowerCase();
+    if (tag === "dialog") return true;
+    if (/^(path|rect|circle|ellipse|line|polyline|polygon|use|svg)$/i.test(tag)) return true;
+    if (/^dialog(#dialog)?$/i.test(String(t.selector || ""))) return true;
+    if (/^(path|rect)#/i.test(String(t.selector || ""))) return true;
+    return false;
   }
 
   /**
@@ -749,7 +831,9 @@
     if (!(t instanceof Element)) return;
     if (isInsideLoggerPanel(t)) return;
     var focus = resolveClickTarget(/** @type {Element} */ (t));
+    if (!focus) return;
     var info = describeDomTarget(focus);
+    if (isNoiseUiTarget(info)) return;
     var detail = {
       button: ev.button,
       altKey: !!ev.altKey,
@@ -759,12 +843,13 @@
     };
     try {
       if (focus instanceof HTMLInputElement && (info.type === "checkbox" || info.type === "radio")) {
-        // после click состояние уже переключится в bubble — берём целевое через !checked до... 
-        // в capture фазе ещё старое; записываем оба: checkedBefore и ожидаемое после
         detail.checkedBefore = !!focus.checked;
         detail.checked = !focus.checked;
         detail.value = String(focus.value || "");
       }
+      if (info.inputValue) detail.value = info.inputValue;
+      if (info.inOverlay) detail.inOverlay = true;
+      if (info.reactSelectOption) detail.reactSelectOption = true;
     } catch (_e) {
       /* ignore */
     }
@@ -1222,8 +1307,12 @@
       lines.push("selector " + (t.selector || "(n/a)"));
       if (t.tag) lines.push("tag " + t.tag + (t.type ? " type=" + t.type : ""));
       if (t.name) lines.push("name " + t.name);
+      if (t.inputValue) lines.push("value " + t.inputValue);
       if (t.ariaLabel) lines.push("ariaLabel " + t.ariaLabel);
       if (t.testId) lines.push("testId " + t.testId);
+      if (t.role) lines.push("role " + t.role);
+      if (t.inOverlay) lines.push("inOverlay true");
+      if (t.reactSelectOption) lines.push("reactSelectOption true");
       if (t.checked != null) lines.push("checked " + t.checked);
       if (t.text) lines.push("text " + t.text);
       if (t.href) lines.push("href " + t.href);
@@ -1286,6 +1375,9 @@
         ariaLabel: "",
         testId: "",
         xpath: "",
+        inputValue: "",
+        inOverlay: false,
+        reactSelectOption: false,
         checked: null
       };
       var detail = null;
@@ -1302,9 +1394,14 @@
             target.type = tm[2] || "";
           }
         } else if (line.indexOf("name ") === 0) target.name = line.slice(5);
+        else if (line.indexOf("value ") === 0) target.inputValue = line.slice(6);
         else if (line.indexOf("ariaLabel ") === 0) target.ariaLabel = line.slice(10);
         else if (line.indexOf("testId ") === 0) target.testId = line.slice(7);
-        else if (line.indexOf("checked ") === 0) {
+        else if (line.indexOf("role ") === 0) target.role = line.slice(5);
+        else if (line.indexOf("inOverlay ") === 0) target.inOverlay = /true/i.test(line.slice(10));
+        else if (line.indexOf("reactSelectOption ") === 0) {
+          target.reactSelectOption = /true/i.test(line.slice(18));
+        } else if (line.indexOf("checked ") === 0) {
           target.checked = String(line.slice(8)).toLowerCase() === "true";
         } else if (line.indexOf("text ") === 0) target.text = line.slice(5);
         else if (line.indexOf("href ") === 0) target.href = line.slice(5);
@@ -1317,16 +1414,30 @@
           }
         }
       }
-      // из старых логов: name/type из селектора input.css-xxx[name="…"]
+      if (detail) {
+        if (detail.value && !target.inputValue) target.inputValue = String(detail.value);
+        if (detail.inOverlay) target.inOverlay = true;
+        if (detail.reactSelectOption) target.reactSelectOption = true;
+      }
+      // из старых логов: name/type/value из селектора
       if (!target.name && target.selector) {
         var nm = target.selector.match(/\[name=["']([^"']+)["']\]/);
-        if (nm) target.name = nm[1];
+        if (nm && !/^_r_/i.test(nm[1])) target.name = nm[1];
         var tp = target.selector.match(/\[type=["']([^"']+)["']\]/);
         if (tp && !target.type) target.type = tp[1];
+        var vv = target.selector.match(/\[value=["']([^"']+)["']\]/);
+        if (vv && !target.inputValue) target.inputValue = vv[1];
         if (!target.tag) {
           var tg = target.selector.match(/^([a-z0-9]+)/i);
           if (tg) target.tag = tg[1].toLowerCase();
         }
+      }
+      if (/dialog|popover|react-select|-option-/i.test(target.selector + target.xpath)) {
+        target.inOverlay = true;
+      }
+      if (/react-select-.*-option-/i.test(target.selector) || target.reactSelectOption) {
+        target.reactSelectOption = true;
+        target.inOverlay = true;
       }
       if (target.selector === "(n/a)") target.selector = "";
       if (
@@ -1335,7 +1446,8 @@
         !target.tag &&
         !target.name &&
         !target.href &&
-        !target.xpath
+        !target.xpath &&
+        !target.inputValue
       ) {
         continue;
       }
@@ -1364,6 +1476,7 @@
     var score = 0;
     var info = describeDomTarget(el);
     var t = target || {};
+    if (t.inputValue && info.inputValue === t.inputValue) score += 45;
     if (t.name && info.name === t.name) score += 40;
     if (t.testId && info.testId === t.testId) score += 45;
     if (t.ariaLabel && normText(info.ariaLabel) === normText(t.ariaLabel)) score += 35;
@@ -1371,17 +1484,21 @@
     else if (t.text && normText(info.text).indexOf(normText(t.text)) >= 0) score += 25;
     if (t.tag && info.tag === t.tag) score += 10;
     if (t.type && info.type === t.type) score += 12;
+    if (t.role && info.role === t.role) score += 15;
     if (t.href && info.href) {
       if (info.href === t.href || info.href.indexOf(t.href) >= 0 || t.href.indexOf(info.href) >= 0) {
         score += 30;
       }
     }
-    if (t.id && info.id === t.id) score += 20;
     if (elVisible(el)) score += 5;
-    // внутри открытой модалки — бонус
     try {
-      if (el.closest && el.closest('[role="dialog"],[aria-modal="true"],.chakra-modal__content')) {
-        score += 8;
+      if (
+        el.closest &&
+        el.closest(
+          '#dialog, dialog, [role="dialog"], [aria-modal="true"], #popover, [data-radix-popper-content-wrapper]'
+        )
+      ) {
+        score += 12;
       }
     } catch (_e) {
       /* ignore */
@@ -1409,7 +1526,47 @@
     }
   }
 
-  /** Поиск элемента: name → href → aria → selector → text → xpath. */
+  function isWeakSelector(sel) {
+    var s = String(sel || "");
+    if (!s) return true;
+    if (/\[(name|href|aria-label|data-testid|value)=/i.test(s)) return false;
+    if (/^a\[href=/i.test(s)) return false;
+    // button.cursor-pointer.transition(.px-16)? без уникального bg/текста
+    if (/^button(\.(cursor-pointer|transition|relative|px-\d+|disabled))?(\.(cursor-pointer|transition|relative|px-\d+|disabled))*$/i.test(s)) {
+      return true;
+    }
+    return false;
+  }
+
+  function getOverlayRoots() {
+    return queryAllSafe(
+      '#dialog, dialog[open], dialog, [role="dialog"], [aria-modal="true"], #popover, [data-radix-popper-content-wrapper]'
+    ).filter(function (el) {
+      return elVisible(el) || (el.id === "dialog" && el.querySelector);
+    });
+  }
+
+  function stepNeedsOverlay(step) {
+    var t = (step && step.target) || {};
+    if (t.inOverlay || t.reactSelectOption) return true;
+    var blob = [t.selector, t.xpath, t.role, t.id || ""].join(" ");
+    if (/dialog|popover|option|react-select|\[role=.?option/i.test(blob)) return true;
+    // меню/портал вне #root (часто «Редактировать»)
+    if (t.text && t.xpath && /\/html\[1\]|\/body\[1\]|#popover/i.test(t.xpath)) return true;
+    return false;
+  }
+
+  async function waitForOverlay(timeoutMs) {
+    var limit = timeoutMs == null ? CFG.PLAY_OVERLAY_TIMEOUT_MS : timeoutMs;
+    var t0 = Date.now();
+    while (!play.abort && Date.now() - t0 < limit) {
+      if (getOverlayRoots().length) return true;
+      await waitMs(120);
+    }
+    return getOverlayRoots().length > 0;
+  }
+
+  /** Поиск: value/radio → option text → name → href → overlay text → xpath → selector. */
   function findPlayTarget(target) {
     var t = target || {};
     var best = null;
@@ -1432,8 +1589,31 @@
       return false;
     }
 
+    // 0) radio/checkbox по value (стабильнее name=_r_*)
+    if (t.inputValue && (t.type === "radio" || t.type === "checkbox" || /radio|checkbox/i.test(t.selector || ""))) {
+      var byVal = queryAllSafe(
+        'input[value="' +
+          String(t.inputValue).replace(/"/g, '\\"') +
+          '"]' +
+          (t.type ? '[type="' + t.type + '"]' : "")
+      );
+      best = null;
+      bestScore = -1;
+      if (considerList(byVal, 40)) return { el: best, how: "value" };
+    }
+
+    // 0b) react-select / role=option по тексту
+    if (t.reactSelectOption || t.role === "option" || /option/i.test(t.selector || "") || t.text) {
+      if (t.text && (t.reactSelectOption || t.role === "option" || /react-select|-option-/i.test(t.selector || ""))) {
+        best = null;
+        bestScore = -1;
+        var opts = queryAllSafe('[role="option"],[id*="-option-"]');
+        if (considerList(opts, 40)) return { el: best, how: "option-text" };
+      }
+    }
+
     // 1) стабильный name (+type)
-    if (t.name) {
+    if (t.name && !/^_r_/i.test(t.name)) {
       var byName = queryAllSafe(
         (t.tag || "") +
           '[name="' +
@@ -1442,11 +1622,15 @@
           (t.type ? '[type="' + String(t.type).replace(/"/g, '\\"') + '"]' : "")
       );
       if (!byName.length) byName = queryAllSafe('[name="' + String(t.name).replace(/"/g, '\\"') + '"]');
+      best = null;
+      bestScore = -1;
       if (considerList(byName, 30)) return { el: best, how: "name" };
     }
 
     // 2) data-testid
     if (t.testId) {
+      best = null;
+      bestScore = -1;
       var byTid = queryAllSafe('[data-testid="' + String(t.testId).replace(/"/g, '\\"') + '"]');
       if (considerList(byTid, 30)) return { el: best, how: "testid" };
     }
@@ -1477,39 +1661,73 @@
       if (considerList(byAria, 30)) return { el: best, how: "aria" };
     }
 
-    // 5) CSS selector (может быть битый Tailwind — try/catch)
-    if (t.selector) {
-      best = null;
-      bestScore = -1;
-      var bySel = queryAllSafe(t.selector);
-      if (bySel.length === 1 && !isInsideLoggerPanel(bySel[0])) {
-        return { el: bySel[0], how: "selector" };
+    // 5) текст внутри открытых overlay (модалки/поповеры)
+    if (t.text) {
+      var roots = getOverlayRoots();
+      if (roots.length) {
+        best = null;
+        bestScore = -1;
+        var inOverlay = [];
+        for (var r = 0; r < roots.length; r++) {
+          var nodes = roots[r].querySelectorAll(
+            "button,a,label,input,[role='button'],[role='option'],[role='menuitem'],[id*='-option-'],div,span"
+          );
+          for (var n = 0; n < nodes.length; n++) inOverlay.push(nodes[n]);
+        }
+        if (considerList(inOverlay, 40)) return { el: best, how: "overlay-text" };
       }
-      if (bySel.length > 1 && considerList(bySel, 20)) return { el: best, how: "selector+text" };
     }
 
-    // 6) text + clickable
+    // 6) xpath раньше слабого CSS (иконки без текста)
+    if (t.xpath && (!t.text || isWeakSelector(t.selector))) {
+      var xpEarly = findByXPath(t.xpath);
+      if (xpEarly && !isInsideLoggerPanel(xpEarly)) {
+        var resolved = resolveClickTarget(xpEarly) || xpEarly;
+        if (resolved && String(resolved.tagName || "").toLowerCase() !== "dialog") {
+          return { el: resolved, how: "xpath" };
+        }
+      }
+    }
+
+    // 7) CSS selector (не слабый / или с текстом)
+    if (t.selector && !/^dialog/i.test(t.selector) && !isNoiseUiTarget(t)) {
+      if (!(isWeakSelector(t.selector) && !t.text)) {
+        best = null;
+        bestScore = -1;
+        var bySel = queryAllSafe(t.selector);
+        if (bySel.length === 1 && !isInsideLoggerPanel(bySel[0]) && t.text) {
+          if (normText(describeDomTarget(bySel[0]).text).indexOf(normText(t.text)) >= 0) {
+            return { el: bySel[0], how: "selector" };
+          }
+        }
+        if (bySel.length === 1 && !isInsideLoggerPanel(bySel[0]) && !isWeakSelector(t.selector)) {
+          return { el: bySel[0], how: "selector" };
+        }
+        if (bySel.length > 1 && considerList(bySel, 35)) return { el: best, how: "selector+text" };
+      }
+    }
+
+    // 8) text + clickable (весь документ)
     if (t.text) {
       best = null;
       bestScore = -1;
       var clickables = queryAllSafe(
         "button,a,[role='button'],[role='tab'],[role='menuitem'],[role='option']," +
-          "[role='checkbox'],input,select,textarea,label,[role='dialog'] *"
+          "[role='checkbox'],input,select,textarea,label,[id*='-option-']"
       );
-      if (considerList(clickables, 40)) return { el: best, how: "text" };
+      if (considerList(clickables, 45)) return { el: best, how: "text" };
     }
 
-    // 7) xpath
+    // 9) xpath fallback
     if (t.xpath) {
       var xp = findByXPath(t.xpath);
-      if (xp && !isInsideLoggerPanel(xp)) return { el: xp, how: "xpath" };
+      if (xp && !isInsideLoggerPanel(xp)) {
+        var res2 = resolveClickTarget(xp) || xp;
+        if (String(res2.tagName || "").toLowerCase() !== "dialog") {
+          return { el: res2, how: "xpath" };
+        }
+      }
     }
-
-    // 8) fuzzy tag pool
-    best = null;
-    bestScore = -1;
-    var pool = queryAllSafe(t.tag || "*");
-    if (considerList(pool, 35)) return { el: best, how: "fuzzy" };
 
     return { el: null, how: "miss" };
   }
@@ -1520,10 +1738,9 @@
     var last = { el: null, how: "miss" };
     while (!play.abort && Date.now() - t0 < limit) {
       last = findPlayTarget(target);
-      if (last.el && elVisible(last.el)) return last;
+      if (last.el && (elVisible(last.el) || (target && target.type === "radio"))) return last;
       await waitMs(150);
     }
-    // последний шанс — даже если не visible (checkbox в скрытом UI)
     last = findPlayTarget(target);
     return last;
   }
@@ -2152,6 +2369,35 @@
       playStepIndex = i;
       var step = play.script[i];
       refreshPlayUi();
+
+      // дополняем target из detail (старые логи radio value)
+      if (step.target && step.detail) {
+        if (step.detail.value && !step.target.inputValue) {
+          step.target.inputValue = String(step.detail.value);
+        }
+        if (step.detail.inOverlay) step.target.inOverlay = true;
+        if (step.detail.reactSelectOption) step.target.reactSelectOption = true;
+      }
+
+      // шум: клик по SVG/целому dialog — не проигрываем
+      if (isNoiseUiTarget(step.target)) {
+        play.stepLog.push({
+          index: i,
+          action: step.action,
+          selector: (step.target && step.target.selector) || "",
+          text: (step.target && step.target.text) || "",
+          result: "skip",
+          how: "noise",
+          run: play.runCount,
+          message: "Пропуск шума (svg/dialog shell)"
+        });
+        continue;
+      }
+
+      if (stepNeedsOverlay(step)) {
+        await waitForOverlay(CFG.PLAY_OVERLAY_TIMEOUT_MS);
+      }
+
       var beforeId = seq;
       var found = await waitForPlayTarget(step.target, CFG.PLAY_FIND_TIMEOUT_MS);
       if (!found.el) {

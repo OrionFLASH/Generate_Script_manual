@@ -123,35 +123,6 @@
 
 ---
 
-## Запись UI: что пишется
-
-События (capture, кроме панели логгера):
-
-- `click` — цель через closest: button/a/input/label/`role=button|tab|menuitem|option|checkbox|…`, либо элемент с `cursor:pointer`
-- `change` — input/select/textarea
-- `submit` — формы
-
-В лог для цели:
-
-- стабильный `selector` (приоритет: `name` / `data-testid` / `aria-label` / `href` / `#id` / безопасные CSS-классы; **без** битых Tailwind `bg-…/30` и `css-*`)
-- `name`, `ariaLabel`, `testId`, `checked`, `text`, `href`, `xpath`
-- `detail` (кнопка мыши, `checked`/`value` для checkbox/radio без маскировки кодовых значений)
-
----
-
-## Play: как ищет элементы и что проверяет
-
-Порядок поиска: **name → testid → href → aria-label → CSS selector → text → xpath → fuzzy**.
-
-После каждого шага — ожидание появления элемента до ~**5 с** (модалки).
-
-Анализ HTTP после шага:
-
-- статус ≥ 400 → finding `http_status`
-- в JSON-теле: `error`/`errors`/`success:false`/status fail → `body_error`
-- медленные запросы относительно median и абсолютного порога → `slow`
-- элемент не найден → `ui_miss`
-
 ### Накопление тест-лога
 
 - Первый Play открывает тест-сессию (очищает HTTP-буфер под Play).
@@ -163,10 +134,50 @@
 ### Содержимое `_test_.log`
 
 1. Мета + сводная статистика (в т.ч. `runCount`)
-2. **STEPS** — все шаги всех прогонов (`run#`, ok/skip/fail)
+2. **STEPS** — все шаги всех прогонов (`run#`, ok/skip/fail/noise)
 3. **FINDINGS** — ошибки / slow / miss
-4. **HTTP** — полный дамп трафика тест-сессии (headers/payload/body; маска как на панели)
-5. **EMBEDDED_JSON** — блок `<<<JSON` … `JSON>>>` с машинным отчётом
+4. **HTTP** — полный дамп трафика тест-сессии
+5. **EMBEDDED_JSON** — блок `<<<JSON` … `JSON>>>`
+
+Анализ HTTP после шага: `http_status`, `body_error` (`success:false` и т.п.), `slow`, `ui_miss`.
+
+---
+
+## Запись UI: что пишется
+
+События (capture, кроме панели логгера):
+
+- `click` — closest button/a/input/label/`role=…`/`[id*=-option-]`; SVG → родительская кнопка; оболочка `dialog` **не пишется**
+- `change` / `submit`
+
+В лог: стабильный `selector`, `name`/`value`/`role`/`inOverlay`/`reactSelectOption`, `text`, `href`, `xpath`, `detail`.
+
+---
+## Анализ типичных пропусков Play (по логам salesheroes)
+
+На прогоне `ui_…015922` → `test_…020037`: **25 ok / 3 skip**.
+
+| Пропуск | Почему | Что сделано в скрипте |
+|---------|--------|------------------------|
+| `button…px-16` «Редактировать» | Предыдущий клик по иконке без текста попал в «чужую» `button.cursor-pointer.transition`; меню/модалка не открылась | Слабые селекторы без текста → **xpath раньше CSS**; ожидание портала/overlay перед шагами с xpath `/html…/body…` |
+| `div#react-select-6-option-2` | Id react-select **меняется** между сессиями | Запись/поиск по **тексту option** (`TOP_MANAGER`), не по `#react-select-N-option-M` |
+| `dialog#dialog` (весь диалог) | Случайный клик по оболочке модалки — шум | Такие клики **не пишутся** и при Play помечаются `skip/noise` |
+
+Модалки на стенде: `#dialog` / `dialog`, сезон/фильтры внутри; меню профиля — портал в `body`; react-select — `[id*="-option-"]` / `[role=option]`. Радио с `name=_r_*` нестабильны — опираемся на **`value`** (`SEASON_2025_1`).
+
+Также не пишем клики по SVG `path`/`rect` (поднимаем до `button`).
+
+HTTP findings в том же тесте (`success=false` на like, status 0) — ответы бэка/обрыв, не пропуск UI.
+
+---
+
+## Play: поиск элементов и модалки
+
+Порядок: **value (radio) → option-text → name → href → aria → текст в overlay → xpath (для слабых CSS) → selector → text**.
+
+Перед шагом внутри модалки/поповера/option — ожидание overlay до ~4 с (`#dialog`, `[role=dialog]`, `#popover`, radix popper).
+
+Накопление тест-лога без автосохранения — см. выше.
 
 ---
 
@@ -224,6 +235,7 @@ detail {"checked":true,"value":"on",…}
 | `PLAY_SETTLE_MS` / `PLAY_SETTLE_MAX_MS` | Ожидание тишины сети |
 | `PLAY_SLOW_ABS_MS` / `PLAY_SLOW_FACTOR` | Пороги slow |
 | `PLAY_FIND_TIMEOUT_MS` | Ожидание появления элемента (~5 с) |
+| `PLAY_OVERLAY_TIMEOUT_MS` | Ожидание модалки/поповера (~4 с) |
 | `FILE_PREFIX` | `httplog_` |
 
 ---
@@ -232,7 +244,8 @@ detail {"checked":true,"value":"on",…}
 
 | Версия | Дата | Изменения |
 |--------|------|-----------|
-| 1.6 | 2026-08-06 | Play без автосохранения; накопление тест-лога до очистки; стабильные UI-селекторы (name/aria/xpath); ожидание модалок; checkbox/radio |
+| 1.7 | 2026-08-06 | Модалки `#dialog`/`#popover`/react-select: без шума SVG/dialog; radio по `value`; option по тексту; ожидание overlay; xpath для слабых селекторов |
+| 1.6 | 2026-08-06 | Play без автосохранения; накопление тест-лога; стабильные UI-селекторы; Docs |
 | 1.5 | 2026-08-06 | Режим Play; имена `httplog_<хост>_<http\|json\|ui\|test>_…` |
 | 1.4 | 2026-08-06 | Тоглы состава `.log`; JSON по флагу; `_ui.log`; `eventId` / `afterUiEventId` |
 | 1.3 | 2026-08-05 | Одна кнопка сохранения с общим timestamp |

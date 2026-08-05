@@ -76,6 +76,7 @@
 
 | Дата | Описание |
 |------|----------|
+| 2026-08-06 | **`HTTP_Traffic_Logger.js`**: фикс модалок/Play (dialog/popover/react-select, radio `value`, без SVG-шума); Docs v1.7; commit+push. |
 | 2026-08-06 | **`HTTP_Traffic_Logger.js`**: запись + Play (накопление тест-лога без автосохранения), стабильные UI-селекторы, имена `httplog_<хост>_<http\|json\|ui\|test>_…`; подробный Docs. |
 | 2026-08-06 | **`HTTP_Traffic_Logger.js`**: режим **Play** — загрузка `_ui.log`, прокликивание, сбор HTTP/ошибок/slow, Стоп, отчёт. |
 | 2026-08-06 | **`HTTP_Traffic_Logger.js`**: тоглы состава `.log`; JSON по флагу; `_ui.log` кликов UI; связь `sessionId` / `eventId` / `afterUiEventId`. |
