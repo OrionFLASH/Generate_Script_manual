@@ -2,9 +2,9 @@
 // HTTP_Traffic_Logger.js — фоновый логгер HTTP (+ UI) и режим Play для DevTools
 // =============================================================================
 // Артефакты записи (общий timestamp / sessionId / eventId):
-//   .log  — фронт↔бэк (состав по тоглам)
-//   .json — ответы сайта (если тогл JSON)
-//   _ui.log — клики/действия UI (если тогл UI)
+//   .log  — полный HTTP (headers req/resp + payload + timing + тело ответа); без UI
+//   .json — только тела ответов + краткий id запроса + id связи
+//   _ui.log — клики UI (+ опционально hover) для Play
 // Режим Play: вкладка → загрузка _ui.log → прокликивание «плёнки» + сбор HTTP,
 //   ошибки статусов/тела, slow-запросы, статистика, Стоп.
 // =============================================================================
@@ -36,7 +36,9 @@
     /** Сколько ждать появления элемента при Play (модалки и т.п.), мс. */
     PLAY_FIND_TIMEOUT_MS: 5000,
     /** Ожидание появления модалки/поповера перед шагом внутри overlay. */
-    PLAY_OVERLAY_TIMEOUT_MS: 4000
+    PLAY_OVERLAY_TIMEOUT_MS: 4000,
+    /** Пауза после synthetic hover (мс), чтобы успел открыться tooltip/меню. */
+    PLAY_HOVER_DWELL_MS: 400
   };
 
   /** Ключи JSON, значения которых маскируются при включённой маске (news HAR + общие). */
@@ -392,15 +394,19 @@
   /** Режим воспроизведения UI-плёнки. */
   var playing = false;
   var maskOn = CFG.DEFAULT_MASK;
-  /** Состав экспорта / захвата (тоглы панели). По умолчанию: заг. req/resp + payload + JSON ответы. */
+  /** Три варианта сохранения / захвата + доп. слежение мыши. */
   var exportOpts = {
-    logReqHeaders: true,
-    logRespHeaders: true,
-    logReqBody: true,
-    logRespBody: false,
-    logTiming: false,
+    /** HTTP .log: полный HTTP (headers + payload + timing + body); без UI */
+    saveHttpLog: true,
+    /** Тела ответов → .json (+ краткий id запроса + id связи) */
     saveJson: true,
-    captureUi: false
+    /** Клики UI → _ui.log (для Play) */
+    captureUi: false,
+    /**
+     * Hover по DOM-элементам (не пиксели) → action=hover в UI.log.
+     * Включается только вместе с captureUi.
+     */
+    captureMouseHover: false
   };
   /** @type {string[]} фильтр применяется при экспорте .log (не при захвате) */
   var filterParts = [];
@@ -422,6 +428,11 @@
   var NativeXHR = window.XMLHttpRequest;
   var hooksInstalled = false;
   var uiHooksInstalled = false;
+  /** Последний элемент hover при записи (дедуп по ссылке на DOM). */
+  var lastHoverEl = null;
+  var lastHoverAt = 0;
+  /** Последний hover при Play (для mouseout перед следующим шагом). */
+  var playLastHoverEl = null;
 
   /** Состояние вкладки Play. */
   var play = {
@@ -450,8 +461,26 @@
     /** Идёт накопление тест-лога (несколько Play до очистки). */
     testActive: false,
     runCount: 0,
+    /** Воспроизводить action=hover из UI.log (с мышью). */
+    replayHover: true,
+    /** Сколько hover-шагов в загруженном скрипте. */
+    hoverCount: 0,
     statusText: "Загрузите _ui.log для воспроизведения."
   };
+
+  function isHoverAction(action) {
+    var a = String(action || "").toLowerCase();
+    return a === "hover" || a === "mouseover" || a === "mouseenter";
+  }
+
+  function countHoverSteps(script) {
+    var n = 0;
+    var list = script || [];
+    for (var i = 0; i < list.length; i++) {
+      if (isHoverAction(list[i] && list[i].action)) n++;
+    }
+    return n;
+  }
 
   function nextEventId(kind) {
     eventSeq++;
@@ -733,6 +762,52 @@
     return el;
   }
 
+  /**
+   * Цель для hover: интерактив / pointer / подсказки.
+   * Привязка к элементу, а не к координатам — переживает другой размер экрана.
+   */
+  function resolveHoverTarget(el) {
+    if (!el || !el.closest) return null;
+    if (isInsideLoggerPanel(el)) return null;
+    var tag0 = String(el.tagName || "").toLowerCase();
+    if (tag0 === "html" || tag0 === "body") return null;
+
+    var tipHost = el.closest(
+      "[aria-haspopup],[data-tooltip],[data-tip],[title],[aria-describedby]," +
+        "[data-state],[role='menuitem'],[role='button'],[role='tab']," +
+        "[role='option'],summary,button,a,label"
+    );
+    if (tipHost && String(tipHost.tagName || "").toLowerCase() !== "html") {
+      var tipTag = String(tipHost.tagName || "").toLowerCase();
+      if (tipTag !== "dialog" && tipHost.id !== "dialog") {
+        // голый контейнер с title на body-уровне не берём
+        if (tipTag !== "body" && tipTag !== "html") {
+          var clickish = resolveClickTarget(tipHost);
+          if (clickish) return clickish;
+          return tipHost;
+        }
+      }
+    }
+
+    var focus = resolveClickTarget(el);
+    if (focus) return focus;
+
+    var p = el;
+    for (var i = 0; i < 5 && p; i++) {
+      try {
+        var st = window.getComputedStyle(p);
+        if (st && st.cursor === "pointer") {
+          var pt = String(p.tagName || "").toLowerCase();
+          if (pt !== "dialog" && pt !== "body" && pt !== "html") return p;
+        }
+      } catch (_e) {
+        /* ignore */
+      }
+      p = p.parentElement;
+    }
+    return null;
+  }
+
   function isNoiseUiTarget(target) {
     var t = target || {};
     var tag = String(t.tag || "").toLowerCase();
@@ -913,12 +988,40 @@
     });
   }
 
+  function onDocMouseOverCapture(ev) {
+    if (playing) return;
+    if (!recording || !exportOpts.captureUi || !exportOpts.captureMouseHover) return;
+    var t = ev.target;
+    if (!(t instanceof Element)) return;
+    if (isInsideLoggerPanel(t)) return;
+    var focus = resolveHoverTarget(/** @type {Element} */ (t));
+    if (!focus) return;
+    if (focus === lastHoverEl) return;
+    var info = describeDomTarget(focus);
+    if (isNoiseUiTarget(info)) return;
+    lastHoverEl = focus;
+    lastHoverAt = Date.now();
+    var detail = {
+      relatedTag:
+        ev.relatedTarget && ev.relatedTarget.tagName
+          ? String(ev.relatedTarget.tagName).toLowerCase()
+          : ""
+    };
+    if (info.inOverlay) detail.inOverlay = true;
+    pushUiEvent({
+      action: "hover",
+      target: info,
+      detail: detail
+    });
+  }
+
   function installUiHooks() {
     if (uiHooksInstalled) return;
     uiHooksInstalled = true;
     document.addEventListener("click", onDocClickCapture, true);
     document.addEventListener("change", onDocChangeCapture, true);
     document.addEventListener("submit", onDocSubmitCapture, true);
+    document.addEventListener("mouseover", onDocMouseOverCapture, true);
   }
 
   function uninstallUiHooks() {
@@ -926,7 +1029,10 @@
     document.removeEventListener("click", onDocClickCapture, true);
     document.removeEventListener("change", onDocChangeCapture, true);
     document.removeEventListener("submit", onDocSubmitCapture, true);
+    document.removeEventListener("mouseover", onDocMouseOverCapture, true);
     uiHooksInstalled = false;
+    lastHoverEl = null;
+    lastHoverAt = 0;
   }
 
   function installHooks() {
@@ -1091,22 +1197,11 @@
     return parseFilters(filterTa.value);
   }
 
-  /** .log: HTTP фронт↔бэк, состав по тоглам; фильтр URL + маска ПДн. */
+  /** .log: полный HTTP (headers + payload + timing + тело ответа); без UI; маска ПДн + фильтр URL. */
   function buildLogText() {
     var filters = currentLogFilters();
     var lines = [];
     var kept = 0;
-    var optFlags =
-      "reqHdr=" +
-      exportOpts.logReqHeaders +
-      " respHdr=" +
-      exportOpts.logRespHeaders +
-      " reqBody=" +
-      exportOpts.logReqBody +
-      " respBody=" +
-      exportOpts.logRespBody +
-      " timing=" +
-      exportOpts.logTiming;
     lines.push(
       "# HTTP_Traffic_Logger HTTP.log sessionId=" +
         sessionId +
@@ -1118,18 +1213,18 @@
         maskOn
     );
     lines.push("# filters=" + (filters.length ? filters.join(" | ") : "(all)"));
-    lines.push("# logOpts " + optFlags);
+    lines.push(
+      "# состав: REQUEST/RESPONSE HEADERS + PAYLOAD + timing + RESPONSE BODY (без UI/мыши)"
+    );
     lines.push(
       "# Связь файлов: sessionId + eventId + corrId (+ afterUiEventId → клик UI до запроса)."
     );
-    lines.push("# JSON: ответы сайта (если тогл). UI.log: клики (если тогл).");
 
     for (var i = 0; i < entries.length; i++) {
       var e = entries[i];
       if (!urlMatchesFilter(e.url, filters)) continue;
       kept++;
-      var timingPart =
-        exportOpts.logTiming && e.durationMs != null ? " " + e.durationMs + "ms" : "";
+      var timingPart = e.durationMs != null ? " " + e.durationMs + "ms" : "";
 
       lines.push("");
       lines.push(
@@ -1158,48 +1253,33 @@
       lines.push("URL " + e.url);
       if (e.afterUiEventId) lines.push("afterUiEventId " + e.afterUiEventId);
 
-      if (exportOpts.logReqHeaders) {
-        var reqHdr = sanitizeHeaders(e.requestHeaders, maskOn);
-        lines.push("");
-        lines.push(">>> REQUEST HEADERS");
-        lines.push(formatHeadersBlock(reqHdr));
-      }
-      if (exportOpts.logReqBody) {
-        var reqBody = sanitizeBody(e.requestBody, maskOn);
-        lines.push("");
-        lines.push(
-          ">>> REQUEST PAYLOAD" +
-            (e.requestTruncated ? " [truncated rawLen=" + e.requestBodyRawLen + "]" : "") +
-            (reqBody ? "" : " (пусто)")
-        );
-        if (reqBody) lines.push(reqBody);
-      }
-      if (exportOpts.logRespHeaders) {
-        var respHdr = sanitizeHeaders(e.responseHeaders, maskOn);
-        lines.push("");
-        lines.push("<<< RESPONSE HEADERS");
-        lines.push(formatHeadersBlock(respHdr));
-      }
-      if (exportOpts.logRespBody) {
-        var respBody = sanitizeBody(e.responseBody, maskOn);
-        lines.push("");
-        lines.push(
-          "<<< RESPONSE BODY" +
-            (e.responseTruncated ? " [truncated rawLen=" + e.responseBodyRawLen + "]" : "") +
-            (respBody ? "" : " (пусто)")
-        );
-        if (respBody) lines.push(respBody);
-      }
-      if (
-        exportOpts.logTiming &&
-        e.durationMs != null &&
-        !exportOpts.logReqHeaders &&
-        !exportOpts.logReqBody &&
-        !exportOpts.logRespHeaders &&
-        !exportOpts.logRespBody
-      ) {
-        lines.push("durationMs " + e.durationMs);
-      }
+      var reqHdr = sanitizeHeaders(e.requestHeaders, maskOn);
+      lines.push("");
+      lines.push(">>> REQUEST HEADERS");
+      lines.push(formatHeadersBlock(reqHdr));
+
+      var reqBody = sanitizeBody(e.requestBody, maskOn);
+      lines.push("");
+      lines.push(
+        ">>> REQUEST PAYLOAD" +
+          (e.requestTruncated ? " [truncated rawLen=" + e.requestBodyRawLen + "]" : "") +
+          (reqBody ? "" : " (пусто)")
+      );
+      if (reqBody) lines.push(reqBody);
+
+      var respHdr = sanitizeHeaders(e.responseHeaders, maskOn);
+      lines.push("");
+      lines.push("<<< RESPONSE HEADERS");
+      lines.push(formatHeadersBlock(respHdr));
+
+      var respBody = sanitizeBody(e.responseBody, maskOn);
+      lines.push("");
+      lines.push(
+        "<<< RESPONSE BODY" +
+          (e.responseTruncated ? " [truncated rawLen=" + e.responseBodyRawLen + "]" : "") +
+          (respBody ? "" : " (пусто)")
+      );
+      if (respBody) lines.push(respBody);
     }
     lines.push("");
     lines.push("# exportedInLog=" + kept + " ofCaptured=" + entries.length);
@@ -1207,8 +1287,8 @@
   }
 
   /**
-   * JSON: ответы сайта целиком, без маски ПДн, без фильтра URL.
-   * Связь: sessionId / eventId / corrId / afterUiEventId.
+   * JSON: только тела ответов + краткий id запроса (method/url/status) + id связи.
+   * Без заголовков и без payload запроса — они в .log. Без маски ПДн.
    */
   function buildJsonResponses() {
     var responses = [];
@@ -1221,32 +1301,24 @@
         eventSeq: e.eventSeq,
         sessionId: e.sessionId,
         afterUiEventId: e.afterUiEventId || null,
-        ts: e.ts,
-        kind: e.kind,
-        method: e.method,
-        url: e.url,
-        status: e.status,
-        statusText: e.statusText || "",
-        ok: e.ok,
-        durationMs: e.durationMs,
         request: {
-          headers: copyHeaders(e.requestHeaders),
-          payload: tryParseJsonValue(e.requestBody),
-          payloadRawLen: e.requestBodyRawLen,
-          truncated: e.requestTruncated
+          method: e.method,
+          url: e.url,
+          ts: e.ts,
+          kind: e.kind,
+          status: e.status,
+          statusText: e.statusText || "",
+          ok: e.ok
         },
-        response: {
-          headers: copyHeaders(e.responseHeaders),
-          body: tryParseJsonValue(e.responseBody),
-          bodyRawLen: e.responseBodyRawLen,
-          truncated: e.responseTruncated
-        }
+        body: tryParseJsonValue(e.responseBody),
+        bodyRawLen: e.responseBodyRawLen,
+        truncated: e.responseTruncated
       });
     }
     return {
       exportMeta: {
         scriptId: CFG.SCRIPT_ID,
-        format: "http_traffic_responses_v3",
+        format: "http_traffic_responses_v4",
         sessionId: sessionId,
         origin: String(window.location && window.location.origin ? window.location.origin : ""),
         pageUrl: String(window.location && window.location.href ? window.location.href : ""),
@@ -1254,7 +1326,7 @@
         exportedAt: nowIso(),
         maskApplied: false,
         note:
-          "Ответы без маски ПДн. Связь с .log / _ui.log: sessionId, eventId, corrId, afterUiEventId.",
+          "Только тела ответов + краткий id запроса + id связи. Заголовки/payload — в .log. Без маски ПДн.",
         maxBodyLen: CFG.MAX_BODY_LEN,
         stats: {
           total: stats.total,
@@ -1282,7 +1354,10 @@
         uiEvents.length
     );
     lines.push(
-      "# Связь: eventId / sessionId; HTTP после клика помечается afterUiEventId=этот eventId."
+      "# Связь: eventId / sessionId; HTTP после UI помечается afterUiEventId=этот eventId."
+    );
+    lines.push(
+      "# action=hover — наведение на DOM-элемент (не координаты); Play: mouseenter/over (+ dwell)."
     );
     for (var i = 0; i < uiEvents.length; i++) {
       var u = uiEvents[i];
@@ -1796,6 +1871,87 @@
     }
   }
 
+  /** Снять synthetic hover (для меню/tooltip на JS-обработчиках). */
+  function dispatchHoverOut(el) {
+    if (!el) return;
+    var bub = { bubbles: true, cancelable: true, view: window };
+    var noBub = { bubbles: false, cancelable: true, view: window };
+    try {
+      if (typeof PointerEvent === "function") {
+        el.dispatchEvent(new PointerEvent("pointerout", bub));
+        el.dispatchEvent(new PointerEvent("pointerleave", noBub));
+      }
+      el.dispatchEvent(new MouseEvent("mouseout", bub));
+      el.dispatchEvent(new MouseEvent("mouseleave", noBub));
+    } catch (_e) {
+      /* ignore */
+    }
+  }
+
+  /**
+   * Наведение на элемент (не координаты экрана).
+   * Срабатывает JS onMouseEnter/over; CSS :hover браузер на synthetic не включает.
+   */
+  function dispatchHover(el) {
+    if (playLastHoverEl && playLastHoverEl !== el) {
+      dispatchHoverOut(playLastHoverEl);
+    }
+    playLastHoverEl = el;
+    try {
+      el.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
+    } catch (_e) {
+      try {
+        el.scrollIntoView(true);
+      } catch (_e2) {
+        /* ignore */
+      }
+    }
+    var un = highlightEl(el);
+    var bub = { bubbles: true, cancelable: true, view: window, composed: true };
+    var noBub = { bubbles: false, cancelable: true, view: window, composed: true };
+    try {
+      // path: mouseover/pointerover bubble; mouseenter на цепочке предков (как реальная мышь)
+      if (typeof PointerEvent === "function") {
+        el.dispatchEvent(new PointerEvent("pointerover", bub));
+      }
+      el.dispatchEvent(new MouseEvent("mouseover", bub));
+      var chain = [];
+      var node = el;
+      while (node && node.nodeType === 1 && node !== document.documentElement) {
+        chain.push(node);
+        node = node.parentElement;
+      }
+      for (var c = chain.length - 1; c >= 0; c--) {
+        var n = chain[c];
+        try {
+          if (typeof PointerEvent === "function") {
+            n.dispatchEvent(new PointerEvent("pointerenter", noBub));
+          }
+          n.dispatchEvent(new MouseEvent("mouseenter", noBub));
+        } catch (_ce) {
+          /* ignore */
+        }
+      }
+      try {
+        if (typeof el.focus === "function" && el.tabIndex >= 0) {
+          el.focus({ preventScroll: true });
+        }
+      } catch (_f) {
+        /* ignore */
+      }
+    } catch (_e3) {
+      /* ignore */
+    }
+    setTimeout(un, 200);
+  }
+
+  function clearPlayHover() {
+    if (playLastHoverEl) {
+      dispatchHoverOut(playLastHoverEl);
+      playLastHoverEl = null;
+    }
+  }
+
   function applyChange(el, detail) {
     var d = detail || {};
     var preview = d.valuePreview != null ? String(d.valuePreview) : "";
@@ -1886,6 +2042,15 @@
   function performPlayAction(step, el) {
     var action = String(step.action || "click");
     var detail = step.detail || {};
+    if (isHoverAction(action)) {
+      dispatchHover(el);
+      return;
+    }
+    // перед кликом/change снимаем предыдущий hover
+    if (playLastHoverEl && playLastHoverEl !== el) {
+      dispatchHoverOut(playLastHoverEl);
+      playLastHoverEl = null;
+    }
     // click по checkbox/radio с известным целевым checked
     if (
       action === "click" &&
@@ -2128,6 +2293,8 @@
         settleMs: play.settleMs,
         slowAbsMs: play.slowAbsMs,
         slowFactor: play.slowFactor,
+        replayHover: !!play.replayHover,
+        hoverInScript: play.hoverCount,
         pageUrl: String(window.location && window.location.href ? window.location.href : ""),
         stats: play.stats,
         httpStats: {
@@ -2191,7 +2358,9 @@
         " slowAbsMs=" +
         play.slowAbsMs +
         " slowFactor=" +
-        play.slowFactor
+        play.slowFactor +
+        " replayHover=" +
+        !!play.replayHover
     );
     lines.push(
       "# page " +
@@ -2353,12 +2522,20 @@
         (play.fileName || "(n/a)") +
         " steps=" +
         play.script.length +
+        " hover=" +
+        play.hoverCount +
+        " replayHover=" +
+        !!play.replayHover +
         " at=" +
         nowIso()
     });
     play.finishedAt = "";
     installHooks();
-    play.statusText = "Play run#" + play.runCount + "…";
+    play.statusText =
+      "Play run#" +
+      play.runCount +
+      (play.replayHover ? " · с мышью" : " · без мыши") +
+      "…";
     applyPanelMode();
     refreshPlayUi();
     refreshStats();
@@ -2377,6 +2554,22 @@
         }
         if (step.detail.inOverlay) step.target.inOverlay = true;
         if (step.detail.reactSelectOption) step.target.reactSelectOption = true;
+      }
+
+      // режим «без мыши» — пропускаем hover из лога
+      if (isHoverAction(step.action) && !play.replayHover) {
+        play.stats.stepsSkip++;
+        play.stepLog.push({
+          index: i,
+          action: step.action,
+          selector: (step.target && step.target.selector) || "",
+          text: (step.target && step.target.text) || "",
+          result: "skip",
+          how: "no_mouse",
+          run: play.runCount,
+          message: "Пропуск hover (Play без мыши)"
+        });
+        continue;
       }
 
       // шум: клик по SVG/целому dialog — не проигрываем
@@ -2455,6 +2648,14 @@
           message: String(err && err.message ? err.message : err)
         });
       }
+      if (isHoverAction(step.action)) {
+        await waitMs(CFG.PLAY_HOVER_DWELL_MS);
+        // после hover меню/tooltip могло появиться — короткий wait, если следующий шаг в overlay
+        var next = play.script[i + 1];
+        if (next && stepNeedsOverlay(next)) {
+          await waitForOverlay(1500);
+        }
+      }
       await waitMs(play.stepDelayMs);
       if (play.abort) break;
       await waitNetworkSettle();
@@ -2464,6 +2665,7 @@
       refreshStats();
     }
 
+    clearPlayHover();
     playStepIndex = -1;
     play.finishedAt = nowIso();
     playing = false;
@@ -2615,7 +2817,7 @@
   var optsTitle = document.createElement("div");
   optsTitle.style.cssText =
     "font-size:11px;font-weight:700;color:#475569;margin-bottom:2px;";
-  optsTitle.textContent = "Что писать в файлы";
+  optsTitle.textContent = "Что сохранить";
   optsBox.appendChild(optsTitle);
 
   function mkOpt(key, label, titleText) {
@@ -2638,40 +2840,66 @@
   }
 
   mkOpt(
-    "logReqHeaders",
-    "Заголовки запроса (в .log)",
-    "В файл .log: блок REQUEST HEADERS"
-  );
-  mkOpt(
-    "logRespHeaders",
-    "Заголовки ответа (в .log)",
-    "В файл .log: блок RESPONSE HEADERS"
-  );
-  mkOpt(
-    "logReqBody",
-    "Payload / тело запроса (в .log)",
-    "В файл .log: блок REQUEST PAYLOAD"
-  );
-  mkOpt(
-    "logRespBody",
-    "Тело ответа сервера (в .log)",
-    "В файл .log: блок RESPONSE BODY"
-  );
-  mkOpt(
-    "logTiming",
-    "Тайминг запроса, длительность в миллисекундах (в .log)",
-    "В файл .log: durationMs у каждой записи"
+    "saveHttpLog",
+    "HTTP-лог (.log): полный трафик (заголовки + payload + timing + тело ответа)",
+    "httplog_<хост>_http_*.log — всё HTTP, без кликов/мыши"
   );
   mkOpt(
     "saveJson",
-    "Ответы сервера — отдельный JSON-файл (.json)",
-    "Сохранять httplog_<хост>_json_*.json с ответами сайта (без маски ПДн)"
+    "Тела ответов (JSON) + id запроса и связи",
+    "httplog_<хост>_json_*.json — только body ответа, без заголовков"
   );
-  mkOpt(
+  var cbCaptureUi = mkOpt(
     "captureUi",
-    "Клики и действия пользователя по интерфейсу (_ui.log)",
-    "Писать click / change / submit по сайту в файл httplog_<хост>_ui_*.log"
+    "Клики UI → UI.log (для Play)",
+    "Писать клики и сохранить httplog_<хост>_ui_*.log"
   );
+
+  var hoverLab = document.createElement("label");
+  hoverLab.style.cssText =
+    "display:flex;align-items:flex-start;gap:7px;font-size:11px;color:#334155;cursor:pointer;line-height:1.35;padding-left:18px;";
+  hoverLab.title =
+    "Пишет action=hover по DOM-элементу (не пиксели). Play шлёт mouseenter/over. CSS :hover synthetic не включает.";
+  var cbHover = document.createElement("input");
+  cbHover.type = "checkbox";
+  cbHover.checked = !!exportOpts.captureMouseHover;
+  cbHover.disabled = !exportOpts.captureUi;
+  cbHover.style.cssText = "margin-top:2px;flex-shrink:0;";
+  cbHover.addEventListener("change", function () {
+    if (!exportOpts.captureUi) {
+      cbHover.checked = false;
+      exportOpts.captureMouseHover = false;
+      return;
+    }
+    exportOpts.captureMouseHover = !!cbHover.checked;
+    if (!exportOpts.captureMouseHover) {
+      lastHoverEl = null;
+      lastHoverAt = 0;
+    }
+    refreshStats();
+  });
+  hoverLab.appendChild(cbHover);
+  hoverLab.appendChild(
+    document.createTextNode("Слежение мыши (hover по элементам → UI.log)")
+  );
+  optsBox.appendChild(hoverLab);
+
+  function syncHoverOptUi() {
+    cbHover.disabled = !exportOpts.captureUi;
+    hoverLab.style.opacity = exportOpts.captureUi ? "1" : "0.45";
+    hoverLab.style.cursor = exportOpts.captureUi ? "pointer" : "not-allowed";
+    if (!exportOpts.captureUi) {
+      exportOpts.captureMouseHover = false;
+      cbHover.checked = false;
+      lastHoverEl = null;
+      lastHoverAt = 0;
+    }
+  }
+  cbCaptureUi.addEventListener("change", function () {
+    syncHoverOptUi();
+    refreshStats();
+  });
+  syncHoverOptUi();
 
   var filterTa = document.createElement("textarea");
   filterTa.rows = 2;
@@ -2684,7 +2912,7 @@
   var hint = document.createElement("div");
   hint.style.cssText = "font-size:10px;color:#64748b;line-height:1.35;";
   hint.textContent =
-    "Имена: httplog_<хост>_<http|json|ui>_<время>. Хост — без https и без .ru/.com. Файлы качаются с паузой.";
+    "Три варианта: полный HTTP-лог / тела ответов JSON / UI.log (+ опц. мышь).";
   tabRecord.appendChild(hint);
 
   var rowActions = document.createElement("div");
@@ -2723,6 +2951,50 @@
   playFileLabel.style.cssText = "font-size:11px;color:#334155;line-height:1.35;";
   playFileLabel.textContent = "Файл не загружен.";
   tabPlay.appendChild(playFileLabel);
+
+  var playMouseRow = document.createElement("label");
+  playMouseRow.style.cssText =
+    "display:flex;align-items:flex-start;gap:7px;font-size:11px;color:#334155;cursor:pointer;line-height:1.35;" +
+    "padding:7px 8px;border:1px solid #e2e8f0;border-radius:8px;background:#fff;";
+  playMouseRow.title =
+    "Вкл.: воспроизводить hover из лога (synthetic mouseenter). Выкл.: только click/change/submit.";
+  var cbPlayMouse = document.createElement("input");
+  cbPlayMouse.type = "checkbox";
+  cbPlayMouse.checked = !!play.replayHover;
+  cbPlayMouse.style.cssText = "margin-top:2px;flex-shrink:0;";
+  cbPlayMouse.addEventListener("change", function () {
+    if (!play.hoverCount) {
+      cbPlayMouse.checked = false;
+      play.replayHover = false;
+      refreshPlayUi();
+      return;
+    }
+    play.replayHover = !!cbPlayMouse.checked;
+    refreshPlayUi();
+  });
+  playMouseRow.appendChild(cbPlayMouse);
+  var playMouseTxt = document.createElement("span");
+  playMouseTxt.textContent = "С мышью (hover) — выкл. = без мыши";
+  playMouseRow.appendChild(playMouseTxt);
+  tabPlay.appendChild(playMouseRow);
+
+  function syncPlayMouseUi() {
+    var hasHover = play.hoverCount > 0;
+    cbPlayMouse.disabled = playing || !hasHover;
+    if (!hasHover) {
+      play.replayHover = false;
+      cbPlayMouse.checked = false;
+    } else {
+      cbPlayMouse.checked = !!play.replayHover;
+    }
+    playMouseRow.style.opacity = hasHover ? "1" : "0.5";
+    playMouseRow.style.cursor = hasHover && !playing ? "pointer" : "not-allowed";
+    playMouseTxt.textContent = hasHover
+      ? play.replayHover
+        ? "С мышью (hover в логе: " + play.hoverCount + ") — Play проиграет наведения"
+        : "Без мыши — hover в логе (" + play.hoverCount + ") будут пропущены"
+      : "С мышью — в загруженном логе нет hover (включите при записи)";
+  }
 
   var playOpts = document.createElement("div");
   playOpts.style.cssText =
@@ -2783,7 +3055,7 @@
   var playHint = document.createElement("div");
   playHint.style.cssText = "font-size:10px;color:#64748b;line-height:1.35;";
   playHint.textContent =
-    "Тест-лог (_test_) не качается сам. Несколько Play / смена UI-файла копятся в один буфер до «Очистить». Сохранение — только кнопкой «⬇ Сохранить тест-лог».";
+    "Тест-лог (_test_) не качается сам. Переключатель «С мышью»: hover из лога вкл/выкл. Несколько Play копятся до «Очистить».";
   tabPlay.appendChild(playHint);
 
   var playActions = document.createElement("div");
@@ -2828,14 +3100,25 @@
   function refreshPlayUi() {
     var st = play.stats;
     var loaded = play.script.length
-      ? "Файл: " + (play.fileName || "(без имени)") + " · шагов: " + play.script.length
+      ? "Файл: " +
+        (play.fileName || "(без имени)") +
+        " · шагов: " +
+        play.script.length +
+        (play.hoverCount ? " · hover: " + play.hoverCount : "")
       : "Файл не загружен.";
     playFileLabel.textContent = loaded;
+    if (typeof syncPlayMouseUi === "function") syncPlayMouseUi();
     var txt =
       play.statusText +
       "\nruns " +
       play.runCount +
       (play.testActive ? " · накопление ON" : "") +
+      "  " +
+      (play.hoverCount
+        ? play.replayHover
+          ? "мышь ON"
+          : "мышь OFF"
+        : "мышь n/a") +
       "  шаг " +
       (playing ? play.index + 1 + "/" + (play.script.length || 0) : "—") +
       "  записей в тесте " +
@@ -2901,9 +3184,11 @@
 
   function plannedSaveFiles() {
     var host = siteHostTag();
-    var parts = ["http"];
+    var parts = [];
+    if (exportOpts.saveHttpLog) parts.push("http");
     if (exportOpts.saveJson) parts.push("json");
     if (exportOpts.captureUi) parts.push("ui");
+    if (!parts.length) return ["(ничего не выбрано)"];
     return parts.map(function (k) {
       return "httplog_" + host + "_" + k + "_…";
     });
@@ -3009,6 +3294,8 @@
       setActiveTab("record");
       filterParts = parseFilters(filterTa.value);
       if (!startedAt) startedAt = nowIso();
+      lastHoverEl = null;
+      lastHoverAt = 0;
       installHooks();
       installUiHooks();
       btnToggle.textContent = "⏹ Стоп";
@@ -3068,19 +3355,32 @@
         var parsed = parseUiLogText(String(reader.result || ""));
         play.script = parsed;
         play.fileName = f.name;
+        play.hoverCount = countHoverSteps(parsed);
+        // если в логе есть hover — по умолчанию «с мышью»
+        play.replayHover = play.hoverCount > 0;
         // накопленный тест-лог не сбрасываем — только смена сценария для следующего Play
         play.statusText = parsed.length
           ? "Загружено шагов: " +
             parsed.length +
+            (play.hoverCount ? " (hover: " + play.hoverCount + ")" : "") +
             "." +
             (play.testActive
               ? " Тест-буфер сохранён (runs=" + play.runCount + ") — можно Play снова или «Сохранить тест-лог»."
               : " Можно запускать Play.")
           : "В файле нет шагов UI (проверьте формат _ui.log).";
         refreshPlayUi();
-        console.log("[HTTP_Traffic_Logger] UI log загружен:", f.name, "шагов=", parsed.length);
+        console.log(
+          "[HTTP_Traffic_Logger] UI log загружен:",
+          f.name,
+          "шагов=",
+          parsed.length,
+          "hover=",
+          play.hoverCount
+        );
       } catch (err) {
         play.script = [];
+        play.hoverCount = 0;
+        play.replayHover = false;
         play.statusText = "Ошибка разбора: " + String(err && err.message ? err.message : err);
         refreshPlayUi();
       }
@@ -3137,6 +3437,8 @@
     uiSeq = 0;
     eventSeq = 0;
     lastUiEventId = null;
+    lastHoverEl = null;
+    lastHoverAt = 0;
     sessionId = tsShort() + "_" + Math.random().toString(36).slice(2, 8);
     startedAt = recording ? nowIso() : "";
     stats = { total: 0, ok: 0, err: 0, bytesIn: 0, bytesOut: 0, ui: 0 };
@@ -3147,7 +3449,10 @@
   btnSaveBoth.addEventListener("click", function () {
     // Имена: httplog_<host>_<http|json|ui>_<ts>.ext
     var stamp = tsShort();
-    var jobs = [{ filename: makeExportFilename("http", stamp, "log"), text: buildLogText() }];
+    var jobs = [];
+    if (exportOpts.saveHttpLog) {
+      jobs.push({ filename: makeExportFilename("http", stamp, "log"), text: buildLogText() });
+    }
     if (exportOpts.saveJson) {
       jobs.push({
         filename: makeExportFilename("json", stamp, "json"),
@@ -3157,6 +3462,10 @@
     }
     if (exportOpts.captureUi) {
       jobs.push({ filename: makeExportFilename("ui", stamp, "log"), text: buildUiLogText() });
+    }
+    if (!jobs.length) {
+      console.warn("[HTTP_Traffic_Logger] Ничего не выбрано для сохранения.");
+      return;
     }
     downloadSequentially(jobs, 450);
     console.log(

@@ -596,10 +596,9 @@
 **Сопутствующий файл документации:** [Docs/Скрипт_HTTP_Traffic_Logger.md](Docs/Скрипт_HTTP_Traffic_Logger.md)
 
 - `[v]` Фоновый перехват fetch/XHR; панель Старт/Стоп; маска ПДн для `.log`; фильтр URL.
-- `[v]` Экспорт JSON (ответы без маски) и `.log` (полный дамп); связь по `corrId`.
-- `[v]` Одна кнопка сохранения с общим timestamp.
-- `[v]` Тоглы состава `.log` (headers/payload/body/timing); JSON по флагу; третий файл `_ui.log` кликов; сквозные `eventId` / `afterUiEventId` / `sessionId`.
-- `[v]` Режим **Play**: накопление `_test_` без автосохранения; модалки `#dialog`/`#popover`/react-select; radio по `value`; без шума SVG/dialog; Docs v1.7.
+- `[v]` Экспорт: HTTP-лог (полный дамп), JSON v4 (только тела ответов + id), UI.log; связь `sessionId` / `eventId` / `corrId` / `afterUiEventId`.
+- `[v]` Одна кнопка сохранения с общим timestamp; три варианта + опц. слежение мыши.
+- `[v]` Режим **Play**: накопление `_test_` без автосохранения; модалки; переключатель с мышью / без; Docs v1.11.
 
 ---
 
