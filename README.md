@@ -76,6 +76,7 @@
 
 | Дата | Описание |
 |------|----------|
+| 2026-08-08 | **`HTTP_Traffic_Logger.js`**: вкладка **FULL** — дамп HTML/CSS + полный HTTP (без UI, без тел бинарных файлов); Docs v1.12. |
 | 2026-08-06 | **`HTTP_Traffic_Logger.js`**: JSON v4 — только тела ответов + id связи; HTTP-лог — полный дамп (headers+payload+timing+body); Docs v1.11. |
 | 2026-08-06 | **`HTTP_Traffic_Logger.js`**: Play — переключатель «с мышью / без» для hover из UI.log; Docs v1.10. |
 | 2026-08-06 | **`HTTP_Traffic_Logger.js`**: опц. слежение мыши (hover по DOM-элементам) + Play; тогл только с UI.log; Docs v1.9. |

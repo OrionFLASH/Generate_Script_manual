@@ -5,6 +5,7 @@
 //   .log  — фронт↔бэк (состав по тоглам)
 //   .json — ответы сайта (если тогл JSON)
 //   _ui.log — клики/действия UI (если тогл UI)
+//   _full.log — FULL-дамп: весь HTTP + снимок HTML/CSS (без UI и без бинарных файлов)
 // Режим Play: вкладка → загрузка _ui.log → прокликивание «плёнки» + сбор HTTP,
 //   ошибки статусов/тела, slow-запросы, статистика, Стоп.
 // =============================================================================
@@ -36,7 +37,9 @@
     /** Сколько ждать появления элемента при Play (модалки и т.п.), мс. */
     PLAY_FIND_TIMEOUT_MS: 5000,
     /** Ожидание появления модалки/поповера перед шагом внутри overlay. */
-    PLAY_OVERLAY_TIMEOUT_MS: 4000
+    PLAY_OVERLAY_TIMEOUT_MS: 4000,
+    /** Лимит одной секции FULL (HTML/CSS), символов. */
+    MAX_FULL_SECTION_LEN: 4 * 1024 * 1024
   };
 
   /** Ключи JSON, значения которых маскируются при включённой маске (news HAR + общие). */
@@ -126,8 +129,8 @@
   }
 
   /**
-   * kind: http | json | ui | test
-   * (запись: http/json/ui; Play → один полный test-лог)
+   * kind: http | json | ui | test | full
+   * (запись: http/json/ui; FULL → full; Play → test)
    */
   function makeExportFilename(kind, stamp, ext) {
     var k = String(kind || "http").replace(/[^a-z0-9]+/gi, "");
@@ -390,6 +393,11 @@
 
   // --- состояние ---
   var recording = false;
+  /**
+   * Откуда запущена запись: "record" | "full".
+   * FULL-старт — свой Старт на вкладке FULL, без UI-кликов.
+   */
+  var recordOrigin = "record";
   /** Режим воспроизведения UI-плёнки. */
   var playing = false;
   var maskOn = CFG.DEFAULT_MASK;
@@ -1327,6 +1335,398 @@
       }
     }
     lines.push("");
+    return lines.join("\n") + "\n";
+  }
+
+  // ---------------------------------------------------------------------------
+  // FULL-дамп: HTTP (всё) + HTML/CSS страницы; без UI и без бинарных файлов
+  // ---------------------------------------------------------------------------
+
+  function getHeaderCI(headers, name) {
+    var h = headers && typeof headers === "object" ? headers : {};
+    var want = String(name || "").toLowerCase();
+    var keys = Object.keys(h);
+    for (var i = 0; i < keys.length; i++) {
+      if (String(keys[i]).toLowerCase() === want) return String(h[keys[i]] == null ? "" : h[keys[i]]);
+    }
+    return "";
+  }
+
+  /** Бинарные/скачиваемые файлы — в FULL не кладём тело (только пометку). */
+  function isBinaryOrFileAsset(url, responseHeaders, bodyText) {
+    var ct = getHeaderCI(responseHeaders, "content-type").toLowerCase();
+    var u = String(url || "").toLowerCase().split("?")[0];
+    var body = String(bodyText || "");
+
+    if (/^\[(Blob|ArrayBuffer|File)\b/i.test(body)) return true;
+
+    if (ct) {
+      if (/javascript|ecmascript|json|xml|graphql|text\/|urlencoded|sse|event-stream/.test(ct)) {
+        return false;
+      }
+      if (
+        /^(image|audio|video|font)\//.test(ct) ||
+        /octet-stream|application\/pdf|application\/zip|application\/x-zip|application\/gzip|application\/wasm|application\/vnd\.|multipart\/form-data/.test(
+          ct
+        )
+      ) {
+        return true;
+      }
+    }
+
+    // svg — текст, оставляем; остальное по расширению — файлы
+    if (/\.svg$/i.test(u)) return false;
+    if (
+      /\.(png|jpe?g|gif|webp|ico|bmp|avif|woff2?|ttf|eot|otf|mp3|mp4|webm|ogg|wav|pdf|zip|rar|7z|gz|tar|wasm|exe|dmg|bin|docx?|xlsx?|pptx?)$/i.test(
+        u
+      )
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  function findBodyInEntriesByUrl(url) {
+    var want = String(url || "");
+    if (!want) return "";
+    for (var i = entries.length - 1; i >= 0; i--) {
+      var e = entries[i];
+      if (String(e.url || "") === want || String(e.url || "").indexOf(want) === 0) {
+        if (e.responseBody) return String(e.responseBody);
+      }
+    }
+    // href без query vs с query
+    var base = want.split("?")[0];
+    for (var j = entries.length - 1; j >= 0; j--) {
+      var ej = entries[j];
+      if (String(ej.url || "").split("?")[0] === base && ej.responseBody) {
+        return String(ej.responseBody);
+      }
+    }
+    return "";
+  }
+
+  function collectPageHtmlSnapshot() {
+    try {
+      var clone = document.documentElement.cloneNode(true);
+      try {
+        var panel = clone.querySelector("#" + CFG.PANEL_ID);
+        if (panel && panel.parentNode) panel.parentNode.removeChild(panel);
+      } catch (_p) {
+        /* ignore */
+      }
+      var html = "<!DOCTYPE html>\n" + clone.outerHTML;
+      return truncBody(html, CFG.MAX_FULL_SECTION_LEN);
+    } catch (err) {
+      return {
+        text: "[ошибка снимка HTML: " + String(err && err.message ? err.message : err) + "]",
+        truncated: false,
+        rawLen: 0
+      };
+    }
+  }
+
+  function collectCssDump() {
+    var lines = [];
+    var skippedCors = 0;
+    var fromHttp = 0;
+
+    try {
+      var inlineStyles = document.querySelectorAll("style");
+      for (var s = 0; s < inlineStyles.length; s++) {
+        var st = inlineStyles[s];
+        if (st.closest && st.closest("#" + CFG.PANEL_ID)) continue;
+        lines.push("");
+        lines.push("--- inline <style> #" + (s + 1));
+        var inlineText = String(st.textContent || "");
+        var ti = truncBody(inlineText, CFG.MAX_FULL_SECTION_LEN);
+        lines.push(
+          ti.truncated
+            ? ti.text
+            : inlineText || "(пусто)"
+        );
+      }
+    } catch (_is) {
+      lines.push("[ошибка сбора <style>]");
+    }
+
+    try {
+      var sheets = document.styleSheets;
+      for (var i = 0; i < sheets.length; i++) {
+        var sheet = sheets[i];
+        var href = "";
+        try {
+          href = sheet.href ? String(sheet.href) : "(inline/CSSOM)";
+        } catch (_h) {
+          href = "(недоступен href)";
+        }
+        lines.push("");
+        lines.push("--- stylesheet #" + (i + 1) + " href=" + href);
+        try {
+          var rules = sheet.cssRules || sheet.rules;
+          if (!rules) {
+            lines.push("(нет cssRules)");
+            continue;
+          }
+          var cssText = "";
+          for (var r = 0; r < rules.length; r++) {
+            try {
+              cssText += rules[r].cssText + "\n";
+            } catch (_r) {
+              /* skip rule */
+            }
+          }
+          var tc = truncBody(cssText, CFG.MAX_FULL_SECTION_LEN);
+          lines.push(tc.text || "(пусто)");
+        } catch (corsErr) {
+          skippedCors++;
+          lines.push(
+            "[CSSOM недоступен: " +
+              String(corsErr && corsErr.message ? corsErr.message : corsErr) +
+              "]"
+          );
+          var bodyHttp = href && href.indexOf("http") === 0 ? findBodyInEntriesByUrl(href) : "";
+          if (bodyHttp) {
+            fromHttp++;
+            var th = truncBody(bodyHttp, CFG.MAX_FULL_SECTION_LEN);
+            lines.push("# взято из HTTP-буфера:");
+            lines.push(th.text);
+          } else {
+            lines.push("# в HTTP-буфере CSS не найден (cross-origin или не перехватывался)");
+          }
+        }
+      }
+    } catch (err) {
+      lines.push("[ошибка обхода styleSheets: " + String(err && err.message ? err.message : err) + "]");
+    }
+
+    return {
+      text: lines.join("\n"),
+      skippedCors: skippedCors,
+      fromHttp: fromHttp
+    };
+  }
+
+  function collectDomAssetLinks() {
+    var lines = [];
+    function pushList(title, selector, attr) {
+      lines.push("");
+      lines.push("--- " + title);
+      var nodes = [];
+      try {
+        nodes = Array.prototype.slice.call(document.querySelectorAll(selector));
+      } catch (_e) {
+        nodes = [];
+      }
+      var n = 0;
+      for (var i = 0; i < nodes.length; i++) {
+        var el = nodes[i];
+        if (el.closest && el.closest("#" + CFG.PANEL_ID)) continue;
+        var val = "";
+        try {
+          val = el.getAttribute(attr) || "";
+        } catch (_a) {
+          val = "";
+        }
+        if (!val) continue;
+        n++;
+        lines.push(n + ". " + val);
+      }
+      if (!n) lines.push("(нет)");
+    }
+    pushList("link[rel=stylesheet]", 'link[rel~="stylesheet"]', "href");
+    pushList("script[src]", "script[src]", "src");
+    pushList("link[rel=preload|modulepreload]", 'link[rel="preload"],link[rel="modulepreload"]', "href");
+    return lines.join("\n");
+  }
+
+  function collectPerformanceResources() {
+    var lines = [];
+    try {
+      var list =
+        typeof performance !== "undefined" && performance.getEntriesByType
+          ? performance.getEntriesByType("resource")
+          : [];
+      lines.push("# count=" + list.length);
+      for (var i = 0; i < list.length; i++) {
+        var r = list[i];
+        lines.push(
+          (i + 1) +
+            ". [" +
+            (r.initiatorType || "?") +
+            "] " +
+            Math.round(r.duration || 0) +
+            "ms  " +
+            String(r.name || "")
+        );
+      }
+    } catch (err) {
+      lines.push("[ошибка Performance API: " + String(err && err.message ? err.message : err) + "]");
+    }
+    return lines.join("\n");
+  }
+
+  /**
+   * FULL.log: снимок страницы (HTML/CSS) + полный HTTP без UI;
+   * тела бинарных/скачиваемых файлов пропускаются.
+   */
+  function buildFullDumpText() {
+    var lines = [];
+    var kept = 0;
+    var skippedBin = 0;
+    var htmlSnap = collectPageHtmlSnapshot();
+    var cssDump = collectCssDump();
+
+    lines.push(
+      "# HTTP_Traffic_Logger FULL.log sessionId=" +
+        sessionId +
+        " origin=" +
+        String(window.location && window.location.origin ? window.location.origin : "") +
+        " exported=" +
+        nowIso() +
+        " mask=" +
+        maskOn
+    );
+    lines.push(
+      "# FULL = HTML/CSS снимок страницы + весь HTTP (headers/payload/body/timing). Без UI-кликов."
+    );
+    lines.push(
+      "# Бинарные файлы (image/font/pdf/zip/…) — только заголовки + пометка SKIP_BINARY, тело не пишется."
+    );
+    lines.push(
+      "# CSS cross-origin может быть недоступен через CSSOM — тогда ищем в HTTP-буфере."
+    );
+    lines.push("# Связь: sessionId / eventId / corrId / afterUiEventId.");
+
+    lines.push("");
+    lines.push("################################################################################");
+    lines.push("# ==== PAGE META ====");
+    lines.push("################################################################################");
+    lines.push("pageUrl " + String(window.location && window.location.href ? window.location.href : ""));
+    lines.push("title " + String(document.title || ""));
+    lines.push(
+      "viewport " +
+        (typeof window.innerWidth === "number"
+          ? window.innerWidth + "x" + window.innerHeight
+          : "?")
+    );
+    lines.push("userAgent " + String(navigator.userAgent || ""));
+    lines.push("httpBuffered " + entries.length);
+    lines.push("htmlRawLen " + htmlSnap.rawLen + (htmlSnap.truncated ? " truncated" : ""));
+    lines.push("cssCorsBlocked " + cssDump.skippedCors + " cssFromHttpBuf " + cssDump.fromHttp);
+
+    lines.push("");
+    lines.push("################################################################################");
+    lines.push("# ==== HTML SNAPSHOT (без панели логгера) ====");
+    lines.push("################################################################################");
+    lines.push(htmlSnap.text);
+
+    lines.push("");
+    lines.push("################################################################################");
+    lines.push("# ==== STYLESHEETS / CSS ====");
+    lines.push("################################################################################");
+    lines.push(cssDump.text || "(нет)");
+
+    lines.push("");
+    lines.push("################################################################################");
+    lines.push("# ==== DOM ASSET LINKS ====");
+    lines.push("################################################################################");
+    lines.push(collectDomAssetLinks());
+
+    lines.push("");
+    lines.push("################################################################################");
+    lines.push("# ==== PERFORMANCE RESOURCES ====");
+    lines.push("################################################################################");
+    lines.push(collectPerformanceResources());
+
+    lines.push("");
+    lines.push("################################################################################");
+    lines.push("# ==== HTTP TRAFFIC (full dump, no UI, binaries skipped) ====");
+    lines.push("################################################################################");
+
+    for (var i = 0; i < entries.length; i++) {
+      var e = entries[i];
+      kept++;
+      var skipBody = isBinaryOrFileAsset(e.url, e.responseHeaders, e.responseBody);
+      if (skipBody) skippedBin++;
+      var timingPart = e.durationMs != null ? " " + e.durationMs + "ms" : "";
+
+      lines.push("");
+      lines.push(
+        "================================================================================"
+      );
+      lines.push(
+        "--- #" +
+          e.id +
+          " eventId=" +
+          e.eventId +
+          " corrId=" +
+          e.corrId +
+          " eventSeq=" +
+          e.eventSeq +
+          " " +
+          e.ts +
+          " [" +
+          e.kind +
+          "] " +
+          e.method +
+          " " +
+          e.status +
+          (e.statusText ? " " + e.statusText : "") +
+          timingPart +
+          (skipBody ? " SKIP_BINARY" : "")
+      );
+      lines.push("URL " + e.url);
+      if (e.afterUiEventId) lines.push("afterUiEventId " + e.afterUiEventId);
+
+      lines.push("");
+      lines.push(">>> REQUEST HEADERS");
+      lines.push(formatHeadersBlock(sanitizeHeaders(e.requestHeaders, maskOn)));
+
+      var reqBody = sanitizeBody(e.requestBody, maskOn);
+      lines.push("");
+      lines.push(
+        ">>> REQUEST PAYLOAD" +
+          (e.requestTruncated ? " [truncated rawLen=" + e.requestBodyRawLen + "]" : "") +
+          (reqBody ? "" : " (пусто)")
+      );
+      if (reqBody) lines.push(reqBody);
+
+      lines.push("");
+      lines.push("<<< RESPONSE HEADERS");
+      lines.push(formatHeadersBlock(sanitizeHeaders(e.responseHeaders, maskOn)));
+
+      lines.push("");
+      if (skipBody) {
+        lines.push(
+          "<<< RESPONSE BODY [SKIP_BINARY content-type=" +
+            (getHeaderCI(e.responseHeaders, "content-type") || "?") +
+            " rawLen=" +
+            (e.responseBodyRawLen || 0) +
+            "]"
+        );
+      } else {
+        var respBody = sanitizeBody(e.responseBody, maskOn);
+        lines.push(
+          "<<< RESPONSE BODY" +
+            (e.responseTruncated ? " [truncated rawLen=" + e.responseBodyRawLen + "]" : "") +
+            (respBody ? "" : " (пусто)")
+        );
+        if (respBody) lines.push(respBody);
+      }
+    }
+
+    lines.push("");
+    lines.push(
+      "# FULL summary httpEntries=" +
+        kept +
+        " skippedBinaryBodies=" +
+        skippedBin +
+        " htmlLen=" +
+        htmlSnap.rawLen +
+        " cssCors=" +
+        cssDump.skippedCors
+    );
     return lines.join("\n") + "\n";
   }
 
@@ -2555,8 +2955,10 @@
     return b;
   }
   var tabRecBtn = mkTab("Запись");
+  var tabFullBtn = mkTab("FULL");
   var tabPlayBtn = mkTab("Play");
   tabsRow.appendChild(tabRecBtn);
+  tabsRow.appendChild(tabFullBtn);
   tabsRow.appendChild(tabPlayBtn);
   var activeTab = "record";
 
@@ -2567,6 +2969,10 @@
   var tabRecord = document.createElement("div");
   tabRecord.style.cssText = "display:flex;flex-direction:column;gap:8px;";
   body.appendChild(tabRecord);
+
+  var tabFull = document.createElement("div");
+  tabFull.style.cssText = "display:none;flex-direction:column;gap:8px;";
+  body.appendChild(tabFull);
 
   var tabPlay = document.createElement("div");
   tabPlay.style.cssText = "display:none;flex-direction:column;gap:8px;";
@@ -2685,7 +3091,7 @@
   var hint = document.createElement("div");
   hint.style.cssText = "font-size:10px;color:#64748b;line-height:1.35;";
   hint.textContent =
-    "Имена: httplog_<хост>_<http|json|ui>_<время>. Хост — без https и без .ru/.com. Файлы качаются с паузой.";
+    "Имена: httplog_<хост>_<http|json|ui|full|test>_…. FULL — отдельная вкладка.";
   tabRecord.appendChild(hint);
 
   var rowActions = document.createElement("div");
@@ -2698,6 +3104,104 @@
   var btnClear = mkBtn("Очистить");
   rowActions.appendChild(btnSaveBoth);
   rowActions.appendChild(btnClear);
+
+  // --- вкладка FULL ---
+  var fullRowMain = document.createElement("div");
+  fullRowMain.style.cssText = "display:flex;gap:6px;align-items:center;flex-wrap:wrap;";
+  tabFull.appendChild(fullRowMain);
+
+  var btnFullToggle = mkBtn(
+    "▶ Старт FULL",
+    "background:#16a34a;border-color:#16a34a;color:#fff;min-width:110px;"
+  );
+  btnFullToggle.title = "Запись HTTP для FULL-дампа (без UI-кликов). Стоп — остановить.";
+  fullRowMain.appendChild(btnFullToggle);
+
+  var fullTitle = document.createElement("div");
+  fullTitle.style.cssText = "font-size:12px;font-weight:700;color:#0f172a;";
+  fullTitle.textContent = "FULL-дамп страницы";
+  tabFull.appendChild(fullTitle);
+
+  var fullDesc = document.createElement("div");
+  fullDesc.style.cssText =
+    "font-size:11px;color:#334155;line-height:1.45;padding:8px 10px;" +
+    "border:1px solid #e2e8f0;border-radius:8px;background:#fff;";
+  fullDesc.innerHTML =
+    "Отдельный файл <code>httplog_&lt;хост&gt;_full_*.log</code>:<br>" +
+    "• снимок <b>HTML</b> текущей страницы (без панели логгера)<br>" +
+    "• <b>CSS</b> (CSSOM + inline; cross-origin — из HTTP-буфера, если есть)<br>" +
+    "• список link/script и Performance resources<br>" +
+    "• <b>весь HTTP</b>: headers + payload + body + timing<br>" +
+    "• <b>без</b> кликов UI / мыши<br>" +
+    "• тела <b>бинарных файлов</b> (картинки, шрифты, pdf, zip…) не пишутся — только пометка SKIP_BINARY<br>" +
+    "<br><b>▶ Старт FULL</b> на этой вкладке → работа на стенде → <b>⏹ Стоп</b> → сохранить дамп.";
+  tabFull.appendChild(fullDesc);
+
+  var fullStatsEl = document.createElement("div");
+  fullStatsEl.style.cssText =
+    "font-family:ui-monospace,monospace;font-size:11px;color:#334155;line-height:1.45;" +
+    "padding:7px 8px;border-radius:8px;border:1px solid #e2e8f0;background:#fff;white-space:pre-wrap;";
+  tabFull.appendChild(fullStatsEl);
+
+  var fullHint = document.createElement("div");
+  fullHint.style.cssText = "font-size:10px;color:#64748b;line-height:1.35;";
+  fullHint.textContent =
+    "Старт FULL пишет только HTTP (UI-клики не пишутся). Маска ПДн — с вкладки «Запись». Файл может быть большим.";
+  tabFull.appendChild(fullHint);
+
+  var fullActions = document.createElement("div");
+  fullActions.style.cssText = "display:flex;flex-wrap:wrap;gap:6px;";
+  tabFull.appendChild(fullActions);
+  var btnSaveFull = mkBtn(
+    "⬇ Сохранить FULL-дамп",
+    "background:#7c3aed;border-color:#7c3aed;color:#fff;"
+  );
+  btnSaveFull.title = "Скачать httplog_<хост>_full_*.log — HTML/CSS + полный HTTP";
+  fullActions.appendChild(btnSaveFull);
+
+  function refreshFullUi() {
+    var binGuess = 0;
+    for (var i = 0; i < entries.length; i++) {
+      if (isBinaryOrFileAsset(entries[i].url, entries[i].responseHeaders, entries[i].responseBody)) {
+        binGuess++;
+      }
+    }
+    var sheets = 0;
+    try {
+      sheets = document.styleSheets ? document.styleSheets.length : 0;
+    } catch (_e) {
+      sheets = 0;
+    }
+    var modeLabel =
+      recording && recordOrigin === "full"
+        ? "● FULL REC"
+        : recording
+          ? "● REC (с Записи)"
+          : "○ idle";
+    fullStatsEl.textContent =
+      modeLabel +
+      "  HTTP buf " +
+      entries.length +
+      "  (бинарных ~" +
+      binGuess +
+      ")\n" +
+      "stylesheets " +
+      sheets +
+      "  mask " +
+      (maskOn ? "ON" : "OFF") +
+      "  session " +
+      sessionId +
+      "\n" +
+      (recording && recordOrigin === "full"
+        ? "Идёт FULL-запись… Стоп → затем сохранить дамп."
+        : entries.length
+          ? "Можно сохранять FULL-дамп."
+          : "Буфер пуст — нажмите «▶ Старт FULL» и поработайте на стенде.");
+    btnSaveFull.disabled = playing || recording || !entries.length;
+    btnSaveFull.style.opacity = btnSaveFull.disabled ? "0.45" : "1";
+    btnFullToggle.disabled = playing;
+    btnFullToggle.style.opacity = playing ? "0.45" : "1";
+  }
 
   // --- вкладка Play ---
   var playLoadRow = document.createElement("div");
@@ -2816,13 +3320,17 @@
 
   function setActiveTab(name) {
     if (playing || recording) return;
-    activeTab = name === "play" ? "play" : "record";
+    activeTab = name === "play" ? "play" : name === "full" ? "full" : "record";
     tabRecord.style.display = activeTab === "record" ? "flex" : "none";
+    tabFull.style.display = activeTab === "full" ? "flex" : "none";
     tabPlay.style.display = activeTab === "play" ? "flex" : "none";
     tabRecBtn.style.background = activeTab === "record" ? "#334155" : "transparent";
     tabRecBtn.style.color = activeTab === "record" ? "#f8fafc" : "#94a3b8";
+    tabFullBtn.style.background = activeTab === "full" ? "#334155" : "transparent";
+    tabFullBtn.style.color = activeTab === "full" ? "#f8fafc" : "#94a3b8";
     tabPlayBtn.style.background = activeTab === "play" ? "#334155" : "transparent";
     tabPlayBtn.style.color = activeTab === "play" ? "#f8fafc" : "#94a3b8";
+    if (activeTab === "full" && typeof refreshFullUi === "function") refreshFullUi();
   }
   setActiveTab("record");
 
@@ -2911,7 +3419,13 @@
   }
 
   function detailedStatsText(compact) {
-    var mode = playing ? "▶ PLAY" : recording ? "● REC" : "○ idle";
+    var mode = playing
+      ? "▶ PLAY"
+      : recording
+        ? recordOrigin === "full"
+          ? "● FULL"
+          : "● REC"
+        : "○ idle";
     var line1 =
       mode +
       "  HTTP " +
@@ -2920,8 +3434,7 @@
       stats.ok +
       "  err " +
       stats.err +
-      "  UI " +
-      uiEvents.length;
+      (recordOrigin === "full" && recording ? "" : "  UI " + uiEvents.length);
     var line2 =
       "buf " +
       entries.length +
@@ -2965,15 +3478,50 @@
 
     playCompact.style.display = "none";
     body.style.display = "flex";
+
+    // FULL-запись: остаёмся на вкладке FULL (компакт: Старт/Стоп + статистика)
+    if (recording && recordOrigin === "full") {
+      tabRecord.style.display = "none";
+      tabPlay.style.display = "none";
+      tabFull.style.display = "flex";
+      fullTitle.style.display = "none";
+      fullDesc.style.display = "none";
+      fullHint.style.display = "none";
+      fullActions.style.display = "none";
+      fullRowMain.style.display = "flex";
+      fullStatsEl.style.fontSize = "9px";
+      fullStatsEl.style.padding = "5px 6px";
+      btnFullToggle.style.minWidth = "100px";
+      btnFullToggle.style.padding = "5px 10px";
+      btnFullToggle.style.fontSize = "11px";
+      root.style.width = "360px";
+      body.style.padding = "6px 8px";
+      body.style.gap = "5px";
+      if (typeof refreshFullUi === "function") refreshFullUi();
+      return;
+    }
+
     tabRecord.style.display = activeTab === "record" ? "flex" : "none";
+    tabFull.style.display = activeTab === "full" ? "flex" : "none";
     tabPlay.style.display = activeTab === "play" ? "flex" : "none";
+
+    fullTitle.style.display = "";
+    fullDesc.style.display = "";
+    fullHint.style.display = "";
+    fullActions.style.display = "flex";
+    fullRowMain.style.display = "flex";
+    fullStatsEl.style.fontSize = "11px";
+    fullStatsEl.style.padding = "7px 8px";
+    btnFullToggle.style.minWidth = "110px";
+    btnFullToggle.style.padding = "6px 10px";
+    btnFullToggle.style.fontSize = "12px";
 
     maskLab.style.display = recording ? "none" : "inline-flex";
     optsBox.style.display = recording ? "none" : "flex";
     filterTa.style.display = recording ? "none" : "block";
     hint.style.display = recording ? "none" : "block";
     rowActions.style.display = recording ? "none" : "flex";
-    root.style.width = recording ? "360px" : "440px";
+    root.style.width = recording ? "360px" : "460px";
     body.style.padding = recording ? "6px 8px" : "10px";
     body.style.gap = recording ? "5px" : "8px";
     statsEl.style.fontSize = recording ? "9px" : "11px";
@@ -2984,6 +3532,25 @@
     btnToggle.style.fontSize = recording ? "11px" : "12px";
     rowMain.style.flexDirection = "row";
     rowMain.style.flexWrap = recording ? "nowrap" : "wrap";
+    if (typeof refreshFullUi === "function") refreshFullUi();
+  }
+
+  function syncToggleButtons() {
+    if (recording) {
+      btnToggle.textContent = "⏹ Стоп";
+      btnToggle.style.background = "#dc2626";
+      btnToggle.style.borderColor = "#dc2626";
+      btnFullToggle.textContent = "⏹ Стоп FULL";
+      btnFullToggle.style.background = "#dc2626";
+      btnFullToggle.style.borderColor = "#dc2626";
+    } else {
+      btnToggle.textContent = "▶ Старт";
+      btnToggle.style.background = "#16a34a";
+      btnToggle.style.borderColor = "#16a34a";
+      btnFullToggle.textContent = "▶ Старт FULL";
+      btnFullToggle.style.background = "#16a34a";
+      btnFullToggle.style.borderColor = "#16a34a";
+    }
   }
 
   function refreshStats() {
@@ -2991,7 +3558,10 @@
     miniText.textContent = playing
       ? "▶ PLAY  " + (play.index + 1) + "/" + play.script.length
       : recording
-        ? "● REC  HTTP " + stats.total + " / UI " + uiEvents.length
+        ? (recordOrigin === "full" ? "● FULL  " : "● REC  ") +
+          "HTTP " +
+          stats.total +
+          (recordOrigin === "full" ? "" : " / UI " + uiEvents.length)
         : "○ idle  HTTP " + stats.total;
     miniStats.textContent = detailedStatsText(true);
     recDot.style.background = playing ? "#2563eb" : recording ? "#ef4444" : "#64748b";
@@ -3001,29 +3571,37 @@
       plannedSaveFiles().join(", ") +
       " (если браузер спросит — разрешите несколько загрузок)";
     if (typeof refreshPlayUi === "function") refreshPlayUi();
+    if (typeof refreshFullUi === "function") refreshFullUi();
   }
 
-  function setRecording(on) {
+  /**
+   * @param {boolean} on
+   * @param {"record"|"full"} [origin]
+   */
+  function setRecording(on, origin) {
     if (playing) return;
     recording = !!on;
     if (recording) {
-      setActiveTab("record");
+      recordOrigin = origin === "full" ? "full" : "record";
+      activeTab = recordOrigin === "full" ? "full" : "record";
       filterParts = parseFilters(filterTa.value);
       if (!startedAt) startedAt = nowIso();
       installHooks();
-      installUiHooks();
-      btnToggle.textContent = "⏹ Стоп";
-      btnToggle.style.background = "#dc2626";
-      btnToggle.style.borderColor = "#dc2626";
+      // FULL-режим: только HTTP, без UI-кликов
+      if (recordOrigin === "full") {
+        uninstallUiHooks();
+      } else {
+        installUiHooks();
+      }
       filterTa.disabled = true;
       filterTa.style.opacity = "0.65";
     } else {
-      btnToggle.textContent = "▶ Старт";
-      btnToggle.style.background = "#16a34a";
-      btnToggle.style.borderColor = "#16a34a";
+      if (recordOrigin === "full") activeTab = "full";
+      recordOrigin = "record";
       filterTa.disabled = false;
       filterTa.style.opacity = "1";
     }
+    syncToggleButtons();
     applyPanelMode();
     refreshStats();
   }
@@ -3041,13 +3619,45 @@
   tabRecBtn.addEventListener("click", function () {
     setActiveTab("record");
   });
+  tabFullBtn.addEventListener("click", function () {
+    setActiveTab("full");
+  });
   tabPlayBtn.addEventListener("click", function () {
     setActiveTab("play");
   });
 
+  btnSaveFull.addEventListener("click", function () {
+    if (playing || recording) return;
+    if (!entries.length) {
+      console.warn("[HTTP_Traffic_Logger] FULL: буфер HTTP пуст.");
+      refreshFullUi();
+      return;
+    }
+    var stamp = tsShort();
+    var name = makeExportFilename("full", stamp, "log");
+    var text = buildFullDumpText();
+    downloadText(name, text);
+    console.log(
+      "[HTTP_Traffic_Logger] FULL-дамп сохранён: " +
+        name +
+        " · sessionId=" +
+        sessionId +
+        " · bytes≈" +
+        text.length
+    );
+    refreshFullUi();
+  });
+
   btnToggle.addEventListener("click", function () {
     if (playing) return;
-    setRecording(!recording);
+    if (recording) setRecording(false);
+    else setRecording(true, "record");
+  });
+
+  btnFullToggle.addEventListener("click", function () {
+    if (playing) return;
+    if (recording) setRecording(false);
+    else setRecording(true, "full");
   });
 
   maskCb.addEventListener("change", function () {
