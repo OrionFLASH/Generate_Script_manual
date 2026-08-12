@@ -3504,6 +3504,7 @@ function createDevToolsTrace(opts) {
               var errors = [];
               var createdByValue = String(createdByInput.value || "").trim() || NEWS_V2_CFG.DEFAULT_CREATED_BY;
               var stubMode = !!stubModeCb.checked;
+              var selectedValid = [];
               for (var i = 0; i < selected.length; i++) {
                 if (!String(selected[i].payload.createdBy || "").trim()) {
                   selected[i].payload.createdBy = createdByValue;
@@ -3511,18 +3512,31 @@ function createDevToolsTrace(opts) {
                 var err = validateCreatePayload(selected[i].payload);
                 if (err) {
                   errors.push("[" + (i + 1) + "] " + err + " :: " + compactNewsLabel(selected[i].payload));
+                  continue;
                 }
+                selectedValid.push(selected[i]);
               }
-              if (errors.length) {
-                log("Отмена создания: найдены ошибки в критичных данных.");
+              if (!selectedValid.length) {
+                log("Отмена создания: среди выбранных нет валидных записей.");
                 for (var ei = 0; ei < errors.length; ei++) log("  " + errors[ei]);
                 return;
+              }
+              if (errors.length) {
+                log(
+                  "Часть записей будет пропущена из-за ошибок: " +
+                    errors.length +
+                    " из " +
+                    selected.length +
+                    "."
+                );
+                for (var ei = 0; ei < errors.length; ei++) log("  " + errors[ei]);
               }
 
               var confirmText =
                 "Создать выбранные новости: " +
-                selected.length +
+                selectedValid.length +
                 " шт.?" +
+                (errors.length ? "\nПропустить невалидные: " + errors.length + " шт." : "") +
                 (stubMode ? "\n\nРежим болванки: leadersList и authorsList будут пустыми." : "");
               if (!window.confirm(confirmText)) {
                 log("Создание отменено пользователем.");
@@ -3539,21 +3553,21 @@ function createDevToolsTrace(opts) {
               var abortedByErrors = false;
               var resultDump = [];
               var createdIds = [];
-              var createdObjectIdsByIndex = new Array(selected.length);
+              var createdObjectIdsByIndex = new Array(selectedValid.length);
               clearPublishBox();
               setOpBusy(true, "создание");
               refreshCreateActions();
               try {
-                for (var si = 0; si < selected.length; si++) {
+                for (var si = 0; si < selectedValid.length; si++) {
                   if (isStopRequested()) {
                     stoppedByUser = true;
                     log("Стоп: создание прервано пользователем.");
                     break;
                   }
                   // Болванка очищает списки только в копии для отправки.
-                  var payload = payloadForCreateSend(selected[si].payload, stubMode);
+                  var payload = payloadForCreateSend(selectedValid[si].payload, stubMode);
                   sharedOpStatus.textContent =
-                    "Операции: создание " + (si + 1) + "/" + selected.length;
+                    "Операции: создание " + (si + 1) + "/" + selectedValid.length;
                   var retryResult = await postJsonWithRetry(
                     env.origin + NEWS_V2_CFG.NEWS_CREATE_PATH,
                     payload,
@@ -3624,7 +3638,7 @@ function createDevToolsTrace(opts) {
                       break;
                     }
                   }
-                  if (si < selected.length - 1 && settings.opGapMs > 0) {
+                  if (si < selectedValid.length - 1 && settings.opGapMs > 0) {
                     await delay(settings.opGapMs);
                     if (isStopRequested()) {
                       stoppedByUser = true;
@@ -3643,7 +3657,7 @@ function createDevToolsTrace(opts) {
                   env: env,
                   stubMode: stubMode,
                   settings: settings,
-                  total: selected.length,
+                  total: selectedValid.length,
                   okCount: okCount,
                   failCount: failCount,
                   retriesTotal: retriesTotal,
@@ -3666,7 +3680,7 @@ function createDevToolsTrace(opts) {
                   ".json";
                 downloadJson(
                   createdTemplateName,
-                  buildCreatedNewsTemplate(selected, createdObjectIdsByIndex)
+                  buildCreatedNewsTemplate(selectedValid, createdObjectIdsByIndex)
                 );
                 log(
                   "Сохранён шаблон созданных новостей с новыми objectId/newsId: " +
@@ -3681,6 +3695,8 @@ function createDevToolsTrace(opts) {
                   okCount +
                   ", FAIL=" +
                   failCount +
+                  ", пропущено невалидных=" +
+                  errors.length +
                   ", повторов=" +
                   retriesTotal +
                   (stoppedByUser ? " | стоп" : "") +
