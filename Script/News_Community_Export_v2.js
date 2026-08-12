@@ -2001,32 +2001,51 @@ function createDevToolsTrace(opts) {
       "display:flex;gap:6px;align-items:center;padding:4px 12px;border-bottom:1px solid #e2e8f0;background:#f8fafc;";
     root.appendChild(sharedOpRow);
     var sharedOpStatus = document.createElement("div");
-    sharedOpStatus.style.cssText = "font-size:10px;color:#475569;flex:1;";
+    sharedOpStatus.style.cssText = "font-size:10px;color:#475569;flex:1;min-width:0;";
     sharedOpStatus.textContent = "Операции: ожидание";
     sharedOpRow.appendChild(sharedOpStatus);
 
+    var pauseStateBadge = document.createElement("div");
+    pauseStateBadge.style.cssText =
+      "flex:0 0 auto;padding:3px 8px;border-radius:999px;font-size:10px;font-weight:800;" +
+      "letter-spacing:0.02em;border:1px solid #cbd5e1;background:#f1f5f9;color:#475569;";
+    pauseStateBadge.textContent = "Пауза: ВЫКЛ";
+    sharedOpRow.appendChild(pauseStateBadge);
+
     var opBusy = false;
     var stopRequested = false;
+    var lastBusyLabel = "";
     var btnGlobalPause = document.createElement("button");
     btnGlobalPause.type = "button";
     btnGlobalPause.textContent = "⏸ Пауза";
     btnGlobalPause.style.cssText =
       "padding:4px 8px;border-radius:5px;border:1px solid #d97706;background:#f59e0b;color:#fff;" +
       "font-size:11px;font-weight:700;cursor:pointer;opacity:1;";
-    btnGlobalPause.addEventListener("click", function () {
-      newsV2PauseRequested = !newsV2PauseRequested;
+    function refreshPauseUi() {
       btnGlobalPause.textContent = newsV2PauseRequested ? "▶ Продолжить" : "⏸ Пауза";
       btnGlobalPause.style.background = newsV2PauseRequested ? "#16a34a" : "#f59e0b";
       btnGlobalPause.style.borderColor = newsV2PauseRequested ? "#16a34a" : "#d97706";
+      pauseStateBadge.textContent = newsV2PauseRequested ? "Пауза: ВКЛ" : "Пауза: ВЫКЛ";
+      pauseStateBadge.style.background = newsV2PauseRequested ? "#fef3c7" : "#f1f5f9";
+      pauseStateBadge.style.borderColor = newsV2PauseRequested ? "#f59e0b" : "#cbd5e1";
+      pauseStateBadge.style.color = newsV2PauseRequested ? "#92400e" : "#475569";
+      if (opBusy) {
+        sharedOpStatus.textContent = newsV2PauseRequested
+          ? "Операции: пауза… (" + (lastBusyLabel || "выполняется") + ")"
+          : "Операции: " + (lastBusyLabel || "выполняется…");
+      }
+    }
+    btnGlobalPause.addEventListener("click", function () {
+      newsV2PauseRequested = !newsV2PauseRequested;
+      refreshPauseUi();
       if (newsV2PauseRequested) {
         log("Пауза включена: новые запросы временно не отправляются.");
-        if (opBusy) sharedOpStatus.textContent = "Операции: пауза…";
       } else {
         log("Пауза снята: отправка запросов продолжена.");
-        if (opBusy) sharedOpStatus.textContent = "Операции: выполняется…";
       }
     });
     sharedOpRow.appendChild(btnGlobalPause);
+    refreshPauseUi();
     var btnGlobalStop = document.createElement("button");
     btnGlobalStop.type = "button";
     btnGlobalStop.textContent = "⏹ Стоп";
@@ -2113,9 +2132,15 @@ function createDevToolsTrace(opts) {
       btnGlobalStop.style.opacity = busy ? "1" : "0.55";
       btnGlobalStop.style.cursor = busy ? "pointer" : "not-allowed";
       if (!busy) stopRequested = false;
-      sharedOpStatus.textContent = busy
-        ? "Операции: " + (label || "выполняется…")
-        : "Операции: ожидание";
+      lastBusyLabel = busy ? String(label || "выполняется…") : "";
+      if (!busy) {
+        sharedOpStatus.textContent = "Операции: ожидание";
+      } else if (newsV2PauseRequested) {
+        sharedOpStatus.textContent = "Операции: пауза… (" + lastBusyLabel + ")";
+      } else {
+        sharedOpStatus.textContent = "Операции: " + lastBusyLabel;
+      }
+      refreshPauseUi();
     }
     function isStopRequested() {
       return !!stopRequested;
