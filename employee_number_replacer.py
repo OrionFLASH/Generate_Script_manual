@@ -47,6 +47,15 @@ class ReplacementOccurrence:
     ter_division_name: str
 
 
+@dataclass(frozen=True)
+class CsvFilterRule:
+    """Одно правило фильтрации CSV-строк."""
+
+    business_block: str
+    role_code: str
+    uch_code: str | None
+
+
 # Порядок полей в Excel: сначала все «было», затем все «стало», затем новости, затем файлы.
 BEFORE_FIELD_KEYS: tuple[str, ...] = (
     "employeeNumber",
@@ -122,16 +131,12 @@ def resolve_config_path(cli_config: str | None) -> Path:
 def load_employee_pool(csv_path: Path, cfg: dict[str, Any]) -> dict[str, EmployeeRow]:
     """Считать пул табельных из CSV с фильтрами."""
     delimiter: str = str(cfg.get("csv_delimiter", ";"))
-    filters: dict[str, str] = {
-        "BUSINESS_BLOCK": str(cfg.get("filter_business_block", "KMKKSB")),
-        "ROLE_CODE": str(cfg.get("filter_role_code", "KM_KKSB")),
-        "UCH_CODE": str(cfg.get("filter_uch_code", "1")),
-    }
+    filter_rules: list[CsvFilterRule] = build_csv_filter_rules(cfg)
     pool: dict[str, EmployeeRow] = {}
     with csv_path.open("r", encoding="utf-8-sig", newline="") as fp:
         reader = csv.DictReader(fp, delimiter=delimiter)
         for row in reader:
-            if any(str(row.get(k, "")).strip() != v for k, v in filters.items()):
+            if not any(is_row_matches_rule(row, rule) for rule in filter_rules):
                 continue
             person_number_8: str = normalize_person_number(row.get("PERSON_NUMBER", ""))
             if not person_number_8:
@@ -144,6 +149,103 @@ def load_employee_pool(csv_path: Path, cfg: dict[str, Any]) -> dict[str, Employe
                 tb_code=str(row.get("TB_CODE", "")).strip(),
             )
     return pool
+
+
+def normalize_filter_values(raw_value: Any) -> list[str]:
+    """Нормализовать значение фильтра к списку непустых строк."""
+    if raw_value is None:
+        return []
+    if isinstance(raw_value, list):
+        values: list[str] = []
+        for item in raw_value:
+            text: str = str(item or "").strip()
+            if text:
+                values.append(text)
+        return values
+    text = str(raw_value).strip()
+    if not text:
+        return []
+    return [text]
+
+
+def is_any_uch_value(raw_uch_code: str) -> bool:
+    """Проверить, что в правиле указан «любой UCH_CODE»."""
+    return raw_uch_code.strip().upper() in {"*", "ANY", "ALL"}
+
+
+def build_csv_filter_rules(cfg: dict[str, Any]) -> list[CsvFilterRule]:
+    """
+    Построить правила фильтрации CSV.
+    Поддержка:
+    - filter_rules: [{business_block, role_code, uch_code}]
+    - legacy-поля filter_business_block/filter_role_code/filter_uch_code (строка или список).
+    """
+    raw_rules: Any = cfg.get("filter_rules")
+    parsed_rules: list[CsvFilterRule] = []
+    if isinstance(raw_rules, list):
+        for item in raw_rules:
+            if not isinstance(item, dict):
+                continue
+            business_block: str = str(item.get("business_block", "")).strip()
+            role_code: str = str(item.get("role_code", "")).strip()
+            raw_uch_code: str = str(item.get("uch_code", "")).strip()
+            if not business_block or not role_code:
+                continue
+            uch_code: str | None = None if (not raw_uch_code or is_any_uch_value(raw_uch_code)) else raw_uch_code
+            parsed_rules.append(
+                CsvFilterRule(
+                    business_block=business_block,
+                    role_code=role_code,
+                    uch_code=uch_code,
+                )
+            )
+    if parsed_rules:
+        return parsed_rules
+
+    business_blocks: list[str] = normalize_filter_values(
+        cfg.get("filter_business_block", "KMKKSB")
+    )
+    role_codes: list[str] = normalize_filter_values(cfg.get("filter_role_code", "KM_KKSB"))
+    uch_codes_raw: list[str] = normalize_filter_values(cfg.get("filter_uch_code", "1"))
+
+    if not business_blocks:
+        business_blocks = ["KMKKSB"]
+    if not role_codes:
+        role_codes = ["KM_KKSB"]
+    if not uch_codes_raw:
+        uch_codes_raw = ["1"]
+
+    uch_codes: list[str | None] = []
+    for raw_uch_code in uch_codes_raw:
+        if is_any_uch_value(raw_uch_code):
+            uch_codes.append(None)
+        else:
+            uch_codes.append(raw_uch_code)
+    if not uch_codes:
+        uch_codes = ["1"]
+
+    for business_block in business_blocks:
+        for role_code in role_codes:
+            for uch_code in uch_codes:
+                parsed_rules.append(
+                    CsvFilterRule(
+                        business_block=business_block,
+                        role_code=role_code,
+                        uch_code=uch_code,
+                    )
+                )
+    return parsed_rules
+
+
+def is_row_matches_rule(row: dict[str, Any], rule: CsvFilterRule) -> bool:
+    """Проверить соответствие CSV-строки одному правилу фильтра."""
+    if str(row.get("BUSINESS_BLOCK", "")).strip() != rule.business_block:
+        return False
+    if str(row.get("ROLE_CODE", "")).strip() != rule.role_code:
+        return False
+    if rule.uch_code is None:
+        return True
+    return str(row.get("UCH_CODE", "")).strip() == rule.uch_code
 
 
 def extract_news_id(node: dict[str, Any]) -> str:
