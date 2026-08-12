@@ -561,6 +561,10 @@ function createDevToolsTrace(opts) {
     });
   }
 
+  /** Колбэки паузы (подключаются из панели выгрузки). */
+  var newsExportWaitWhilePaused = async function () {};
+  var newsExportInterruptibleDelay = delay;
+
   function getTimestamp() {
     const d = new Date();
     const p = function (n) {
@@ -797,6 +801,7 @@ function createDevToolsTrace(opts) {
     var retriesDone = 0;
 
     for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      await newsExportWaitWhilePaused();
       if (shouldStop()) {
         return {
           ok: false,
@@ -863,7 +868,18 @@ function createDevToolsTrace(opts) {
           };
         }
         logFn("  пауза " + pauseMs + " мс перед повтором #" + (retriesDone + 1) + "…");
-        if (pauseMs > 0) await delay(pauseMs);
+        if (pauseMs > 0) await newsExportInterruptibleDelay(pauseMs);
+        await newsExportWaitWhilePaused();
+        if (shouldStop()) {
+          return {
+            ok: false,
+            stopped: true,
+            fr: lastFr,
+            error: lastErr,
+            attempts: attempt,
+            retries: retriesDone
+          };
+        }
       }
     }
 
@@ -1214,6 +1230,10 @@ function createDevToolsTrace(opts) {
       title: "Остановить после текущего POST и сохранить уже загруженное",
       disabled: true
     });
+    const btnPause = mkActionBtn("⏸", "Пауза", "#d97706", {
+      title: "Приостановить следующие POST (текущий доработает)",
+      disabled: true
+    });
     const btnClose = mkActionBtn("✕", "Закрыть", "#64748b", {
       title: "Закрыть панель",
       extra: "margin-left:auto;"
@@ -1221,6 +1241,7 @@ function createDevToolsTrace(opts) {
 
     actionBar.appendChild(btnJson);
     actionBar.appendChild(btnCsv);
+    actionBar.appendChild(btnPause);
     actionBar.appendChild(btnStop);
     actionBar.appendChild(btnClose);
     panelScroll.appendChild(actionBar);
@@ -1892,6 +1913,38 @@ function createDevToolsTrace(opts) {
     var fetchBusy = false;
     /** Флаг кнопки «Стоп»: прервать после текущего запроса и сохранить уже загруженное. */
     var stopRequested = false;
+    /** Пользовательская пауза: следующие POST не стартуют, пока не «Продолжить». */
+    var pauseRequested = false;
+
+    /** Ждать снятия паузы (или Стоп). */
+    async function waitWhilePaused() {
+      while (pauseRequested && !stopRequested) {
+        await delay(200);
+      }
+    }
+
+    /** Пауза между запросами с прерыванием по pause/stop (слайсы 200 мс). */
+    async function interruptibleDelay(ms) {
+      var left = Math.max(0, Number(ms) || 0);
+      while (left > 0) {
+        if (stopRequested) return;
+        await waitWhilePaused();
+        if (stopRequested) return;
+        var slice = Math.min(200, left);
+        await delay(slice);
+        left -= slice;
+      }
+    }
+
+    newsExportWaitWhilePaused = waitWhilePaused;
+    newsExportInterruptibleDelay = interruptibleDelay;
+
+    /** Сброс подписи кнопки «Пауза» / «Продолжить». */
+    function resetPauseButtonUi() {
+      btnPause.children[0].textContent = "⏸";
+      btnPause.children[1].textContent = "Пауза";
+      btnPause.style.background = "#d97706";
+    }
 
     function hasRequiredSelection() {
       return (
@@ -1926,6 +1979,7 @@ function createDevToolsTrace(opts) {
 
     function setExportButtonsBusy(busy) {
       btnStop.disabled = !busy;
+      btnPause.disabled = !busy;
       btnClose.disabled = busy;
       btnClose.title = busy
         ? "Закрыть недоступно во время выгрузки — сначала Стоп или дождитесь окончания"
@@ -1934,6 +1988,8 @@ function createDevToolsTrace(opts) {
       btnClose.style.cursor = busy ? "not-allowed" : "pointer";
       btnStop.style.opacity = busy ? "1" : "0.55";
       btnStop.style.cursor = busy ? "pointer" : "not-allowed";
+      btnPause.style.opacity = busy ? "1" : "0.55";
+      btnPause.style.cursor = busy ? "pointer" : "not-allowed";
       if (busy) {
         btnJson.disabled = true;
         btnCsv.disabled = true;
@@ -1942,6 +1998,8 @@ function createDevToolsTrace(opts) {
         btnJson.style.cursor = "wait";
         btnCsv.style.cursor = "wait";
       } else {
+        pauseRequested = false;
+        resetPauseButtonUi();
         refreshRequiredSelectionUi();
       }
     }
@@ -1979,6 +2037,8 @@ function createDevToolsTrace(opts) {
       var combos = buildCombos(sel);
       var prefix = buildExportFilenamePrefix(env.stand, env.contour);
       stopRequested = false;
+      pauseRequested = false;
+      resetPauseButtonUi();
 
       log(
         "Старт (" +
@@ -2047,6 +2107,7 @@ function createDevToolsTrace(opts) {
       var lastExhaustedFail = null;
 
       for (var ci = 0; ci < combos.length; ci++) {
+        await waitWhilePaused();
         if (stopRequested) {
           stoppedByUser = true;
           log("Стоп: дальнейшие комбинации пропущены.");
@@ -2093,6 +2154,7 @@ function createDevToolsTrace(opts) {
         var comboAborted = false;
 
         while (!comboAborted) {
+          await waitWhilePaused();
           if (stopRequested) {
             stoppedByUser = true;
             log("  Стоп: пагинация комбинации прервана.");
@@ -2379,7 +2441,7 @@ function createDevToolsTrace(opts) {
 
           pageNum++;
           if (pageGapMs > 0) {
-            await delay(pageGapMs);
+            await interruptibleDelay(pageGapMs);
             if (stopRequested) {
               stoppedByUser = true;
               log("  Стоп после паузы страницы.");
@@ -2445,7 +2507,7 @@ function createDevToolsTrace(opts) {
         if (stoppedByUser || abortedByErrors) break;
 
         if (ci < combos.length - 1 && payloadGapMs > 0) {
-          await delay(payloadGapMs);
+          await interruptibleDelay(payloadGapMs);
           if (stopRequested) {
             stoppedByUser = true;
             log("Стоп после паузы между payload.");
@@ -2629,6 +2691,8 @@ function createDevToolsTrace(opts) {
       }
       fetchBusy = true;
       stopRequested = false;
+      pauseRequested = false;
+      resetPauseButtonUi();
       setExportButtonsBusy(true);
       lastExportBundle = null;
       try {
@@ -2699,6 +2763,8 @@ function createDevToolsTrace(opts) {
       }
       fetchBusy = true;
       stopRequested = false;
+      pauseRequested = false;
+      resetPauseButtonUi();
       setExportButtonsBusy(true);
       lastExportBundle = null;
       try {
@@ -2765,6 +2831,21 @@ function createDevToolsTrace(opts) {
     btnCsv.addEventListener("click", function () {
       void runNewsCsvExport();
     });
+    btnPause.addEventListener("click", function () {
+      if (!fetchBusy) return;
+      pauseRequested = !pauseRequested;
+      if (pauseRequested) {
+        btnPause.children[0].textContent = "▶";
+        btnPause.children[1].textContent = "Продолжить";
+        btnPause.style.background = "#2563eb";
+        setStats({ tone: "run", phase: "Пауза…" });
+        log("Пауза: следующие POST ждут «Продолжить»");
+      } else {
+        resetPauseButtonUi();
+        setStats({ tone: "run", phase: "выгрузка" });
+        log("Продолжение выгрузки");
+      }
+    });
     btnStop.addEventListener("click", function () {
       if (!fetchBusy) return;
       if (stopRequested) {
@@ -2772,6 +2853,8 @@ function createDevToolsTrace(opts) {
         return;
       }
       stopRequested = true;
+      pauseRequested = false;
+      resetPauseButtonUi();
       setStats({ tone: "stop", phase: "стоп… (ждём POST)" });
       log("Стоп запрошен: после текущего запроса сохраним уже загруженное.");
     });

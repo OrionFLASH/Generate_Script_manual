@@ -764,6 +764,66 @@ function syncFileDlRewardsDateFromPanel() {
 /** Если открыта панель — функция добавления строки в блок лога; иначе `null`. */
 var fileDlPanelLogAppend = null;
 
+/** Идёт пакетная загрузка (несколько jobs подряд). */
+var fileDlBatchInProgress = false;
+/** Запрос остановки текущего пакета — новые jobs не стартуют. */
+var fileDlStopRequested = false;
+/** Пользовательская пауза пакета — новые jobs не стартуют, пока не «Продолжить». */
+var fileDlPauseRequested = false;
+/** Обновление блока живого статуса на панели (null после «Закрыть»). */
+var fileDlPanelSetStatus = null;
+/** Блокировка кнопок паузы/стопа на панели (null после «Закрыть»). */
+var fileDlPanelSetBatchBusy = null;
+
+/**
+ * @param {string} s
+ * @returns {string}
+ */
+function fileDlEscapeHtml(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/**
+ * Безопасный вызов setStatus панели из кода загрузки.
+ * @param {object} info
+ */
+function fileDlPanelSetStatusSafe(info) {
+  if (typeof fileDlPanelSetStatus !== "function") return;
+  try {
+    fileDlPanelSetStatus(info);
+  } catch (_e) {
+    /* ignore */
+  }
+}
+
+/** Ждать снятия паузы или стопа перед следующим job. */
+async function fileDlWaitWhilePaused() {
+  while (fileDlPauseRequested && !fileDlStopRequested) {
+    await delay(200);
+  }
+}
+
+/**
+ * Пауза между файлами с учётом stop/pause (прерывается каждые 200 мс).
+ * @param {number} ms
+ */
+async function fileDlDelayInterruptible(ms) {
+  if (ms <= 0) return;
+  var left = ms;
+  while (left > 0) {
+    if (fileDlStopRequested) return;
+    await fileDlWaitWhilePaused();
+    if (fileDlStopRequested) return;
+    var slice = Math.min(200, left);
+    await delay(slice);
+    left -= slice;
+  }
+}
+
 /**
  * Записывает сообщение в «Журнал работы» на панели; уровень error дополнительно дублируется в console.error.
  * @param {"log"|"warn"|"error"} level
@@ -902,6 +962,15 @@ async function downloadOneJob(job, ctx) {
       (job.id || "—")
   );
 
+  if (fileDlBatchInProgress && idx != null && total != null) {
+    fileDlPanelSetStatusSafe({
+      level: "info",
+      phase: "Загрузка",
+      title: (job.label || job.id || "—") + " · " + (idx + 1) + "/" + total,
+      lines: ["POST file-download…", "Группа: " + groupName]
+    });
+  }
+
   let res;
   try {
     res = await httpFetch(url, {
@@ -912,18 +981,43 @@ async function downloadOneJob(job, ctx) {
     });
   } catch (e) {
     // id задачи уже в предыдущем логе «СТАРТ загрузки» — не дублируем.
+    if (fileDlBatchInProgress && idx != null && total != null) {
+      fileDlPanelSetStatusSafe({
+        level: "err",
+        phase: "Загрузка",
+        title: (job.label || job.id || "—") + " · " + (idx + 1) + "/" + total,
+        lines: ["Ошибка сети / исключение", String(e)]
+      });
+    }
     fileDlPanelEcho("error", "ОШИБКА (сеть / исключение)\n" + String(e));
     _dlExit = { ok: false, error: String(e) };
     return _dlExit;
   }
 
   if (!res.ok) {
+    if (fileDlBatchInProgress && idx != null && total != null) {
+      fileDlPanelSetStatusSafe({
+        level: "warn",
+        phase: "Загрузка",
+        title: (job.label || job.id || "—") + " · " + (idx + 1) + "/" + total,
+        lines: ["HTTP " + res.status + " " + (res.statusText || "")]
+      });
+    }
     fileDlPanelEcho(
       "warn",
       "ОШИБКА HTTP\nСтатус: " + res.status + " " + (res.statusText || "")
     );
     _dlExit = { ok: false, status: res.status };
     return _dlExit;
+  }
+
+  if (fileDlBatchInProgress && idx != null && total != null) {
+    fileDlPanelSetStatusSafe({
+      level: "info",
+      phase: "Загрузка",
+      title: (job.label || job.id || "—") + " · " + (idx + 1) + "/" + total,
+      lines: ["HTTP " + res.status + " OK — сохранение файла…"]
+    });
   }
 
   // Сервер может вернуть HTTP 200 и JSON с success:false (таймаут и т.д.) — не сохранять как файл.
@@ -1032,6 +1126,7 @@ async function downloadOneJob(job, ctx) {
  * Последовательно скачивает задачи из массива с паузой из панели (`fileDlDelayBetweenMs`).
  * @param {object[]} jobs
  * @param {string} logLabel — подпись для консоли (название пакета).
+ * @returns {Promise<{ okCount: number, errCount: number, stoppedEarly: boolean, total: number }>}
  */
 async function downloadJobsSequentially(jobs, logLabel) {
   syncFileDlDelaysFromPanel();
@@ -1057,10 +1152,31 @@ async function downloadJobsSequentially(jobs, logLabel) {
 
   let okCount = 0;
   let errCount = 0;
+  let stoppedEarly = false;
 
   for (let i = 0; i < jobs.length; i++) {
+    await fileDlWaitWhilePaused();
+    if (fileDlStopRequested) {
+      stoppedEarly = true;
+      fileDlPanelEcho(
+        "warn",
+        "ПАКЕТ: " + logLabel + "\nОстановка по запросу перед файлом " + (i + 1) + "/" + total
+      );
+      break;
+    }
+
     const job = jobs[i];
     const groupName = getGroupNameForJob(job);
+    fileDlPanelSetStatusSafe({
+      level: "info",
+      phase: "Загрузка",
+      title: (job.label || job.id || "—") + " · " + (i + 1) + "/" + total,
+      lines: [
+        "Группа: " + groupName,
+        "Успешно: " + okCount + " | ошибок: " + errCount,
+        fileDlPauseRequested ? "⏸ Пауза" : ""
+      ].filter(Boolean)
+    });
     const result = await downloadOneJob(job, {
       groupName: groupName,
       batchName: logLabel,
@@ -1070,12 +1186,12 @@ async function downloadJobsSequentially(jobs, logLabel) {
     if (result.ok) okCount++;
     else errCount++;
 
-    if (i < jobs.length - 1 && pauseMs > 0) {
+    if (i < jobs.length - 1 && pauseMs > 0 && !fileDlStopRequested) {
       fileDlPanelEcho(
         "log",
         "Пауза " + pauseMs + " мс перед файлом " + (i + 2) + "/" + total
       );
-      await delay(pauseMs);
+      await fileDlDelayInterruptible(pauseMs);
     }
   }
 
@@ -1088,7 +1204,8 @@ async function downloadJobsSequentially(jobs, logLabel) {
       "\nУспешно (файл инициирован): " +
       okCount +
       "\nС ошибкой: " +
-      errCount
+      errCount +
+      (stoppedEarly ? "\nОстановлено пользователем (новые задачи не запускались)" : "")
   );
   console.log(
     "[File_DB_Load_GP] Пакет «" +
@@ -1098,14 +1215,17 @@ async function downloadJobsSequentially(jobs, logLabel) {
       ", успешно: " +
       okCount +
       ", ошибок: " +
-      errCount
+      errCount +
+      (stoppedEarly ? ", стоп" : "")
   );
+  return { okCount: okCount, errCount: errCount, stoppedEarly: stoppedEarly, total: total };
 }
 
 /**
  * Пакет с перекрывающимися запросами: интервалы из панели (`fileDlStaggerMinMs`, `fileDlDelayBetweenMs`).
  * @param {object[]} jobs
  * @param {string} logLabel
+ * @returns {Promise<{ okCount: number, errCount: number, stoppedEarly: boolean, total: number }>}
  */
 async function downloadJobsStaggered(jobs, logLabel) {
   syncFileDlDelaysFromPanel();
@@ -1133,9 +1253,36 @@ async function downloadJobsStaggered(jobs, logLabel) {
   );
 
   const promises = [];
+  let stoppedEarly = false;
   for (let i = 0; i < total; i++) {
+    await fileDlWaitWhilePaused();
+    if (fileDlStopRequested) {
+      stoppedEarly = true;
+      fileDlPanelEcho(
+        "warn",
+        "ПАКЕТ: " +
+          logLabel +
+          "\nОстановка по запросу перед стартом задачи " +
+          (i + 1) +
+          "/" +
+          total +
+          " (уже летящие запросы доработают)"
+      );
+      break;
+    }
+
     const job = jobs[i];
     const groupName = getGroupNameForJob(job);
+    fileDlPanelSetStatusSafe({
+      level: "info",
+      phase: "Загрузка",
+      title: (job.label || job.id || "—") + " · " + (i + 1) + "/" + total,
+      lines: [
+        "Скользящий старт · в полёте: " + (promises.length + 1),
+        "Группа: " + groupName,
+        fileDlPauseRequested ? "⏸ Пауза" : ""
+      ].filter(Boolean)
+    });
     const p = downloadOneJob(job, {
       groupName: groupName,
       batchName: logLabel,
@@ -1143,7 +1290,7 @@ async function downloadJobsStaggered(jobs, logLabel) {
       total: total
     });
     promises.push(p);
-    if (i < total - 1) {
+    if (i < total - 1 && !fileDlStopRequested) {
       await Promise.race([
         delay(staggerMs),
         p.then(function (result) {
@@ -1171,7 +1318,8 @@ async function downloadJobsStaggered(jobs, logLabel) {
       "\nУспешно (файл инициирован): " +
       okCount +
       "\nС ошибкой: " +
-      errCount
+      errCount +
+      (stoppedEarly ? "\nОстановлено пользователем (новые старты не выполнялись)" : "")
   );
   console.log(
     "[File_DB_Load_GP] Пакет «" +
@@ -1181,8 +1329,10 @@ async function downloadJobsStaggered(jobs, logLabel) {
       ", успешно: " +
       okCount +
       ", ошибок: " +
-      errCount
+      errCount +
+      (stoppedEarly ? ", стоп" : "")
   );
+  return { okCount: okCount, errCount: errCount, stoppedEarly: stoppedEarly, total: total };
 }
 
 /**
@@ -1192,14 +1342,78 @@ async function downloadJobsStaggered(jobs, logLabel) {
  * @param {boolean} useStagger
  */
 async function downloadJobsBatch(jobs, logLabel, useStagger) {
-  if (useStagger) await downloadJobsStaggered(jobs, logLabel);
-  else await downloadJobsSequentially(jobs, logLabel);
+  if (fileDlBatchInProgress) {
+    fileDlPanelEcho(
+      "warn",
+      "Уже выполняется пакетная загрузка — дождитесь завершения или нажмите «Стоп»."
+    );
+    return;
+  }
+  if (!jobs || jobs.length === 0) return;
+
+  fileDlBatchInProgress = true;
+  fileDlStopRequested = false;
+  fileDlPauseRequested = false;
+  if (typeof fileDlPanelSetBatchBusy === "function") {
+    try {
+      fileDlPanelSetBatchBusy(true);
+    } catch (_e) {
+      /* ignore */
+    }
+  }
+  fileDlPanelSetStatusSafe({
+    level: "info",
+    phase: "Старт",
+    title: logLabel,
+    lines: [
+      "Задач в пакете: " + jobs.length,
+      useStagger ? "Режим: скользящий старт" : "Режим: последовательно"
+    ]
+  });
+
+  var stats;
+  try {
+    if (useStagger) stats = await downloadJobsStaggered(jobs, logLabel);
+    else stats = await downloadJobsSequentially(jobs, logLabel);
+  } finally {
+    fileDlBatchInProgress = false;
+    if (typeof fileDlPanelSetBatchBusy === "function") {
+      try {
+        fileDlPanelSetBatchBusy(false);
+      } catch (_e2) {
+        /* ignore */
+      }
+    }
+  }
+
+  if (stats.stoppedEarly || fileDlStopRequested) {
+    fileDlPanelSetStatusSafe({
+      level: "warn",
+      phase: "Стоп",
+      title: logLabel + " · остановлено",
+      lines: [
+        "Скачано успешно: " + stats.okCount,
+        "С ошибкой: " + stats.errCount,
+        "Уже скачанные файлы остаются в браузере"
+      ]
+    });
+  } else {
+    fileDlPanelSetStatusSafe({
+      level: "ok",
+      phase: "Готово",
+      title: logLabel + " · завершено",
+      lines: [
+        "Успешно: " + stats.okCount + " | ошибок: " + stats.errCount,
+        "Всего задач: " + stats.total
+      ]
+    });
+  }
 }
 
 /** Основные выгрузки + рейтинг + заказы. */
 async function downloadAllJobs() {
   syncFileDlDelaysFromPanel();
-  await downloadJobsSequentially(getAllDownloadJobs(), "«Скачать всё»");
+  await downloadJobsBatch(getAllDownloadJobs(), "«Скачать всё»", false);
 }
 
 /** Только группа «Рейтинг» (10 файлов). */
@@ -1243,6 +1457,11 @@ function fileDlDetachPanelAndResetRuntime() {
   fileDlPanelDelayBetweenInput = null;
   fileDlPanelStaggerInput = null;
   fileDlPanelRewardsDateInput = null;
+  fileDlPanelSetStatus = null;
+  fileDlPanelSetBatchBusy = null;
+  fileDlBatchInProgress = false;
+  fileDlStopRequested = false;
+  fileDlPauseRequested = false;
   FILE_DL_ACTIVE_STAND = DEFAULT_FILE_DL_STAND;
   FILE_DL_ACTIVE_CONTOUR = DEFAULT_FILE_DL_CONTOUR;
   fileDlEmployeeRewardsDateFrom = DEFAULT_EMPLOYEE_REWARDS_DATE_FROM;
@@ -1730,17 +1949,174 @@ function startDownloadPanel() {
 
   container.appendChild(rowRatingOrders);
 
+  const statusEl = document.createElement("div");
+  statusEl.style.cssText =
+    "margin:0 0 6px;padding:8px 10px;border-radius:8px;background:#0f172a;color:#e2e8f0;" +
+    "font-size:11px;line-height:1.45;min-height:72px;box-sizing:border-box;width:100%;";
+  statusEl.innerHTML =
+    '<div style="font-weight:700;margin-bottom:4px;">Готов к загрузке</div>' +
+    '<div style="opacity:.85;font-size:10px;">Отметьте задачи и нажмите «Скачать выделенное» или «Все N».</div>';
+  container.appendChild(statusEl);
+
+  /**
+   * Живой статус пакетной загрузки (стиль Pulse).
+   * @param {{
+   *   level?: "info"|"ok"|"warn"|"err";
+   *   phase?: string;
+   *   title?: string;
+   *   lines?: string[];
+   *   text?: string;
+   * }} info
+   */
+  function setStatus(info) {
+    var colors = {
+      info: { bg: "#0f172a", fg: "#e2e8f0" },
+      ok: { bg: "#064e3b", fg: "#d1fae5" },
+      warn: { bg: "#78350f", fg: "#ffedd5" },
+      err: { bg: "#7f1d1d", fg: "#fee2e2" }
+    };
+    if (typeof info === "string") {
+      info = { text: info, level: arguments[1] || "info" };
+    }
+    var level = (info && info.level) || "info";
+    var c = colors[level] || colors.info;
+    statusEl.style.background = c.bg;
+    statusEl.style.color = c.fg;
+    if (info && info.text && !(info.lines && info.lines.length)) {
+      statusEl.textContent = info.text;
+      return;
+    }
+    var html = "";
+    if (info && info.phase) {
+      html +=
+        '<div style="font-size:9px;letter-spacing:.06em;text-transform:uppercase;opacity:.75;margin-bottom:4px;">' +
+        fileDlEscapeHtml(info.phase) +
+        "</div>";
+    }
+    if (info && info.title) {
+      html +=
+        '<div style="font-weight:800;margin-bottom:4px;">' + fileDlEscapeHtml(info.title) + "</div>";
+    }
+    if (info && info.lines && info.lines.length) {
+      html += '<div style="display:grid;gap:2px;font-size:10px;opacity:.95;">';
+      for (var li = 0; li < info.lines.length; li++) {
+        html += "<div>" + fileDlEscapeHtml(info.lines[li]) + "</div>";
+      }
+      html += "</div>";
+    } else if (info && info.text) {
+      html += "<div>" + fileDlEscapeHtml(info.text) + "</div>";
+    }
+    statusEl.innerHTML = html || "—";
+  }
+  fileDlPanelSetStatus = setStatus;
+
+  const rowBatchCtrl = document.createElement("div");
+  rowBatchCtrl.style.cssText =
+    "display:flex;flex-direction:row;align-items:stretch;gap:6px;margin:0 0 6px;width:100%;box-sizing:border-box;flex-wrap:wrap;";
+
+  const btnCtrlBase =
+    "flex:0 0 auto;min-height:32px;padding:6px 10px;font-size:10px;font-weight:600;cursor:pointer;" +
+    "border-radius:8px;box-sizing:border-box;white-space:nowrap;";
+
   const btnSelected = document.createElement("button");
   btnSelected.type = "button";
   btnSelected.textContent = "Скачать выделенное (по чекбоксам)";
   btnSelected.style.cssText =
-    "display:block;margin:0 0 6px;width:100%;box-sizing:border-box;min-height:32px;padding:6px 10px;" +
-    "font-size:11px;font-weight:600;cursor:pointer;border-radius:8px;border:none;color:#fff;" +
+    "flex:1;min-width:140px;margin:0;min-height:32px;padding:6px 10px;font-size:11px;font-weight:600;cursor:pointer;" +
+    "border-radius:8px;border:none;color:#fff;" +
     "background:linear-gradient(180deg,#22c55e,#16a34a);box-shadow:0 2px 8px rgba(22,163,74,.35);";
   btnSelected.addEventListener("click", function () {
     downloadCheckedPanelJobs(panelCheckboxJobs);
   });
-  container.appendChild(btnSelected);
+  rowBatchCtrl.appendChild(btnSelected);
+
+  const btnPause = document.createElement("button");
+  btnPause.type = "button";
+  btnPause.textContent = "⏸ Пауза";
+  btnPause.disabled = true;
+  btnPause.title = "Приостановить старт следующих задач (текущие запросы доработают)";
+  btnPause.style.cssText =
+    btnCtrlBase + "background:#fffbeb;color:#92400e;border:1px solid #fde68a;opacity:1;";
+
+  const btnStop = document.createElement("button");
+  btnStop.type = "button";
+  btnStop.textContent = "⏹ Стоп";
+  btnStop.disabled = true;
+  btnStop.title = "Остановить пакет — новые задачи не стартуют, скачанные файлы остаются";
+  btnStop.style.cssText =
+    btnCtrlBase + "background:#fff;color:#b91c1c;border:1px solid #fecaca;opacity:1;";
+
+  rowBatchCtrl.appendChild(btnPause);
+  rowBatchCtrl.appendChild(btnStop);
+  container.appendChild(rowBatchCtrl);
+
+  /**
+   * Блокировка кнопок паузы/стопа на время пакетного прогона.
+   * @param {boolean} busy
+   */
+  function setBatchBusyUi(busy) {
+    btnPause.disabled = !busy;
+    btnStop.disabled = !busy;
+    if (!busy) {
+      fileDlPauseRequested = false;
+      btnPause.textContent = "⏸ Пауза";
+      btnPause.style.background = "#fffbeb";
+      btnPause.style.color = "#92400e";
+      btnPause.style.borderColor = "#fde68a";
+    }
+  }
+  fileDlPanelSetBatchBusy = setBatchBusyUi;
+
+  btnPause.addEventListener("click", function () {
+    if (!fileDlBatchInProgress) return;
+    fileDlPauseRequested = !fileDlPauseRequested;
+    if (fileDlPauseRequested) {
+      btnPause.textContent = "▶ Продолжить";
+      btnPause.style.background = "#dbeafe";
+      btnPause.style.color = "#1e40af";
+      btnPause.style.borderColor = "#93c5fd";
+      fileDlPanelEcho("warn", "Пауза: следующие задачи ждут «Продолжить»");
+      setStatus({
+        level: "warn",
+        phase: "Пауза",
+        title: "Загрузка приостановлена",
+        lines: ["Текущие запросы доработают", "Нажмите «Продолжить» для возобновления"]
+      });
+    } else {
+      btnPause.textContent = "⏸ Пауза";
+      btnPause.style.background = "#fffbeb";
+      btnPause.style.color = "#92400e";
+      btnPause.style.borderColor = "#fde68a";
+      fileDlPanelEcho("log", "Продолжение пакетной загрузки");
+      setStatus({
+        level: "info",
+        phase: "Работа",
+        title: "Продолжаем…",
+        lines: ["Пауза снята"]
+      });
+    }
+  });
+
+  btnStop.addEventListener("click", function () {
+    if (!fileDlBatchInProgress) return;
+    fileDlStopRequested = true;
+    fileDlPauseRequested = false;
+    btnPause.textContent = "⏸ Пауза";
+    btnPause.style.background = "#fffbeb";
+    btnPause.style.color = "#92400e";
+    btnPause.style.borderColor = "#fde68a";
+    fileDlPanelEcho("warn", "Запрошена остановка пакета");
+    setStatus({
+      level: "warn",
+      phase: "Стоп",
+      title: "Остановка…",
+      lines: [
+        "Новые задачи не стартуют",
+        "Уже летящие запросы доработают",
+        "Скачанные файлы остаются в браузере"
+      ]
+    });
+  });
 
   const logLab = document.createElement("div");
   logLab.style.cssText =

@@ -566,6 +566,8 @@ function createDevToolsTrace(opts) {
 
   var runInProgress = false;
   var stopRequested = false;
+  /** Пользовательская пауза: запросы не стартуют, пока не «Продолжить». */
+  var pauseRequested = false;
   /** Счётчик запросов для джиттера пауз (сбрасывается на старте прогона). */
   var humanPauseSeq = 0;
 
@@ -619,7 +621,25 @@ function createDevToolsTrace(opts) {
    */
   async function humanDelay(baseMs) {
     var ms = nextHumanPauseMs(baseMs);
-    if (ms > 0) await delay(ms);
+    if (ms <= 0) return;
+    var left = ms;
+    while (left > 0) {
+      if (stopRequested) return;
+      while (pauseRequested && !stopRequested) {
+        await delay(200);
+      }
+      if (stopRequested) return;
+      var slice = Math.min(200, left);
+      await delay(slice);
+      left -= slice;
+    }
+  }
+
+  /** Ждать, пока пользователь не снимет паузу (или Стоп). */
+  async function waitWhilePaused() {
+    while (pauseRequested && !stopRequested) {
+      await delay(200);
+    }
   }
 
   /**
@@ -1166,13 +1186,21 @@ function createDevToolsTrace(opts) {
     box.appendChild(fileRow);
 
     var btnRow = document.createElement("div");
-    btnRow.style.cssText = "display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:0 0 10px 0;";
+    btnRow.style.cssText = "display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin:0 0 10px 0;";
     var bRun = document.createElement("button");
     bRun.type = "button";
     bRun.textContent = "Запуск";
     bRun.style.cssText =
       "min-height:46px;padding:10px;border:none;border-radius:10px;cursor:pointer;font-weight:800;font-size:13px;color:#fff;" +
       "background:linear-gradient(180deg,#0d9488,#0f766e);box-shadow:0 2px 8px rgba(15,118,110,.35);";
+    var bPause = document.createElement("button");
+    bPause.type = "button";
+    bPause.textContent = "⏸ Пауза";
+    bPause.disabled = true;
+    bPause.title = "Приостановить отправку следующих запросов (текущий доработает)";
+    bPause.style.cssText =
+      "min-height:46px;padding:10px;border:1px solid #fde68a;border-radius:10px;cursor:pointer;font-weight:700;font-size:13px;" +
+      "background:#fffbeb;color:#92400e;";
     var bStop = document.createElement("button");
     bStop.type = "button";
     bStop.textContent = "Стоп";
@@ -1181,6 +1209,7 @@ function createDevToolsTrace(opts) {
       "min-height:46px;padding:10px;border:1px solid #fecaca;border-radius:10px;cursor:pointer;font-weight:700;font-size:13px;" +
       "background:#fff;color:#b91c1c;";
     btnRow.appendChild(bRun);
+    btnRow.appendChild(bPause);
     btnRow.appendChild(bStop);
     box.appendChild(btnRow);
 
@@ -1209,6 +1238,14 @@ function createDevToolsTrace(opts) {
       runInProgress = busy;
       bRun.disabled = busy;
       bStop.disabled = !busy;
+      bPause.disabled = !busy;
+      if (!busy) {
+        pauseRequested = false;
+        bPause.textContent = "⏸ Пауза";
+        bPause.style.background = "#fffbeb";
+        bPause.style.color = "#92400e";
+        bPause.style.borderColor = "#fde68a";
+      }
       ta.disabled = busy;
       bFile.disabled = busy;
       fBetween.inp.disabled = busy;
@@ -1231,10 +1268,11 @@ function createDevToolsTrace(opts) {
       var lastErr = "unknown";
       var lastStatus = 0;
       var lastData = null;
-      for (var attempt = 1; attempt <= PULSE_CFG.MAX_RETRY; attempt++) {
-        if (stopRequested) {
-          return { ok: false, status: 0, data: null, error: "остановлено", attempts: attempt };
-        }
+        for (var attempt = 1; attempt <= PULSE_CFG.MAX_RETRY; attempt++) {
+          await waitWhilePaused();
+          if (stopRequested) {
+            return { ok: false, status: 0, data: null, error: "остановлено", attempts: attempt };
+          }
         try {
           var res = await httpFetch(url, {
             method: "GET",
@@ -1528,6 +1566,7 @@ function createDevToolsTrace(opts) {
 
       if (doSearch) {
         for (var qi = 0; qi < queries.length; qi++) {
+          await waitWhilePaused();
           if (stopRequested) {
             appendLog("Остановлено пользователем на фазе Search", "warn");
             break;
@@ -1545,6 +1584,7 @@ function createDevToolsTrace(opts) {
           var searchHardFail = false;
 
           while (true) {
+            await waitWhilePaused();
             if (stopRequested) {
               stopReason = "stopped";
               break;
@@ -1818,6 +1858,7 @@ function createDevToolsTrace(opts) {
 
         appendLog("Фаза mainInfo: уникальных personUuid=" + uuidOrder.length);
         for (var mi = 0; mi < uuidOrder.length; mi++) {
+          await waitWhilePaused();
           if (stopRequested) {
             appendLog("Остановлено на фазе mainInfo", "warn");
             break;
@@ -2089,10 +2130,45 @@ function createDevToolsTrace(opts) {
     }
 
 
+    bPause.addEventListener("click", function () {
+      if (!runInProgress) return;
+      pauseRequested = !pauseRequested;
+      if (pauseRequested) {
+        bPause.textContent = "▶ Продолжить";
+        bPause.style.background = "#dbeafe";
+        bPause.style.color = "#1e40af";
+        bPause.style.borderColor = "#93c5fd";
+        appendLog("Пауза: следующие запросы ждут «Продолжить»", "warn");
+        setStatus({
+          level: "warn",
+          phase: "Пауза",
+          title: "Выгрузка приостановлена",
+          lines: ["Текущий запрос доработает", "Нажмите «Продолжить» для возобновления"]
+        });
+      } else {
+        bPause.textContent = "⏸ Пауза";
+        bPause.style.background = "#fffbeb";
+        bPause.style.color = "#92400e";
+        bPause.style.borderColor = "#fde68a";
+        appendLog("Продолжение выгрузки", "ok");
+        setStatus({
+          level: "info",
+          phase: "Работа",
+          title: "Продолжаем…",
+          lines: ["Пауза снята"]
+        });
+      }
+    });
+
     bStop.addEventListener("click", function () {
       stopRequested = true;
+      pauseRequested = false;
+      bPause.textContent = "⏸ Пауза";
+      bPause.style.background = "#fffbeb";
+      bPause.style.color = "#92400e";
+      bPause.style.borderColor = "#fde68a";
       appendLog("Запрошена остановка", "warn");
-      setStatus({ level: "warn", phase: "Стоп", title: "Остановка…", lines: ["Ожидание завершения текущего запроса"] });
+      setStatus({ level: "warn", phase: "Стоп", title: "Остановка…", lines: ["Ожидание завершения текущего запроса", "Уже собранное будет сохранено"] });
     });
 
     bRun.addEventListener("click", async function () {
@@ -2132,6 +2208,7 @@ function createDevToolsTrace(opts) {
         return;
       }
       stopRequested = false;
+      pauseRequested = false;
       setBusy(true);
       try {
         await runOeExport(

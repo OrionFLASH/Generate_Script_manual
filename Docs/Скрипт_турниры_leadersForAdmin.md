@@ -106,5 +106,6 @@
 | 1.21 | §6–7: связка ошибки с функциями экспорта; в таблицу функций — `buildTournamentWrappedErrorRecord`, `getExportErrorPayload`. |
 | 1.22 | Единое название **«Журнал работы»**; лента не дублируется в `console.log`; пропуски без тела и замечания по CSV — в журнале; итог выгрузки — кратко в консоли; у `codesFromCsvByColumns` — опциональный колбэк предупреждений в журнал. |
 | 1.23 | Добавлен выбор пары окружения: **стенд `PROM/PSI`** и **контур `ALPHA/SIGMA`**; URL берётся из `TOURNAMENT_BASE[STAND][CONTOUR]`, авто-префикс файла — `leadersForAdmin_{STAND}_{CONTOUR}_`. |
+| 1.24 | Панель живой статистики (phase/title/lines); **⏸ Пауза / ▶ Продолжить**; **⏹ Стоп** с сохранением `_partial` JSON. |
 
 *Актуальность проверяйте по `Script/Tournament_LeadersForAdmin.js`.*

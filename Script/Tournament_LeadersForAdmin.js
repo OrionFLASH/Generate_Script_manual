@@ -820,6 +820,83 @@ function startTournamentPanel() {
     "Каждая кнопка сразу запускает выгрузку. Для .txt и CSV сначала откроется выбор файла. Стенд, контур, префикс имени файла и паузу задайте до нажатия. В JSON попадают и ошибки, и «0 участников»; без тела ответа при HTTP OK строка не пишется; файл из одного «{}» не создаётся. Ход выгрузки — в «Журнал работы»; в консоли — кратко о старте и итоге.";
   root.appendChild(titleSub);
 
+  const statusEl = document.createElement("div");
+  statusEl.style.cssText =
+    "margin:0 0 10px 0;padding:10px 12px;border-radius:10px;background:#0f172a;color:#e2e8f0;" +
+    "font-size:12px;line-height:1.45;min-height:88px;box-sizing:border-box;";
+  statusEl.innerHTML =
+    '<div style="font-weight:700;margin-bottom:6px;">Готов к запуску</div>' +
+    '<div style="opacity:.85;font-size:11px;">Выберите источник кодов и нажмите кнопку выгрузки ниже.</div>';
+  root.appendChild(statusEl);
+
+  /**
+   * Структурированный статус текущего прогона (стиль как в Pulse).
+   * @param {{
+   *   level?: "info"|"ok"|"warn"|"err";
+   *   phase?: string;
+   *   title?: string;
+   *   lines?: string[];
+   *   text?: string;
+   * }} info
+   */
+  function setStatus(info) {
+    var colors = {
+      info: { bg: "#0f172a", fg: "#e2e8f0" },
+      ok: { bg: "#064e3b", fg: "#d1fae5" },
+      warn: { bg: "#78350f", fg: "#ffedd5" },
+      err: { bg: "#7f1d1d", fg: "#fee2e2" }
+    };
+    if (typeof info === "string") {
+      info = { text: info, level: arguments[1] || "info" };
+    }
+    var level = (info && info.level) || "info";
+    var c = colors[level] || colors.info;
+    statusEl.style.background = c.bg;
+    statusEl.style.color = c.fg;
+    if (info && info.text && !(info.lines && info.lines.length)) {
+      statusEl.textContent = info.text;
+      return;
+    }
+    function escapeHtml(s) {
+      return String(s == null ? "" : s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+    var html = "";
+    if (info && info.phase) {
+      html +=
+        '<div style="font-size:10px;letter-spacing:.06em;text-transform:uppercase;opacity:.75;margin-bottom:4px;">' +
+        escapeHtml(info.phase) +
+        "</div>";
+    }
+    if (info && info.title) {
+      html += '<div style="font-weight:800;margin-bottom:6px;">' + escapeHtml(info.title) + "</div>";
+    }
+    if (info && info.lines && info.lines.length) {
+      html += '<div style="display:grid;gap:3px;font-size:11px;opacity:.95;">';
+      for (var li = 0; li < info.lines.length; li++) {
+        html += "<div>" + escapeHtml(info.lines[li]) + "</div>";
+      }
+      html += "</div>";
+    } else if (info && info.text) {
+      html += "<div>" + escapeHtml(info.text) + "</div>";
+    }
+    statusEl.innerHTML = html || "—";
+  }
+
+  /** Флаги управления выгрузкой (пауза / стоп). */
+  var stopRequested = false;
+  var pauseRequested = false;
+
+  /** Ждать снятия паузы или стопа. */
+  async function waitWhilePaused() {
+    while (pauseRequested && !stopRequested) {
+      await delay(200);
+    }
+  }
+
   const stRow = document.createElement("div");
   stRow.style.cssText =
     "display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap;font-size:12px;color:#111827;" +
@@ -1049,6 +1126,144 @@ function startTournamentPanel() {
   /** Защита от повторного запуска, пока идёт цикл fetch. */
   var exportBusy = false;
 
+  /** Кнопки запуска выгрузки — для блокировки на время прогона. */
+  var exportLaunchButtons = [];
+
+  /**
+   * Сохраняет собранные results в JSON и пишет итог в лог.
+   * @param {Record<string, unknown>} results
+   * @param {string} prefixForFile
+   * @param {string} sourceTag
+   * @param {{ savedCount: number, skipped: number, errors: number, stoppedEarly?: boolean }} stats
+   * @returns {string|null} имя файла или null если не сохранено
+   */
+  function finalizeExportResults(results, prefixForFile, sourceTag, stats) {
+    const savedCount = stats.savedCount;
+    const skipped = stats.skipped;
+    const errors = stats.errors;
+    const stoppedEarly = !!stats.stoppedEarly;
+
+    if (savedCount === 0 || Object.keys(results).length === 0) {
+      if (stoppedEarly) {
+        log(
+          "Остановлено: нечего сохранять (все ответы без тела при OK или сбой до записи). Пропусков: " +
+            skipped +
+            ", исключений: " +
+            errors +
+            "."
+        );
+        setStatus({
+          level: "warn",
+          phase: "Стоп",
+          title: "Остановлено пользователем",
+          lines: ["Файл не создан — нет записей для сохранения", "Пропусков: " + skipped + ", исключений: " + errors]
+        });
+      } else {
+        log(
+          "Файл не создан: нечего записать (все ответы без тела при OK или сбой до записи). Пропусков: " +
+            skipped +
+            ", исключений: " +
+            errors +
+            "."
+        );
+        console.log(
+          "[Турниры leadersForAdmin] Файл не создан. Пропусков: " + skipped + " | исключений: " + errors
+        );
+      }
+      return null;
+    }
+
+    const jsonOut = JSON.stringify(results);
+    if (jsonOut === "{}" || jsonOut.trim() === "{}") {
+      log("Файл не создан: итоговый объект пустой {}.");
+      console.log("[Турниры leadersForAdmin] Файл не создан: пустой объект {}.");
+      return null;
+    }
+
+    const fname = prefixForFile + getTimestamp() + (stoppedEarly ? "_partial" : "") + ".json";
+    let totalEmp = 0;
+    const perTournament = [];
+    Object.keys(results).forEach(function (k) {
+      const pack = results[k];
+      const rootData = pack && pack[0];
+      const em = countEmployeeNumberFieldsInTree(rootData);
+      totalEmp += em;
+      var line = "«" + k + "»:";
+      const errP = getExportErrorPayload(rootData);
+      if (errP) {
+        line +=
+          " ERROR, код " +
+          (errP.code != null ? String(errP.code) : "?") +
+          ", employeeNumber=" +
+          em;
+      } else if (rootData && rootData.success === false && rootData.body && rootData.body.tournament) {
+        var t = rootData.body.tournament;
+        line +=
+          " " +
+          (t.contestants != null ? String(t.contestants) : "0 участников") +
+          ", leaders=" +
+          (Array.isArray(t.leaders) ? t.leaders.length : 0) +
+          ", employeeNumber=" +
+          em;
+      } else {
+        const lc = countLeadersInResponseData(rootData);
+        line += " leaders=" + (lc == null ? "?" : lc) + ", employeeNumber=" + em;
+      }
+      perTournament.push(line);
+    });
+    downloadJson(fname, results);
+    log(
+      (stoppedEarly ? "Частичная выгрузка (_partial)" : "Готово") +
+        " («" +
+        (sourceTag || "") +
+        "»). Записей в файле: " +
+        savedCount +
+        " | Σ employeeNumber по дереву: " +
+        totalEmp +
+        " | пропусков (без тела): " +
+        skipped +
+        ", исключений: " +
+        errors +
+        "."
+    );
+    log("  Детально по турнирам в файле: " + perTournament.join(" | "));
+    log("  Файл: " + fname);
+    console.log(
+      "[Турниры leadersForAdmin] " +
+        (stoppedEarly ? "Частично сохранено. " : "Готово. ") +
+        "Файл: " +
+        fname +
+        " | записей в файле: " +
+        savedCount +
+        " | пропусков (без тела): " +
+        skipped +
+        " | исключений: " +
+        errors +
+        " | Σ employeeNumber по дереву: " +
+        totalEmp
+    );
+    if (stoppedEarly) {
+      setStatus({
+        level: "warn",
+        phase: "Стоп",
+        title: "Остановлено пользователем",
+        lines: [
+          "Сохранено записей: " + savedCount,
+          "Файл: " + fname,
+          "Пропусков: " + skipped + ", исключений: " + errors
+        ]
+      });
+    } else {
+      setStatus({
+        level: "ok",
+        phase: "Готово",
+        title: "Выгрузка завершена",
+        lines: ["Записей в файле: " + savedCount, "Файл: " + fname]
+      });
+    }
+    return fname;
+  }
+
   /**
    * Общий цикл выгрузки по уже собранному списку кодов турнира.
    * @param {string[]} ids
@@ -1061,9 +1276,18 @@ function startTournamentPanel() {
     }
     if (!ids || ids.length === 0) {
       log("Нет кодов турнира (" + (sourceTag || "") + ").");
+      setStatus({
+        level: "err",
+        phase: "Ошибка",
+        title: "Нет кодов турнира",
+        lines: ["Проверьте поле, файл или CSV"]
+      });
       return;
     }
     exportBusy = true;
+    stopRequested = false;
+    pauseRequested = false;
+    setExportBusyUi(true);
     try {
       var env = getTournamentEnv();
       var standKey = env.stand;
@@ -1081,6 +1305,16 @@ function startTournamentPanel() {
           contourKey +
           ". Подробности — в «Журнал работы»."
       );
+      setStatus({
+        level: "info",
+        phase: "Старт",
+        title: "Выгрузка запущена",
+        lines: [
+          "Источник: " + (sourceTag || "—"),
+          "Кодов в очереди: " + ids.length,
+          "Стенд/контур: " + standKey + "/" + contourKey
+        ]
+      });
       log(
         "Старт выгрузки | источник: " +
           (sourceTag || "") +
@@ -1100,11 +1334,28 @@ function startTournamentPanel() {
       let savedCount = 0;
       let skipped = 0;
       let errors = 0;
+      let stoppedEarly = false;
       /** Только ответы без тела при HTTP OK — в файл не пишутся. */
       const skippedNotSaved = [];
 
       for (let i = 0; i < ids.length; i++) {
+        await waitWhilePaused();
+        if (stopRequested) {
+          stoppedEarly = true;
+          log("Остановка по запросу пользователя на позиции " + (i + 1) + " из " + ids.length);
+          break;
+        }
+
         const tid = ids[i];
+        setStatus({
+          level: "info",
+          phase: "Выгрузка leadersForAdmin",
+          title: "Турнир " + (i + 1) + " из " + ids.length,
+          lines: [
+            "Код: " + tid,
+            "В файле уже: " + savedCount + " | пропусков: " + skipped + " | исключений: " + errors
+          ]
+        });
         log("[" + (i + 1) + "/" + ids.length + "] " + tid);
         try {
           const fr = await fetchLeadersForAdmin(baseUrl, tid);
@@ -1162,7 +1413,7 @@ function startTournamentPanel() {
           log("[исключение] " + tid + (e && e.message ? ": " + e.message : ""));
           errors++;
         }
-        if (i < ids.length - 1) await delay(gapMs);
+        if (i < ids.length - 1 && gapMs > 0 && !stopRequested) await delay(gapMs);
       }
 
       if (skippedNotSaved.length > 0) {
@@ -1178,88 +1429,15 @@ function startTournamentPanel() {
         );
       }
 
-      if (savedCount === 0 || Object.keys(results).length === 0) {
-        log(
-          "Файл не создан: нечего записать (все ответы без тела при OK или сбой до записи). Пропусков: " +
-            skipped +
-            ", исключений: " +
-            errors +
-            "."
-        );
-        console.log(
-          "[Турниры leadersForAdmin] Файл не создан. Пропусков: " + skipped + " | исключений: " + errors
-        );
-        return;
-      }
-
-      const jsonOut = JSON.stringify(results);
-      if (jsonOut === "{}" || jsonOut.trim() === "{}") {
-        log("Файл не создан: итоговый объект пустой {}.");
-        console.log("[Турниры leadersForAdmin] Файл не создан: пустой объект {}.");
-        return;
-      }
-
-      const fname = prefixForFile + getTimestamp() + ".json";
-      let totalEmp = 0;
-      const perTournament = [];
-      Object.keys(results).forEach(function (k) {
-        const pack = results[k];
-        const rootData = pack && pack[0];
-        const em = countEmployeeNumberFieldsInTree(rootData);
-        totalEmp += em;
-        var line = "«" + k + "»:";
-        const errP = getExportErrorPayload(rootData);
-        if (errP) {
-          line +=
-            " ERROR, код " +
-            (errP.code != null ? String(errP.code) : "?") +
-            ", employeeNumber=" +
-            em;
-        } else if (rootData && rootData.success === false && rootData.body && rootData.body.tournament) {
-          var t = rootData.body.tournament;
-          line +=
-            " " +
-            (t.contestants != null ? String(t.contestants) : "0 участников") +
-            ", leaders=" +
-            (Array.isArray(t.leaders) ? t.leaders.length : 0) +
-            ", employeeNumber=" +
-            em;
-        } else {
-          const lc = countLeadersInResponseData(rootData);
-          line += " leaders=" + (lc == null ? "?" : lc) + ", employeeNumber=" + em;
-        }
-        perTournament.push(line);
+      finalizeExportResults(results, prefixForFile, sourceTag, {
+        savedCount: savedCount,
+        skipped: skipped,
+        errors: errors,
+        stoppedEarly: stoppedEarly
       });
-      downloadJson(fname, results);
-      log(
-        "Готово («" +
-          (sourceTag || "") +
-          "»). Записей в файле: " +
-          savedCount +
-          " | Σ employeeNumber по дереву: " +
-          totalEmp +
-          " | пропусков (без тела): " +
-          skipped +
-          ", исключений: " +
-          errors +
-          "."
-      );
-      log("  Детально по турнирам в файле: " + perTournament.join(" | "));
-      log("  Файл: " + fname);
-      console.log(
-        "[Турниры leadersForAdmin] Готово. Файл: " +
-          fname +
-          " | записей в файле: " +
-          savedCount +
-          " | пропусков (без тела): " +
-          skipped +
-          " | исключений: " +
-          errors +
-          " | Σ employeeNumber по дереву: " +
-          totalEmp
-      );
     } finally {
       exportBusy = false;
+      setExportBusyUi(false);
     }
   }
 
@@ -1286,6 +1464,7 @@ function startTournamentPanel() {
     b.style.cssText = btnBase + "background:" + bg + ";";
     b.addEventListener("click", onClick);
     actionGrid.appendChild(b);
+    exportLaunchButtons.push(b);
     return b;
   }
 
@@ -1333,8 +1512,100 @@ function startTournamentPanel() {
     fileInputTxtRun.click();
   });
   actionGrid.appendChild(btnTxtFile);
+  exportLaunchButtons.push(btnTxtFile);
+
+  const rowCtrlBtns = document.createElement("div");
+  rowCtrlBtns.style.cssText =
+    "display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:0 0 10px 0;align-items:stretch;";
+
+  const btnPause = document.createElement("button");
+  btnPause.type = "button";
+  btnPause.textContent = "⏸ Пауза";
+  btnPause.disabled = true;
+  btnPause.title = "Приостановить следующие запросы (текущий доработает)";
+  btnPause.style.cssText =
+    btnBase +
+    "background:#fffbeb;color:#92400e;border:1px solid #fde68a;cursor:pointer;opacity:1;";
+
+  const btnStop = document.createElement("button");
+  btnStop.type = "button";
+  btnStop.textContent = "⏹ Стоп";
+  btnStop.disabled = true;
+  btnStop.title = "Остановить выгрузку и сохранить уже собранное";
+  btnStop.style.cssText =
+    btnBase + "background:#fff;color:#b91c1c;border:1px solid #fecaca;cursor:pointer;opacity:1;";
+
+  rowCtrlBtns.appendChild(btnPause);
+  rowCtrlBtns.appendChild(btnStop);
+
+  /**
+   * Блокировка кнопок запуска и управления на время прогона.
+   * @param {boolean} busy
+   */
+  function setExportBusyUi(busy) {
+    exportLaunchButtons.forEach(function (b) {
+      b.disabled = busy;
+    });
+    btnPause.disabled = !busy;
+    btnStop.disabled = !busy;
+    if (!busy) {
+      pauseRequested = false;
+      btnPause.textContent = "⏸ Пауза";
+      btnPause.style.background = "#fffbeb";
+      btnPause.style.color = "#92400e";
+      btnPause.style.borderColor = "#fde68a";
+    }
+  }
+
+  btnPause.addEventListener("click", function () {
+    if (!exportBusy) return;
+    pauseRequested = !pauseRequested;
+    if (pauseRequested) {
+      btnPause.textContent = "▶ Продолжить";
+      btnPause.style.background = "#dbeafe";
+      btnPause.style.color = "#1e40af";
+      btnPause.style.borderColor = "#93c5fd";
+      log("Пауза: следующие запросы ждут «Продолжить»");
+      setStatus({
+        level: "warn",
+        phase: "Пауза",
+        title: "Выгрузка приостановлена",
+        lines: ["Текущий запрос доработает", "Нажмите «Продолжить» для возобновления"]
+      });
+    } else {
+      btnPause.textContent = "⏸ Пауза";
+      btnPause.style.background = "#fffbeb";
+      btnPause.style.color = "#92400e";
+      btnPause.style.borderColor = "#fde68a";
+      log("Продолжение выгрузки");
+      setStatus({
+        level: "info",
+        phase: "Работа",
+        title: "Продолжаем…",
+        lines: ["Пауза снята"]
+      });
+    }
+  });
+
+  btnStop.addEventListener("click", function () {
+    if (!exportBusy) return;
+    stopRequested = true;
+    pauseRequested = false;
+    btnPause.textContent = "⏸ Пауза";
+    btnPause.style.background = "#fffbeb";
+    btnPause.style.color = "#92400e";
+    btnPause.style.borderColor = "#fde68a";
+    log("Запрошена остановка выгрузки");
+    setStatus({
+      level: "warn",
+      phase: "Стоп",
+      title: "Остановка…",
+      lines: ["Ожидание завершения текущего запроса", "Уже собранное будет сохранено"]
+    });
+  });
 
   panelScroll.appendChild(actionGrid);
+  panelScroll.appendChild(rowCtrlBtns);
 
   /**
    * Чекбоксы фильтра статусов CSV.
@@ -1539,6 +1810,7 @@ function startTournamentPanel() {
     btnCsvFile.addEventListener("click", function () {
       fileInLocal.click();
     });
+    exportLaunchButtons.push(btnCsvFile);
 
     col.appendChild(fileInLocal);
     col.appendChild(filtWrap);

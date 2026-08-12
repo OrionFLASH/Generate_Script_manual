@@ -466,6 +466,15 @@ function getProfileEnv() {
 /** Приёмник строк лога панели «Профили героев»; null после «Закрыть» или снятия панели. */
 var profileGpPanelLogAppend = null;
 
+/** Флаги управления прогоном сбора (пауза / стоп). */
+var collectStopRequested = false;
+var collectPauseRequested = false;
+var collectRunInProgress = false;
+
+/** Колбэки панели (назначаются в startWithChoice). */
+var collectPanelSetStatus = null;
+var collectPanelSetBusy = null;
+
 /**
  * Записывает сообщение в «Журнал работы» на панели (аргументы склеиваются через пробел).
  * Уровень error дополнительно выводится в console.error.
@@ -529,6 +538,13 @@ function delay(ms) {
   return new Promise(function (resolve) {
     setTimeout(resolve, ms);
   });
+}
+
+/** Ждать снятия паузы или стопа. */
+async function waitWhilePausedCollect() {
+  while (collectPauseRequested && !collectStopRequested) {
+    await delay(200);
+  }
 }
 
 function getTimestamp() {
@@ -819,7 +835,13 @@ async function fetchProfileByTN(tn, cfg) {
   };
 }
 
-function saveJsonToFile(data, baseName, partIndex) {
+/**
+ * @param {unknown[]} data
+ * @param {string} baseName
+ * @param {number|null|undefined} partIndex
+ * @param {{ partial?: boolean }} [saveOpts]
+ */
+function saveJsonToFile(data, baseName, partIndex, saveOpts) {
   const jsonString = JSON.stringify(data);
   const sizeBytes = new TextEncoder().encode(jsonString).length;
   const blob = new Blob([jsonString], { type: "application/json" });
@@ -827,8 +849,10 @@ function saveJsonToFile(data, baseName, partIndex) {
   const a = document.createElement("a");
   const ts = getTimestamp();
   const part = partIndex != null ? "_part" + partIndex : "";
+  const partialTag = saveOpts && saveOpts.partial ? "_partial" : "";
   const env = getProfileEnv();
-  const filename = (baseName || "data") + "_" + env.stand + "_" + env.contour + part + "_" + ts + ".json";
+  const filename =
+    (baseName || "data") + "_" + env.stand + "_" + env.contour + part + partialTag + "_" + ts + ".json";
 
   profileGpPanelEcho(
     "log",
@@ -861,6 +885,10 @@ function saveJsonToFile(data, baseName, partIndex) {
  * @param {object} [runOpts] — опции прогона; при отсутствии — getDefaultRunOptions().
  */
 async function runCollectProfiles(tabNums, runOpts) {
+  if (collectRunInProgress) {
+    profileGpPanelEcho("warn", "Сбор уже выполняется, дождитесь окончания.");
+    return;
+  }
   const cfg = normalizeRunOptions(runOpts);
   const list = tabNums && tabNums.length > 0 ? tabNums : [];
   if (list.length === 0) {
@@ -868,14 +896,36 @@ async function runCollectProfiles(tabNums, runOpts) {
       "warn",
       "Нет табельных номеров для обработки (файл пустой или не содержит чисел). Сбор не выполнен."
     );
+    if (typeof collectPanelSetStatus === "function") {
+      collectPanelSetStatus({
+        level: "err",
+        phase: "Ошибка",
+        title: "Нет табельных номеров",
+        lines: ["Проверьте поле, файл или массив TAB_NUMS"]
+      });
+    }
     return;
   }
+
+  collectStopRequested = false;
+  collectPauseRequested = false;
+  collectRunInProgress = true;
+  if (typeof collectPanelSetBusy === "function") collectPanelSetBusy(true);
 
   console.log(
     "[Профили героев] Сбор запущен. ТН: " +
       list.length +
       ". Подробности — в «Журнал работы» на панели. Идёт обработка…"
   );
+
+  if (typeof collectPanelSetStatus === "function") {
+    collectPanelSetStatus({
+      level: "info",
+      phase: "Старт",
+      title: "Сбор профилей запущен",
+      lines: ["Всего ТН: " + list.length, "Стенд/контур: " + getProfileEnv().stand + "/" + getProfileEnv().contour]
+    });
+  }
 
   // Освобождаем старые blob:URL со ссылок прошлого прогона (панель).
   if (cfg.photoDownloadLinkHost) {
@@ -895,136 +945,200 @@ async function runCollectProfiles(tabNums, runOpts) {
   let totalErr = 0;
   let totalSizeBefore = 0;
   let totalSizeAfter = 0;
+  let stoppedEarly = false;
 
-  profileGpPanelEcho("log", "——— Старт сбора ———");
-  profileGpPanelEcho("log", "Старт. Всего ТН к обработке:", list.length);
-  var envRun = getProfileEnv();
-  profileGpPanelEcho("log", "Стенд/контур:", envRun.stand + "/" + envRun.contour, "| URL:", envRun.origin + PROFILE_PATH);
-  profileGpPanelEcho(
-    "log",
-    "Параметры | задержка мс:",
-    cfg.requestDelayMs,
-    "| retry:",
-    cfg.enableRetry,
-    "| maxRetries:",
-    cfg.maxRetries,
-    "| retryDelay мс:",
-    cfg.retryDelayOnErrorMs,
-    "| batch:",
-    cfg.batchSize,
-    "| имя файла:",
-    cfg.outputBaseName,
-    "| фото DL:",
-    cfg.enablePhotoDownload,
-    "| strip:",
-    cfg.enablePhotoStrip
-  );
+  try {
+    profileGpPanelEcho("log", "——— Старт сбора ———");
+    profileGpPanelEcho("log", "Старт. Всего ТН к обработке:", list.length);
+    var envRun = getProfileEnv();
+    profileGpPanelEcho("log", "Стенд/контур:", envRun.stand + "/" + envRun.contour, "| URL:", envRun.origin + PROFILE_PATH);
+    profileGpPanelEcho(
+      "log",
+      "Параметры | задержка мс:",
+      cfg.requestDelayMs,
+      "| retry:",
+      cfg.enableRetry,
+      "| maxRetries:",
+      cfg.maxRetries,
+      "| retryDelay мс:",
+      cfg.retryDelayOnErrorMs,
+      "| batch:",
+      cfg.batchSize,
+      "| имя файла:",
+      cfg.outputBaseName,
+      "| фото DL:",
+      cfg.enablePhotoDownload,
+      "| strip:",
+      cfg.enablePhotoStrip
+    );
 
-  for (let i = 0; i < list.length; i++) {
-    const tn = list[i];
-    profileGpPanelEcho("log", "Запрос", i + 1, "/", list.length, "— ТН", tn);
+    for (let i = 0; i < list.length; i++) {
+      await waitWhilePausedCollect();
+      if (collectStopRequested) {
+        stoppedEarly = true;
+        profileGpPanelEcho("warn", "Остановка по запросу пользователя на позиции", i + 1, "из", list.length);
+        break;
+      }
 
-    try {
-      const retries = cfg.enableRetry ? cfg.maxRetries : 0;
-      const maxAttempts = 1 + retries;
-      let r = null;
+      const tn = list[i];
+      if (typeof collectPanelSetStatus === "function") {
+        collectPanelSetStatus({
+          level: "info",
+          phase: "Сбор профилей",
+          title: "ТН " + (i + 1) + " из " + list.length,
+          lines: [
+            "Табельный: " + tn,
+            "Обработано: " + totalCount + " | OK: " + totalOk + " | ошибок: " + totalErr,
+            "Текущий батч: " + batch.length + " / " + cfg.batchSize
+          ]
+        });
+      }
+      profileGpPanelEcho("log", "Запрос", i + 1, "/", list.length, "— ТН", tn);
 
-      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        try {
-          r = await fetchProfileByTN(tn, cfg);
-        } catch (reqErr) {
-          r = { tn: tn, error: true, exception: String(reqErr) };
-        }
+      try {
+        const retries = cfg.enableRetry ? cfg.maxRetries : 0;
+        const maxAttempts = 1 + retries;
+        let r = null;
 
-        // Успех — завершаем цикл попыток.
-        if (!r.error) {
-          if (attempt > 1) {
-            profileGpPanelEcho("log", "TN", tn, "| OK после", attempt, "-й попытки");
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+          try {
+            r = await fetchProfileByTN(tn, cfg);
+          } catch (reqErr) {
+            r = { tn: tn, error: true, exception: String(reqErr) };
           }
-          break;
-        }
 
-        // Ошибка и попытки закончились — фиксируем как итоговую ошибку.
-        if (attempt >= maxAttempts) {
+          // Успех — завершаем цикл попыток.
+          if (!r.error) {
+            if (attempt > 1) {
+              profileGpPanelEcho("log", "TN", tn, "| OK после", attempt, "-й попытки");
+            }
+            break;
+          }
+
+          // Ошибка и попытки закончились — фиксируем как итоговую ошибку.
+          if (attempt >= maxAttempts) {
+            profileGpPanelEcho(
+              "log",
+              "TN",
+              tn,
+              "| ERROR после",
+              attempt,
+              "-й попытки | status:",
+              r.status || "n/a"
+            );
+            break;
+          }
+
+          // Ошибка и есть ещё попытки — ждём и повторяем.
           profileGpPanelEcho(
-            "log",
+            "warn",
             "TN",
             tn,
-            "| ERROR после",
+            "| Ошибка на",
             attempt,
-            "-й попытки | status:",
-            r.status || "n/a"
+            "-й попытке. Повтор через",
+            cfg.retryDelayOnErrorMs,
+            "мс"
           );
-          break;
+          if (cfg.retryDelayOnErrorMs > 0) {
+            await delay(cfg.retryDelayOnErrorMs);
+          }
         }
 
-        // Ошибка и есть ещё попытки — ждём и повторяем.
-        profileGpPanelEcho(
-          "warn",
-          "TN",
-          tn,
-          "| Ошибка на",
-          attempt,
-          "-й попытке. Повтор через",
-          cfg.retryDelayOnErrorMs,
-          "мс"
-        );
-        if (cfg.retryDelayOnErrorMs > 0) {
-          await delay(cfg.retryDelayOnErrorMs);
+        if (r && r.error) {
+          totalErr++;
+        } else {
+          totalOk++;
+          totalSizeBefore += (r && r.sizeBefore) || 0;
+          totalSizeAfter += (r && r.sizeAfter) || 0;
         }
-      }
 
-      if (r && r.error) {
+        batch.push(r);
+        totalCount++;
+      } catch (e) {
+        profileGpPanelEcho("error", "Исключение при запросе для", tn, e);
+        batch.push({ tn: tn, error: true, exception: String(e) });
         totalErr++;
-      } else {
-        totalOk++;
-        totalSizeBefore += (r && r.sizeBefore) || 0;
-        totalSizeAfter += (r && r.sizeAfter) || 0;
+        totalCount++;
       }
 
-      batch.push(r);
-      totalCount++;
-    } catch (e) {
-      profileGpPanelEcho("error", "Исключение при запросе для", tn, e);
-      batch.push({ tn: tn, error: true, exception: String(e) });
-      totalErr++;
-      totalCount++;
+      if (batch.length >= cfg.batchSize) {
+        profileGpPanelEcho("log", "== Сохранение батча", batchIndex, "| записей:", batch.length, "==");
+        saveJsonToFile(batch, cfg.outputBaseName, batchIndex);
+        batch = [];
+        batchIndex++;
+      }
+
+      if (i < list.length - 1 && cfg.requestDelayMs > 0) {
+        await delay(cfg.requestDelayMs);
+      }
     }
 
-    if (batch.length >= cfg.batchSize) {
-      profileGpPanelEcho("log", "== Сохранение батча", batchIndex, "| записей:", batch.length, "==");
-      saveJsonToFile(batch, cfg.outputBaseName, batchIndex);
-      batch = [];
-      batchIndex++;
+    if (batch.length > 0) {
+      if (stoppedEarly) {
+        profileGpPanelEcho(
+          "log",
+          "== Сохранение частичного батча (_partial)",
+          batchIndex,
+          "| записей:",
+          batch.length,
+          "=="
+        );
+        saveJsonToFile(batch, cfg.outputBaseName, batchIndex, { partial: true });
+      } else {
+        profileGpPanelEcho("log", "== Сохранение финального батча", batchIndex, "| записей:", batch.length, "==");
+        saveJsonToFile(batch, cfg.outputBaseName, batchIndex);
+      }
     }
 
-    if (i < list.length - 1 && cfg.requestDelayMs > 0) {
-      await delay(cfg.requestDelayMs);
+    profileGpPanelEcho("log", "==== ИТОГ ====");
+    profileGpPanelEcho("log", "Всего ТН:", list.length);
+    profileGpPanelEcho("log", "Всего обработано записей:", totalCount);
+    profileGpPanelEcho("log", "Успешных:", totalOk, "| Ошибок:", totalErr);
+    profileGpPanelEcho("log", "Суммарный размер ответов ДО обработки:", totalSizeBefore, "bytes");
+    profileGpPanelEcho("log", "Суммарный размер ответов ПОСЛЕ обработки:", totalSizeAfter, "bytes");
+
+    if (typeof collectPanelSetStatus === "function") {
+      if (stoppedEarly) {
+        collectPanelSetStatus({
+          level: "warn",
+          phase: "Стоп",
+          title: "Остановлено пользователем",
+          lines: [
+            "Обработано: " + totalCount + " из " + list.length,
+            "OK: " + totalOk + " | ошибок: " + totalErr,
+            batch.length > 0 ? "Несохранённый хвост записан как _partial" : "Все батчи уже были сохранены"
+          ]
+        });
+      } else {
+        collectPanelSetStatus({
+          level: "ok",
+          phase: "Готово",
+          title: "Сбор завершён",
+          lines: [
+            "Обработано: " + totalCount + " из " + list.length,
+            "OK: " + totalOk + " | ошибок: " + totalErr
+          ]
+        });
+      }
     }
+
+    console.log(
+      "[Профили героев] " +
+        (stoppedEarly ? "Сбор остановлен. " : "Сбор завершён. ") +
+        "Всего ТН: " +
+        list.length +
+        " | успешно: " +
+        totalOk +
+        " | ошибок: " +
+        totalErr +
+        " | обработано записей: " +
+        totalCount
+    );
+  } finally {
+    collectRunInProgress = false;
+    if (typeof collectPanelSetBusy === "function") collectPanelSetBusy(false);
   }
-
-  if (batch.length > 0) {
-    profileGpPanelEcho("log", "== Сохранение финального батча", batchIndex, "| записей:", batch.length, "==");
-    saveJsonToFile(batch, cfg.outputBaseName, batchIndex);
-  }
-
-  profileGpPanelEcho("log", "==== ИТОГ ====");
-  profileGpPanelEcho("log", "Всего ТН:", list.length);
-  profileGpPanelEcho("log", "Всего обработано записей:", totalCount);
-  profileGpPanelEcho("log", "Успешных:", totalOk, "| Ошибок:", totalErr);
-  profileGpPanelEcho("log", "Суммарный размер ответов ДО обработки:", totalSizeBefore, "bytes");
-  profileGpPanelEcho("log", "Суммарный размер ответов ПОСЛЕ обработки:", totalSizeAfter, "bytes");
-
-  console.log(
-    "[Профили героев] Сбор завершён. Всего ТН: " +
-      list.length +
-      " | успешно: " +
-      totalOk +
-      " | ошибок: " +
-      totalErr +
-      " | обработано записей: " +
-      totalCount
-  );
 }
 
 // =============================================================================
@@ -1085,6 +1199,73 @@ function startWithChoice() {
   sub.style.cssText = "font-size:11px;color:#64748b;margin:0 0 10px 0;line-height:1.35;";
   sub.textContent = "Сбор по API профиля: выберите стенд и контур, при необходимости параметры ниже, источник ТН.";
   container.appendChild(sub);
+
+  const statusEl = document.createElement("div");
+  statusEl.style.cssText =
+    "margin:0 0 10px 0;padding:10px 12px;border-radius:10px;background:#0f172a;color:#e2e8f0;" +
+    "font-size:12px;line-height:1.45;min-height:88px;box-sizing:border-box;";
+  statusEl.innerHTML =
+    '<div style="font-weight:700;margin-bottom:6px;">Готов к запуску</div>' +
+    '<div style="opacity:.85;font-size:11px;">Выберите источник ТН и нажмите одну из кнопок запуска ниже.</div>';
+  container.appendChild(statusEl);
+
+  /**
+   * Структурированный статус текущего прогона (стиль как в Pulse).
+   * @param {{
+   *   level?: "info"|"ok"|"warn"|"err";
+   *   phase?: string;
+   *   title?: string;
+   *   lines?: string[];
+   *   text?: string;
+   * }} info
+   */
+  function setStatus(info) {
+    var colors = {
+      info: { bg: "#0f172a", fg: "#e2e8f0" },
+      ok: { bg: "#064e3b", fg: "#d1fae5" },
+      warn: { bg: "#78350f", fg: "#ffedd5" },
+      err: { bg: "#7f1d1d", fg: "#fee2e2" }
+    };
+    if (typeof info === "string") {
+      info = { text: info, level: arguments[1] || "info" };
+    }
+    var level = (info && info.level) || "info";
+    var c = colors[level] || colors.info;
+    statusEl.style.background = c.bg;
+    statusEl.style.color = c.fg;
+    if (info && info.text && !(info.lines && info.lines.length)) {
+      statusEl.textContent = info.text;
+      return;
+    }
+    function escapeHtml(s) {
+      return String(s == null ? "" : s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+    var html = "";
+    if (info && info.phase) {
+      html +=
+        '<div style="font-size:10px;letter-spacing:.06em;text-transform:uppercase;opacity:.75;margin-bottom:4px;">' +
+        escapeHtml(info.phase) +
+        "</div>";
+    }
+    if (info && info.title) {
+      html += '<div style="font-weight:800;margin-bottom:6px;">' + escapeHtml(info.title) + "</div>";
+    }
+    if (info && info.lines && info.lines.length) {
+      html += '<div style="display:grid;gap:3px;font-size:11px;opacity:.95;">';
+      for (var li = 0; li < info.lines.length; li++) {
+        html += "<div>" + escapeHtml(info.lines[li]) + "</div>";
+      }
+      html += "</div>";
+    } else if (info && info.text) {
+      html += "<div>" + escapeHtml(info.text) + "</div>";
+    }
+    statusEl.innerHTML = html || "—";
+  }
+  collectPanelSetStatus = setStatus;
 
   const rowStand = document.createElement("div");
   rowStand.style.cssText =
@@ -1390,7 +1571,94 @@ function startWithChoice() {
     "cursor:pointer;border-radius:6px;border:none;transition:opacity .15s;text-align:center;word-break:break-word;";
   const rowRunBtns = document.createElement("div");
   rowRunBtns.style.cssText =
-    "display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin:0 0 8px 0;align-items:stretch;";
+    "display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin:0 0 6px 0;align-items:stretch;";
+
+  const btnPause = document.createElement("button");
+  btnPause.type = "button";
+  btnPause.textContent = "⏸ Пауза";
+  btnPause.disabled = true;
+  btnPause.title = "Приостановить следующие запросы (текущий доработает)";
+  btnPause.style.cssText =
+    btnCssBase +
+    "background:#fffbeb;color:#92400e;border:1px solid #fde68a;cursor:pointer;opacity:1;";
+
+  const btnStop = document.createElement("button");
+  btnStop.type = "button";
+  btnStop.textContent = "⏹ Стоп";
+  btnStop.disabled = true;
+  btnStop.title = "Остановить сбор и сохранить уже собранное";
+  btnStop.style.cssText =
+    btnCssBase + "background:#fff;color:#b91c1c;border:1px solid #fecaca;cursor:pointer;opacity:1;";
+
+  const rowCtrlBtns = document.createElement("div");
+  rowCtrlBtns.style.cssText =
+    "display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin:0 0 8px 0;align-items:stretch;";
+
+  /**
+   * @param {boolean} busy
+   */
+  function setBusy(busy) {
+    btnFromText.disabled = busy;
+    btnFile.disabled = busy;
+    btnArray.disabled = busy;
+    btnPause.disabled = !busy;
+    btnStop.disabled = !busy;
+    if (!busy) {
+      collectPauseRequested = false;
+      btnPause.textContent = "⏸ Пауза";
+      btnPause.style.background = "#fffbeb";
+      btnPause.style.color = "#92400e";
+      btnPause.style.borderColor = "#fde68a";
+    }
+  }
+  collectPanelSetBusy = setBusy;
+
+  btnPause.addEventListener("click", function () {
+    if (!collectRunInProgress) return;
+    collectPauseRequested = !collectPauseRequested;
+    if (collectPauseRequested) {
+      btnPause.textContent = "▶ Продолжить";
+      btnPause.style.background = "#dbeafe";
+      btnPause.style.color = "#1e40af";
+      btnPause.style.borderColor = "#93c5fd";
+      profileGpPanelEcho("warn", "Пауза: следующие запросы ждут «Продолжить»");
+      setStatus({
+        level: "warn",
+        phase: "Пауза",
+        title: "Сбор приостановлен",
+        lines: ["Текущий запрос доработает", "Нажмите «Продолжить» для возобновления"]
+      });
+    } else {
+      btnPause.textContent = "⏸ Пауза";
+      btnPause.style.background = "#fffbeb";
+      btnPause.style.color = "#92400e";
+      btnPause.style.borderColor = "#fde68a";
+      profileGpPanelEcho("log", "Продолжение сбора");
+      setStatus({
+        level: "info",
+        phase: "Работа",
+        title: "Продолжаем…",
+        lines: ["Пауза снята"]
+      });
+    }
+  });
+
+  btnStop.addEventListener("click", function () {
+    if (!collectRunInProgress) return;
+    collectStopRequested = true;
+    collectPauseRequested = false;
+    btnPause.textContent = "⏸ Пауза";
+    btnPause.style.background = "#fffbeb";
+    btnPause.style.color = "#92400e";
+    btnPause.style.borderColor = "#fde68a";
+    profileGpPanelEcho("warn", "Запрошена остановка сбора");
+    setStatus({
+      level: "warn",
+      phase: "Стоп",
+      title: "Остановка…",
+      lines: ["Ожидание завершения текущего запроса", "Уже собранное будет сохранено"]
+    });
+  });
 
   const btnFromText = document.createElement("button");
   btnFromText.type = "button";
@@ -1404,7 +1672,7 @@ function startWithChoice() {
     }
     profileGpPanelEcho("log", "Запуск по тексту из поля, ТН:", tabNums.length);
     profileGpPanelEcho("log", "Сбор в фоне — панель не закрывается; по окончании смотрите «Журнал работы» ниже и загрузки.");
-    runCollectProfiles(tabNums, readRunOptsForCollect());
+    void runCollectProfiles(tabNums, readRunOptsForCollect());
   });
 
   const btnFile = document.createElement("button");
@@ -1426,12 +1694,14 @@ function startWithChoice() {
     }
     profileGpPanelEcho("log", "Запуск по TAB_NUMS, ТН:", TAB_NUMS.length);
     profileGpPanelEcho("log", "Сбор в фоне — панель не закрывается; по окончании смотрите «Журнал работы» ниже и загрузки.");
-    runCollectProfiles(TAB_NUMS, readRunOptsForCollect());
+    void runCollectProfiles(TAB_NUMS, readRunOptsForCollect());
   });
 
   rowRunBtns.appendChild(btnFromText);
   rowRunBtns.appendChild(btnFile);
   rowRunBtns.appendChild(btnArray);
+  rowCtrlBtns.appendChild(btnPause);
+  rowCtrlBtns.appendChild(btnStop);
 
   const logSecLab = document.createElement("div");
   logSecLab.textContent = "Журнал работы";
@@ -1463,10 +1733,13 @@ function startWithChoice() {
       input.value = "";
     } catch (eCloseInp) {}
     profileGpPanelLogAppend = null;
+    collectPanelSetStatus = null;
+    collectPanelSetBusy = null;
     container.remove();
   });
 
   container.appendChild(rowRunBtns);
+  container.appendChild(rowCtrlBtns);
   devTrace.mountToggleRow(container, logSecLab);
   container.appendChild(logSecLab);
   container.appendChild(logEl);
@@ -1487,7 +1760,7 @@ function startWithChoice() {
       const tabNums = parseTabNumbersFromText(text);
       profileGpPanelEcho("log", "Из файла извлечено ТН:", tabNums.length);
       profileGpPanelEcho("log", "Сбор в фоне — панель не закрывается; по окончании смотрите «Журнал работы» ниже и загрузки.");
-      runCollectProfiles(tabNums, readRunOptsForCollect());
+      void runCollectProfiles(tabNums, readRunOptsForCollect());
       try {
         input.value = "";
       } catch (eClr) {}

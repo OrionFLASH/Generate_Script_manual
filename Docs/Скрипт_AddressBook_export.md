@@ -103,5 +103,6 @@
 | 1.18 | Сценарий **Search → empInfoFull**: фаза 1 — все POST search; сохранение `addressbook_search_…json` и CSV **`что искали`, `employeeId`** (строка на каждый hit); фаза 2 — GET empInfoFull по уникальным UUID (`addressbook_empInfoFull_…json`); общий `<timestamp>` у трёх файлов; пауза «после Search» — после всех поисков перед первым GET. |
 | 1.19 | В корне репозитория добавлен [ROADMAP.md](../ROADMAP.md) (§ 3 — план работ и декомпозиция по этому скрипту). |
 | 1.20 | Форматы выгрузок в **AddressBook_export_OE.js** (базовые сценарии v1): `hits[]` в `addressbook_search_*`; обёртка `search_only` / `empInfoFull_only`; UUID в `employeeId`. |
+| 1.21 | Панель живой статистики; **⏸ Пауза / ▶ Продолжить**; **⏹ Стоп** с сохранением `_partial`. |
 
 *Актуальность проверяйте по `Script/AddressBook_export.js` и `Script/AddressBook_export_OE.js` (базовые сценарии — в OE).*

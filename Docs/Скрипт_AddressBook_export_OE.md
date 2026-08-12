@@ -95,3 +95,4 @@ CSV фазы Search (не OE): `addressbook_search_employeeId_map_*.csv` — р�
 | 1.1 | 2026-05-22 | CSV `;`, колонка TN_8, порядок вложенных полей, чекбоксы по файлам, «не найдено», дедуп запросов |
 | 1.2 | 2026-07-01 | Поля Search/empInfoFull под актуальный API: organizationName, absenceInfo, contactEmail, absences.commonAbsence, isMain/main в массивах |
 | 1.3 | 2026-07-03 | hits[] в addressbook_search; обёртка search_only/empInfoFull_only; UUID в employeeId; подсказки profile OE и Trace |
+| 1.4 | 2026-08-10 | Панель живой статистики; **⏸ Пауза / ▶ Продолжить**; **⏹ Стоп** с `_partial` |

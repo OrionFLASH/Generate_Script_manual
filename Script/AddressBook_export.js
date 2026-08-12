@@ -660,6 +660,10 @@ function startAddressBookPanel() {
 
   /** Пока идёт цепочка запросов — не запускать второй сценарий с панели. */
   var requestBusy = false;
+  /** Запрошена остановка текущего сценария (после текущего запроса). */
+  var stopRequested = false;
+  /** Пользовательская пауза: следующие запросы ждут «Продолжить». */
+  var pauseRequested = false;
 
   const box = document.createElement("div");
   box.id = "addressBookExportPanelRoot";
@@ -682,6 +686,77 @@ function startAddressBookPanel() {
   sub.textContent =
     "Стенд ALPHA. Запросы идут на origin этой вкладки (если он есть), иначе на отдельный fallback адресной книги. Ход работы — в «Журнал работы»; в консоли — кратко о запуске и итоге.";
   box.appendChild(sub);
+
+  const statusEl = document.createElement("div");
+  statusEl.style.cssText =
+    "margin:0 0 12px 0;padding:10px 12px;border-radius:10px;background:#0f172a;color:#e2e8f0;" +
+    "font-size:12px;line-height:1.45;min-height:88px;box-sizing:border-box;";
+  statusEl.innerHTML =
+    '<div style="font-weight:700;margin-bottom:6px;">Готов к запуску</div>' +
+    '<div style="opacity:.85;font-size:11px;">Выберите сценарий и нажмите кнопку выгрузки.</div>';
+  box.appendChild(statusEl);
+
+  /**
+   * Живая панель статуса (стиль Pulse setStatus).
+   * @param {{
+   *   level?: "info"|"ok"|"warn"|"err";
+   *   phase?: string;
+   *   title?: string;
+   *   lines?: string[];
+   *   text?: string;
+   * }} info
+   */
+  function setStatus(info) {
+    var colors = {
+      info: { bg: "#0f172a", fg: "#e2e8f0" },
+      ok: { bg: "#064e3b", fg: "#d1fae5" },
+      warn: { bg: "#78350f", fg: "#ffedd5" },
+      err: { bg: "#7f1d1d", fg: "#fee2e2" }
+    };
+    if (typeof info === "string") {
+      info = { text: info, level: arguments[1] || "info" };
+    }
+    var level = (info && info.level) || "info";
+    var c = colors[level] || colors.info;
+    statusEl.style.background = c.bg;
+    statusEl.style.color = c.fg;
+    if (info && info.text && !(info.lines && info.lines.length)) {
+      statusEl.textContent = info.text;
+      return;
+    }
+    var html = "";
+    if (info && info.phase) {
+      html +=
+        '<div style="font-size:10px;letter-spacing:.06em;text-transform:uppercase;opacity:.75;margin-bottom:4px;">' +
+        escapeHtmlStatus(info.phase) +
+        "</div>";
+    }
+    if (info && info.title) {
+      html += '<div style="font-weight:800;margin-bottom:6px;">' + escapeHtmlStatus(info.title) + "</div>";
+    }
+    if (info && info.lines && info.lines.length) {
+      html += '<div style="display:grid;gap:3px;font-size:11px;opacity:.95;">';
+      for (var li = 0; li < info.lines.length; li++) {
+        html += "<div>" + escapeHtmlStatus(info.lines[li]) + "</div>";
+      }
+      html += "</div>";
+    } else if (info && info.text) {
+      html += "<div>" + escapeHtmlStatus(info.text) + "</div>";
+    }
+    statusEl.innerHTML = html || "—";
+  }
+
+  /**
+   * @param {string} s
+   * @returns {string}
+   */
+  function escapeHtmlStatus(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
 
   const rowStand = document.createElement("div");
   rowStand.style.cssText =
@@ -907,6 +982,29 @@ function startAddressBookPanel() {
   btnRow.appendChild(b3);
   box.appendChild(btnRow);
 
+  const btnCtrlRow = document.createElement("div");
+  btnCtrlRow.style.cssText =
+    "display:grid;grid-template-columns:1fr 1fr;gap:8px;width:100%;box-sizing:border-box;margin-bottom:12px;";
+  const bPause = document.createElement("button");
+  bPause.type = "button";
+  bPause.textContent = "⏸ Пауза";
+  bPause.disabled = true;
+  bPause.title = "Приостановить отправку следующих запросов (текущий доработает)";
+  bPause.style.cssText =
+    "min-height:40px;padding:8px 10px;border:1px solid #fde68a;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;" +
+    "background:#fffbeb;color:#92400e;box-sizing:border-box;";
+  const bStop = document.createElement("button");
+  bStop.type = "button";
+  bStop.textContent = "⏹ Стоп";
+  bStop.disabled = true;
+  bStop.title = "Остановить сценарий и сохранить уже собранные данные";
+  bStop.style.cssText =
+    "min-height:40px;padding:8px 10px;border:1px solid #fecaca;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;" +
+    "background:#fff;color:#b91c1c;box-sizing:border-box;";
+  btnCtrlRow.appendChild(bPause);
+  btnCtrlRow.appendChild(bStop);
+  box.appendChild(btnCtrlRow);
+
   const logEl = document.createElement("div");
   logEl.style.cssText =
     "margin-top:0;font-size:11px;color:#0f172a;background:#f8fafc;min-height:168px;max-height:300px;overflow:auto;" +
@@ -926,15 +1024,32 @@ function startAddressBookPanel() {
     logEl.scrollTop = logEl.scrollHeight;
   }
 
+  /** Ждать, пока пользователь не снимет паузу (или не нажмёт Стоп). */
+  async function waitWhilePaused() {
+    while (pauseRequested && !stopRequested) {
+      await delay(200);
+    }
+  }
+
   /** Блокировка кнопок и полей паузы на время сценария. */
   function setBusy(busy) {
     requestBusy = busy;
     b1.disabled = busy;
     b2.disabled = busy;
     b3.disabled = busy;
+    bPause.disabled = !busy;
+    bStop.disabled = !busy;
+    if (!busy) {
+      pauseRequested = false;
+      bPause.textContent = "⏸ Пауза";
+      bPause.style.background = "#fffbeb";
+      bPause.style.color = "#92400e";
+      bPause.style.borderColor = "#fde68a";
+    }
     bLoadTnFlow.disabled = busy;
     bLoadTnSearch.disabled = busy;
     bLoadTnEmp.disabled = busy;
+    taInput.disabled = busy;
     inpPauseBetween.disabled = busy;
     inpPauseAfterSearch.disabled = busy;
     modeTabNum.disabled = busy;
@@ -1023,6 +1138,11 @@ function startAddressBookPanel() {
     var seenTokens = {};
     var stopReason = "completed";
     while (true) {
+      await waitWhilePaused();
+      if (stopRequested) {
+        stopReason = "stopped";
+        break;
+      }
       var r = await fetchEmployeesSearch(item.searchText, item.asNumber, pageToken);
       pages.push(r);
       var hitsCount = getSearchHitsCount(r.data);
@@ -1084,6 +1204,42 @@ function startAddressBookPanel() {
   }
 
   /**
+   * Сохраняет JSON и CSV фазы Search (полный прогон или остановка на Search).
+   * @returns {{ fnameSearch: string, fnameCsv: string }}
+   */
+  function saveSearchPhaseExports(
+    searchPhasePayload,
+    perItemHitOrderedIds,
+    items,
+    envKey,
+    ts,
+    sourceTag,
+    scenario
+  ) {
+    const fnameSearch = "addressbook_search_" + envKey + "_" + ts + ".json";
+    const fnameCsv = "addressbook_search_employeeId_map_" + envKey + "_" + ts + ".csv";
+    downloadJson(fnameSearch, {
+      exportedAt: new Date().toISOString(),
+      scenario: scenario,
+      sourceTag: sourceTag || null,
+      stand: envKey,
+      stopped: stopRequested || undefined,
+      items: searchPhasePayload
+    });
+    var csvLines = ["\uFEFFчто искали,employeeId"];
+    for (let ci = 0; ci < items.length; ci++) {
+      var searched = items[ci].input;
+      var rowIds = perItemHitOrderedIds[ci] || [];
+      for (var cj = 0; cj < rowIds.length; cj++) {
+        csvLines.push(escapeCsvField(searched) + "," + escapeCsvField(rowIds[cj]));
+      }
+    }
+    downloadText(fnameCsv, csvLines.join("\r\n"), "text/csv;charset=utf-8");
+    appendLog("Файлы фазы Search: " + fnameSearch + ", " + fnameCsv);
+    return { fnameSearch: fnameSearch, fnameCsv: fnameCsv };
+  }
+
+  /**
    * Search → empInfoFull: фаза 1 — все POST search; сохранение ответов Search и CSV
    * («что искали», employeeId по каждой строке hit); фаза 2 — GET empInfoFull по каждому
    * уникальному employeeId (порядок первого появления по всем поискам подряд).
@@ -1109,13 +1265,33 @@ function startAddressBookPanel() {
         envKey +
         " (фаза 1: все Search; фаза 2: empInfoFull)"
     );
+    setStatus({
+      level: "info",
+      phase: "Подготовка",
+      title: "Search → empInfoFull",
+      lines: ["Значений для Search: " + items.length, "Стенд: " + envKey]
+    });
 
     /** @type {string[][]} */
     var perItemHitOrderedIds = [];
     const searchPhasePayload = [];
 
     for (let i = 0; i < items.length; i++) {
+      await waitWhilePaused();
+      if (stopRequested) {
+        appendLog("Остановлено пользователем на фазе Search.");
+        break;
+      }
       const item = items[i];
+      setStatus({
+        level: "info",
+        phase: "Search",
+        title: "Поиск " + (i + 1) + " из " + items.length,
+        lines: [
+          "«" + String(item.input).slice(0, 60) + (String(item.input).length > 60 ? "…" : "") + "»",
+          "searchText = " + String(item.searchText)
+        ]
+      });
       appendLog(
         "[Search " +
           (i + 1) +
@@ -1130,6 +1306,9 @@ function startAddressBookPanel() {
       );
       try {
         const searchBundle = await fetchAllSearchPages(item);
+        if (stopRequested && searchBundle.stopReason === "stopped") {
+          appendLog("    → Search прерван по Стоп (сохранены страницы: " + searchBundle.totalPages + ").");
+        }
         const idsPerHit = collectEmployeeIdsFromSearchPagesInHitOrder(searchBundle.pages);
         perItemHitOrderedIds.push(idsPerHit);
         searchPhasePayload.push({
@@ -1155,6 +1334,7 @@ function startAddressBookPanel() {
             ", строк для CSV (по hits)=" +
             idsPerHit.length
         );
+        if (stopRequested) break;
       } catch (e) {
         perItemHitOrderedIds.push([]);
         searchPhasePayload.push({
@@ -1165,7 +1345,28 @@ function startAddressBookPanel() {
         });
         appendLog("    → исключение: " + e);
       }
-      if (i < items.length - 1 && pauseBetweenMs > 0) await delay(pauseBetweenMs);
+      if (i < items.length - 1 && pauseBetweenMs > 0 && !stopRequested) await delay(pauseBetweenMs);
+    }
+
+    if (stopRequested) {
+      if (searchPhasePayload.length > 0) {
+        saveSearchPhaseExports(
+          searchPhasePayload,
+          perItemHitOrderedIds,
+          items.slice(0, searchPhasePayload.length),
+          envKey,
+          ts,
+          sourceTag,
+          "search_then_empInfoFull_search_phase_stopped"
+        );
+      }
+      setStatus({
+        level: "warn",
+        phase: "Стоп",
+        title: "Остановлено на фазе Search",
+        lines: ["Обработано запросов: " + searchPhasePayload.length + " из " + items.length]
+      });
+      return;
     }
 
     var flatHitOrder = [];
@@ -1174,33 +1375,22 @@ function startAddressBookPanel() {
     }
     const allUniqueEmpIds = uniqueEmployeeIdsFirstOccurrence(flatHitOrder);
 
-    const fnameSearch = "addressbook_search_" + envKey + "_" + ts + ".json";
-    const fnameCsv = "addressbook_search_employeeId_map_" + envKey + "_" + ts + ".csv";
-    const fnameEmp = "addressbook_empInfoFull_" + envKey + "_" + ts + ".json";
-
     appendLog(
       "Сохранение ответов Search и CSV (до empInfoFull). Уникальных employeeId для GET: " +
         allUniqueEmpIds.length
     );
-    downloadJson(fnameSearch, {
-      exportedAt: new Date().toISOString(),
-      scenario: "search_then_empInfoFull_search_phase",
-      sourceTag: sourceTag || null,
-      stand: envKey,
-      items: searchPhasePayload
-    });
-
-    var csvLines = ["\uFEFFчто искали,employeeId"];
-    for (let ci = 0; ci < items.length; ci++) {
-      var searched = items[ci].input;
-      var rowIds = perItemHitOrderedIds[ci] || [];
-      for (var cj = 0; cj < rowIds.length; cj++) {
-        csvLines.push(escapeCsvField(searched) + "," + escapeCsvField(rowIds[cj]));
-      }
-    }
-    downloadText(fnameCsv, csvLines.join("\r\n"), "text/csv;charset=utf-8");
-
-    appendLog("Файлы фазы Search: " + fnameSearch + ", " + fnameCsv);
+    var searchFiles = saveSearchPhaseExports(
+      searchPhasePayload,
+      perItemHitOrderedIds,
+      items,
+      envKey,
+      ts,
+      sourceTag,
+      "search_then_empInfoFull_search_phase"
+    );
+    const fnameSearch = searchFiles.fnameSearch;
+    const fnameCsv = searchFiles.fnameCsv;
+    const fnameEmp = "addressbook_empInfoFull_" + envKey + "_" + ts + ".json";
 
     if (pauseAfterSearchMs > 0 && allUniqueEmpIds.length > 0) {
       await delay(pauseAfterSearchMs);
@@ -1210,7 +1400,18 @@ function startAddressBookPanel() {
     const empResults = [];
     var totalEmpInfoFullCalls = 0;
     for (let k = 0; k < allUniqueEmpIds.length; k++) {
+      await waitWhilePaused();
+      if (stopRequested) {
+        appendLog("Остановлено пользователем на фазе empInfoFull.");
+        break;
+      }
       var empUuid = allUniqueEmpIds[k];
+      setStatus({
+        level: "info",
+        phase: "empInfoFull",
+        title: "Карточка " + (k + 1) + " из " + allUniqueEmpIds.length,
+        lines: ["employeeId = " + empUuid]
+      });
       appendLog(
         "[" +
           (k + 1) +
@@ -1232,15 +1433,41 @@ function startAddressBookPanel() {
       }
     }
 
-    downloadJson(fnameEmp, {
+    var fnameEmpOut = stopRequested ? fnameEmp.replace(".json", "_partial.json") : fnameEmp;
+    downloadJson(fnameEmpOut, {
       exportedAt: new Date().toISOString(),
-      scenario: "search_then_empInfoFull_empInfoFull_phase",
+      scenario: stopRequested
+        ? "search_then_empInfoFull_empInfoFull_phase_stopped"
+        : "search_then_empInfoFull_empInfoFull_phase",
       sourceTag: sourceTag || null,
       stand: envKey,
       searchFiles: { searchJson: fnameSearch, searchEmployeeIdCsv: fnameCsv },
       totalUniqueEmployeeIds: allUniqueEmpIds.length,
+      stopped: stopRequested || undefined,
       results: empResults
     });
+
+    if (stopRequested) {
+      appendLog(
+        "Остановлено. Частичный empInfoFull: " +
+          fnameEmpOut +
+          " (GET: " +
+          totalEmpInfoFullCalls +
+          " из " +
+          allUniqueEmpIds.length +
+          ")"
+      );
+      setStatus({
+        level: "warn",
+        phase: "Стоп",
+        title: "Остановлено на empInfoFull",
+        lines: [
+          "Карточек: " + empResults.length + " из " + allUniqueEmpIds.length,
+          "Файл: " + fnameEmpOut
+        ]
+      });
+      return;
+    }
 
     appendLog(
       "Готово. Файлы: " +
@@ -1248,11 +1475,21 @@ function startAddressBookPanel() {
         ", " +
         fnameCsv +
         ", " +
-        fnameEmp +
+        fnameEmpOut +
         " (GET empInfoFull: " +
         totalEmpInfoFullCalls +
         ")"
     );
+    setStatus({
+      level: "ok",
+      phase: "Готово",
+      title: "Search → empInfoFull завершён",
+      lines: [
+        "Search: " + items.length + " запросов",
+        "empInfoFull: " + totalEmpInfoFullCalls + " GET",
+        "Файлы: " + fnameSearch + ", " + fnameCsv + ", " + fnameEmpOut
+      ]
+    });
     console.log(
       "[Адресная книга] Готово. Search: " +
         fnameSearch +
@@ -1277,9 +1514,26 @@ function startAddressBookPanel() {
         ". Подробности — в «Журнал работы»."
     );
     appendLog("— Только search, значений: " + items.length + ", стенд: " + getAddressBookEnvKey());
+    setStatus({
+      level: "info",
+      phase: "Search",
+      title: "Только Search",
+      lines: ["Значений: " + items.length]
+    });
     const results = [];
     for (let i = 0; i < items.length; i++) {
+      await waitWhilePaused();
+      if (stopRequested) {
+        appendLog("Остановлено пользователем на фазе Search.");
+        break;
+      }
       const item = items[i];
+      setStatus({
+        level: "info",
+        phase: "Search",
+        title: "Поиск " + (i + 1) + " из " + items.length,
+        lines: ["search(" + String(item.searchText) + ")"]
+      });
       appendLog("[" + (i + 1) + "/" + items.length + "] search(" + String(item.searchText) + ") …");
       try {
         const bundle = await fetchAllSearchPages(item);
@@ -1305,6 +1559,7 @@ function startAddressBookPanel() {
             ", уникальных employeeId=" +
             bundle.employeeIds.length
         );
+        if (stopRequested) break;
       } catch (e) {
         results.push({
           input: item.input,
@@ -1314,11 +1569,23 @@ function startAddressBookPanel() {
         });
         appendLog("    → исключение: " + e);
       }
-      if (i < items.length - 1 && pauseBetweenMs > 0) await delay(pauseBetweenMs);
+      if (i < items.length - 1 && pauseBetweenMs > 0 && !stopRequested) await delay(pauseBetweenMs);
     }
     const fname = "addressbook_search_only_" + getAddressBookEnvKey() + "_" + Date.now() + ".json";
-    downloadJson(fname, results);
-    appendLog("Готово. Файл: " + fname);
+    downloadJson(fname, {
+      exportedAt: new Date().toISOString(),
+      scenario: stopRequested ? "search_only_stopped" : "search_only",
+      stand: getAddressBookEnvKey(),
+      stopped: stopRequested || undefined,
+      items: results
+    });
+    appendLog("Готово. Файл: " + fname + (stopRequested ? " (остановлено)" : ""));
+    setStatus({
+      level: stopRequested ? "warn" : "ok",
+      phase: stopRequested ? "Стоп" : "Готово",
+      title: stopRequested ? "Search остановлен" : "Только Search завершён",
+      lines: ["Обработано: " + results.length + " из " + items.length, "Файл: " + fname]
+    });
     console.log("[Адресная книга] Только search завершён. Файл: " + fname + " | значений: " + items.length);
   }
 
@@ -1334,9 +1601,26 @@ function startAddressBookPanel() {
         ". Подробности — в «Журнал работы»."
     );
     appendLog("— Только empInfoFull, employeeId: " + empIds.length + ", стенд: " + getAddressBookEnvKey());
+    setStatus({
+      level: "info",
+      phase: "empInfoFull",
+      title: "Только empInfoFull",
+      lines: ["employeeId: " + empIds.length]
+    });
     const results = [];
     for (let i = 0; i < empIds.length; i++) {
+      await waitWhilePaused();
+      if (stopRequested) {
+        appendLog("Остановлено пользователем на фазе empInfoFull.");
+        break;
+      }
       const empId = empIds[i];
+      setStatus({
+        level: "info",
+        phase: "empInfoFull",
+        title: "Карточка " + (i + 1) + " из " + empIds.length,
+        lines: ["employeeId = " + String(empId).slice(0, 80)]
+      });
       appendLog(
         "[" +
           (i + 1) +
@@ -1355,11 +1639,24 @@ function startAddressBookPanel() {
         results.push({ employeeId: empId, error: String(e) });
         appendLog("    → исключение: " + e);
       }
-      if (i < empIds.length - 1 && pauseBetweenMs > 0) await delay(pauseBetweenMs);
+      if (i < empIds.length - 1 && pauseBetweenMs > 0 && !stopRequested) await delay(pauseBetweenMs);
     }
-    const fname = "addressbook_empInfoFull_only_" + getAddressBookEnvKey() + "_" + Date.now() + ".json";
-    downloadJson(fname, results);
-    appendLog("Готово. Файл: " + fname);
+    const fnameBase = "addressbook_empInfoFull_only_" + getAddressBookEnvKey() + "_" + Date.now();
+    const fname = fnameBase + (stopRequested ? "_partial.json" : ".json");
+    downloadJson(fname, {
+      exportedAt: new Date().toISOString(),
+      scenario: stopRequested ? "empInfoFull_only_stopped" : "empInfoFull_only",
+      stand: getAddressBookEnvKey(),
+      stopped: stopRequested || undefined,
+      results: results
+    });
+    appendLog("Готово. Файл: " + fname + (stopRequested ? " (остановлено)" : ""));
+    setStatus({
+      level: stopRequested ? "warn" : "ok",
+      phase: stopRequested ? "Стоп" : "Готово",
+      title: stopRequested ? "empInfoFull остановлен" : "Только empInfoFull завершён",
+      lines: ["Карточек: " + results.length + " из " + empIds.length, "Файл: " + fname]
+    });
     console.log("[Адресная книга] Только empInfoFull завершён. Файл: " + fname + " | employeeId: " + empIds.length);
   }
 
@@ -1397,6 +1694,8 @@ function startAddressBookPanel() {
       );
       var pb = readPauseMsFromInput(inpPauseBetween, REQUEST_PAUSE_MS);
       var pa = readPauseMsFromInput(inpPauseAfterSearch, REQUEST_PAUSE_MS);
+      stopRequested = false;
+      pauseRequested = false;
       setBusy(true);
       void (async function () {
         try {
@@ -1441,6 +1740,53 @@ function startAddressBookPanel() {
     openTxtForAction("emp_only");
   });
 
+  bPause.addEventListener("click", function () {
+    if (!requestBusy) return;
+    pauseRequested = !pauseRequested;
+    if (pauseRequested) {
+      bPause.textContent = "▶ Продолжить";
+      bPause.style.background = "#dbeafe";
+      bPause.style.color = "#1e40af";
+      bPause.style.borderColor = "#93c5fd";
+      appendLog("Пауза: следующие запросы ждут «Продолжить».");
+      setStatus({
+        level: "warn",
+        phase: "Пауза",
+        title: "Выгрузка приостановлена",
+        lines: ["Текущий запрос доработает", "Нажмите «Продолжить» для возобновления"]
+      });
+    } else {
+      bPause.textContent = "⏸ Пауза";
+      bPause.style.background = "#fffbeb";
+      bPause.style.color = "#92400e";
+      bPause.style.borderColor = "#fde68a";
+      appendLog("Продолжение выгрузки.");
+      setStatus({
+        level: "info",
+        phase: "Работа",
+        title: "Продолжаем…",
+        lines: ["Пауза снята"]
+      });
+    }
+  });
+
+  bStop.addEventListener("click", function () {
+    if (!requestBusy) return;
+    stopRequested = true;
+    pauseRequested = false;
+    bPause.textContent = "⏸ Пауза";
+    bPause.style.background = "#fffbeb";
+    bPause.style.color = "#92400e";
+    bPause.style.borderColor = "#fde68a";
+    appendLog("Запрошена остановка — уже собранное будет сохранено.");
+    setStatus({
+      level: "warn",
+      phase: "Стоп",
+      title: "Остановка…",
+      lines: ["Ожидание завершения текущего запроса", "Уже собранное будет сохранено"]
+    });
+  });
+
   b1.addEventListener("click", async function () {
     if (requestBusy) {
       appendLog("Уже выполняется запрос — дождитесь окончания.");
@@ -1454,6 +1800,8 @@ function startAddressBookPanel() {
     }
     var pb = readPauseMsFromInput(inpPauseBetween, REQUEST_PAUSE_MS);
     var pa = readPauseMsFromInput(inpPauseAfterSearch, REQUEST_PAUSE_MS);
+    stopRequested = false;
+    pauseRequested = false;
     setBusy(true);
     try {
       await runSearchThenEmpInfoFullExport(items, pb, pa, "Из поля");
@@ -1476,6 +1824,8 @@ function startAddressBookPanel() {
       return;
     }
     var pb = readPauseMsFromInput(inpPauseBetween, REQUEST_PAUSE_MS);
+    stopRequested = false;
+    pauseRequested = false;
     setBusy(true);
     try {
       await runSearchOnlyExport(items, pb);
@@ -1496,6 +1846,8 @@ function startAddressBookPanel() {
       return;
     }
     var pb = readPauseMsFromInput(inpPauseBetween, REQUEST_PAUSE_MS);
+    stopRequested = false;
+    pauseRequested = false;
     setBusy(true);
     try {
       await runEmpInfoFullOnlyExport(empIds, pb);
