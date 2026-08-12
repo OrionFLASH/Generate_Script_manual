@@ -102,6 +102,8 @@
     TRACE_MAX_BODY_LEN: 16384,
     TRACE_MAX_LINES: 8000
   };
+  /** Глобальный флаг паузы: единый для всех вкладок и режимов. */
+  var newsV2PauseRequested = false;
 
   /**
    * Ключи JSON (news / create / update / authors / leaders / newsFeature),
@@ -1386,6 +1388,30 @@ function createDevToolsTrace(opts) {
     });
   }
 
+  /**
+   * Ожидание снятия глобальной паузы перед отправкой очередного запроса.
+   * @param {{ log?: Function, shouldStop?: Function }} hooks
+   * @returns {Promise<{stopped: boolean}>}
+   */
+  async function waitIfPaused(hooks) {
+    var h = hooks || {};
+    var logFn = typeof h.log === "function" ? h.log : function () {};
+    var shouldStop = typeof h.shouldStop === "function" ? h.shouldStop : function () { return false; };
+    var waitLogged = false;
+    while (newsV2PauseRequested) {
+      if (!waitLogged) {
+        waitLogged = true;
+        logFn("Пауза включена: отправка запросов приостановлена до снятия паузы.");
+      }
+      if (shouldStop()) return { stopped: true };
+      await delay(250);
+    }
+    if (waitLogged) {
+      logFn("Пауза снята: отправка запросов продолжена.");
+    }
+    return { stopped: false };
+  }
+
   function optionValues(options) {
     return (options || []).map(function (o) {
       return typeof o === "string" ? o : String(o.value || o.tagCode || "");
@@ -1560,6 +1586,10 @@ function createDevToolsTrace(opts) {
     var lastErr = null;
     var retriesDone = 0;
     for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      var pauseResult = await waitIfPaused({ log: logFn, shouldStop: shouldStop });
+      if (pauseResult.stopped) {
+        return { ok: false, stopped: true, fr: lastFr, error: lastErr || "стоп", attempts: attempt - 1, retries: retriesDone };
+      }
       if (shouldStop()) return { ok: false, stopped: true, fr: lastFr, error: lastErr || "стоп", attempts: attempt - 1, retries: retriesDone };
       if (attempt > 1) retriesDone++;
       try {
@@ -1573,6 +1603,10 @@ function createDevToolsTrace(opts) {
       if (!lastErr) return { ok: true, fr: lastFr, error: null, attempts: attempt, retries: retriesDone };
       logFn("  ошибка (попытка " + attempt + "/" + maxAttempts + "): " + lastErr);
       if (attempt < maxAttempts) {
+        var pauseBeforeRetry = await waitIfPaused({ log: logFn, shouldStop: shouldStop });
+        if (pauseBeforeRetry.stopped) {
+          return { ok: false, stopped: true, fr: lastFr, error: lastErr, attempts: attempt, retries: retriesDone };
+        }
         if (shouldStop()) return { ok: false, stopped: true, fr: lastFr, error: lastErr, attempts: attempt, retries: retriesDone };
         if (pauseMs > 0) await delay(pauseMs);
       }
@@ -1594,6 +1628,10 @@ function createDevToolsTrace(opts) {
     var lastErr = null;
     var retriesDone = 0;
     for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      var pauseResult = await waitIfPaused({ log: logFn, shouldStop: shouldStop });
+      if (pauseResult.stopped) {
+        return { ok: false, stopped: true, fr: lastFr, error: lastErr || "стоп", attempts: attempt - 1, retries: retriesDone };
+      }
       if (shouldStop()) {
         return { ok: false, stopped: true, fr: lastFr, error: lastErr || "стоп", attempts: attempt - 1, retries: retriesDone };
       }
@@ -1615,6 +1653,10 @@ function createDevToolsTrace(opts) {
       }
       logFn("  ошибка (попытка " + attempt + "/" + maxAttempts + "): " + lastErr);
       if (attempt < maxAttempts) {
+        var pauseBeforeRetry = await waitIfPaused({ log: logFn, shouldStop: shouldStop });
+        if (pauseBeforeRetry.stopped) {
+          return { ok: false, stopped: true, fr: lastFr, error: lastErr, attempts: attempt, retries: retriesDone };
+        }
         if (shouldStop()) {
           return { ok: false, stopped: true, fr: lastFr, error: lastErr, attempts: attempt, retries: retriesDone };
         }
@@ -1965,6 +2007,26 @@ function createDevToolsTrace(opts) {
 
     var opBusy = false;
     var stopRequested = false;
+    var btnGlobalPause = document.createElement("button");
+    btnGlobalPause.type = "button";
+    btnGlobalPause.textContent = "⏸ Пауза";
+    btnGlobalPause.style.cssText =
+      "padding:4px 8px;border-radius:5px;border:1px solid #d97706;background:#f59e0b;color:#fff;" +
+      "font-size:11px;font-weight:700;cursor:pointer;opacity:1;";
+    btnGlobalPause.addEventListener("click", function () {
+      newsV2PauseRequested = !newsV2PauseRequested;
+      btnGlobalPause.textContent = newsV2PauseRequested ? "▶ Продолжить" : "⏸ Пауза";
+      btnGlobalPause.style.background = newsV2PauseRequested ? "#16a34a" : "#f59e0b";
+      btnGlobalPause.style.borderColor = newsV2PauseRequested ? "#16a34a" : "#d97706";
+      if (newsV2PauseRequested) {
+        log("Пауза включена: новые запросы временно не отправляются.");
+        if (opBusy) sharedOpStatus.textContent = "Операции: пауза…";
+      } else {
+        log("Пауза снята: отправка запросов продолжена.");
+        if (opBusy) sharedOpStatus.textContent = "Операции: выполняется…";
+      }
+    });
+    sharedOpRow.appendChild(btnGlobalPause);
     var btnGlobalStop = document.createElement("button");
     btnGlobalStop.type = "button";
     btnGlobalStop.textContent = "⏹ Стоп";
