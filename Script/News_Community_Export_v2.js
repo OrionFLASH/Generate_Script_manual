@@ -102,6 +102,8 @@
     TRACE_MAX_BODY_LEN: 16384,
     TRACE_MAX_LINES: 8000
   };
+  /** Глобальный флаг паузы: единый для всех вкладок и режимов. */
+  var newsV2PauseRequested = false;
 
   /**
    * Ключи JSON (news / create / update / authors / leaders / newsFeature),
@@ -1386,6 +1388,30 @@ function createDevToolsTrace(opts) {
     });
   }
 
+  /**
+   * Ожидание снятия глобальной паузы перед отправкой очередного запроса.
+   * @param {{ log?: Function, shouldStop?: Function }} hooks
+   * @returns {Promise<{stopped: boolean}>}
+   */
+  async function waitIfPaused(hooks) {
+    var h = hooks || {};
+    var logFn = typeof h.log === "function" ? h.log : function () {};
+    var shouldStop = typeof h.shouldStop === "function" ? h.shouldStop : function () { return false; };
+    var waitLogged = false;
+    while (newsV2PauseRequested) {
+      if (!waitLogged) {
+        waitLogged = true;
+        logFn("Пауза включена: отправка запросов приостановлена до снятия паузы.");
+      }
+      if (shouldStop()) return { stopped: true };
+      await delay(250);
+    }
+    if (waitLogged) {
+      logFn("Пауза снята: отправка запросов продолжена.");
+    }
+    return { stopped: false };
+  }
+
   function optionValues(options) {
     return (options || []).map(function (o) {
       return typeof o === "string" ? o : String(o.value || o.tagCode || "");
@@ -1560,6 +1586,10 @@ function createDevToolsTrace(opts) {
     var lastErr = null;
     var retriesDone = 0;
     for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      var pauseResult = await waitIfPaused({ log: logFn, shouldStop: shouldStop });
+      if (pauseResult.stopped) {
+        return { ok: false, stopped: true, fr: lastFr, error: lastErr || "стоп", attempts: attempt - 1, retries: retriesDone };
+      }
       if (shouldStop()) return { ok: false, stopped: true, fr: lastFr, error: lastErr || "стоп", attempts: attempt - 1, retries: retriesDone };
       if (attempt > 1) retriesDone++;
       try {
@@ -1573,6 +1603,10 @@ function createDevToolsTrace(opts) {
       if (!lastErr) return { ok: true, fr: lastFr, error: null, attempts: attempt, retries: retriesDone };
       logFn("  ошибка (попытка " + attempt + "/" + maxAttempts + "): " + lastErr);
       if (attempt < maxAttempts) {
+        var pauseBeforeRetry = await waitIfPaused({ log: logFn, shouldStop: shouldStop });
+        if (pauseBeforeRetry.stopped) {
+          return { ok: false, stopped: true, fr: lastFr, error: lastErr, attempts: attempt, retries: retriesDone };
+        }
         if (shouldStop()) return { ok: false, stopped: true, fr: lastFr, error: lastErr, attempts: attempt, retries: retriesDone };
         if (pauseMs > 0) await delay(pauseMs);
       }
@@ -1594,6 +1628,10 @@ function createDevToolsTrace(opts) {
     var lastErr = null;
     var retriesDone = 0;
     for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      var pauseResult = await waitIfPaused({ log: logFn, shouldStop: shouldStop });
+      if (pauseResult.stopped) {
+        return { ok: false, stopped: true, fr: lastFr, error: lastErr || "стоп", attempts: attempt - 1, retries: retriesDone };
+      }
       if (shouldStop()) {
         return { ok: false, stopped: true, fr: lastFr, error: lastErr || "стоп", attempts: attempt - 1, retries: retriesDone };
       }
@@ -1615,6 +1653,10 @@ function createDevToolsTrace(opts) {
       }
       logFn("  ошибка (попытка " + attempt + "/" + maxAttempts + "): " + lastErr);
       if (attempt < maxAttempts) {
+        var pauseBeforeRetry = await waitIfPaused({ log: logFn, shouldStop: shouldStop });
+        if (pauseBeforeRetry.stopped) {
+          return { ok: false, stopped: true, fr: lastFr, error: lastErr, attempts: attempt, retries: retriesDone };
+        }
         if (shouldStop()) {
           return { ok: false, stopped: true, fr: lastFr, error: lastErr, attempts: attempt, retries: retriesDone };
         }
@@ -1959,12 +2001,86 @@ function createDevToolsTrace(opts) {
       "display:flex;gap:6px;align-items:center;padding:4px 12px;border-bottom:1px solid #e2e8f0;background:#f8fafc;";
     root.appendChild(sharedOpRow);
     var sharedOpStatus = document.createElement("div");
-    sharedOpStatus.style.cssText = "font-size:10px;color:#475569;flex:1;";
+    sharedOpStatus.style.cssText = "font-size:10px;color:#475569;flex:1;min-width:0;";
     sharedOpStatus.textContent = "Операции: ожидание";
     sharedOpRow.appendChild(sharedOpStatus);
 
+    var pauseStateBadge = document.createElement("div");
+    pauseStateBadge.style.cssText =
+      "flex:0 0 auto;padding:3px 8px;border-radius:999px;font-size:10px;font-weight:800;" +
+      "letter-spacing:0.02em;border:1px solid #cbd5e1;background:#f1f5f9;color:#475569;";
+    pauseStateBadge.textContent = "Пауза: ВЫКЛ";
+    sharedOpRow.appendChild(pauseStateBadge);
+
     var opBusy = false;
     var stopRequested = false;
+    var lastBusyLabel = "";
+    var btnGlobalPause = document.createElement("button");
+    btnGlobalPause.type = "button";
+    btnGlobalPause.textContent = "⏸ Пауза";
+    btnGlobalPause.style.cssText =
+      "padding:4px 8px;border-radius:5px;border:1px solid #d97706;background:#f59e0b;color:#fff;" +
+      "font-size:11px;font-weight:700;cursor:pointer;opacity:1;";
+    function refreshPauseUi() {
+      btnGlobalPause.textContent = newsV2PauseRequested ? "▶ Продолжить" : "⏸ Пауза";
+      btnGlobalPause.style.background = newsV2PauseRequested ? "#16a34a" : "#f59e0b";
+      btnGlobalPause.style.borderColor = newsV2PauseRequested ? "#16a34a" : "#d97706";
+      pauseStateBadge.textContent = newsV2PauseRequested ? "Пауза: ВКЛ" : "Пауза: ВЫКЛ";
+      pauseStateBadge.style.background = newsV2PauseRequested ? "#fef3c7" : "#f1f5f9";
+      pauseStateBadge.style.borderColor = newsV2PauseRequested ? "#f59e0b" : "#cbd5e1";
+      pauseStateBadge.style.color = newsV2PauseRequested ? "#92400e" : "#475569";
+      if (!opBusy) return;
+      sharedOpStatus.textContent = newsV2PauseRequested
+        ? "Операции: пауза… (" + (lastBusyLabel || "выполняется") + ")"
+        : "Операции: " +
+          (workState.phase || lastBusyLabel || "выполняется…") +
+          (workState.total > 0 ? " " + workState.current + "/" + workState.total : "") +
+          " · OK=" +
+          workState.ok +
+          " FAIL=" +
+          workState.fail;
+      if (newsV2PauseRequested) {
+        setWorkStatus({
+          level: "warn",
+          title: "Пауза: отправка запросов приостановлена",
+          lines: [
+            "Фаза: " + (workState.phase || lastBusyLabel || "—"),
+            workState.total > 0
+              ? "Прогресс: " + workState.current + " / " + workState.total
+              : "",
+            "OK=" +
+              workState.ok +
+              " · ошибки=" +
+              workState.fail +
+              " · повторы=" +
+              workState.retries
+          ].filter(Boolean)
+        });
+      }
+    }
+    btnGlobalPause.addEventListener("click", function () {
+      newsV2PauseRequested = !newsV2PauseRequested;
+      refreshPauseUi();
+      if (newsV2PauseRequested) {
+        log("Пауза включена: новые запросы временно не отправляются.", "warn");
+      } else {
+        if (opBusy) {
+          setWorkStatus({
+            level: "info",
+            title: "Продолжение: " + (workState.phase || lastBusyLabel || "операция"),
+            lines: [
+              workState.total > 0
+                ? "Прогресс: " + workState.current + " / " + workState.total
+                : "",
+              "OK=" + workState.ok + " · ошибки=" + workState.fail
+            ].filter(Boolean)
+          });
+        }
+        log("Пауза снята: отправка запросов продолжена.", "warn");
+      }
+    });
+    sharedOpRow.appendChild(btnGlobalPause);
+    refreshPauseUi();
     var btnGlobalStop = document.createElement("button");
     btnGlobalStop.type = "button";
     btnGlobalStop.textContent = "⏹ Стоп";
@@ -1975,14 +2091,210 @@ function createDevToolsTrace(opts) {
     btnGlobalStop.addEventListener("click", function () {
       if (!opBusy) return;
       if (stopRequested) {
-        log("Стоп уже запрошен — ждём текущий запрос…");
+        log("Стоп уже запрошен — ждём текущий запрос…", "warn");
         return;
       }
       stopRequested = true;
       sharedOpStatus.textContent = "Операции: стоп запрошен…";
-      log("Стоп запрошен: после текущего запроса остановим пакет.");
+      setWorkStatus({
+        level: "warn",
+        title: "Стоп запрошен — ждём текущий запрос",
+        lines: [
+          "Фаза: " + (workState.phase || lastBusyLabel || "—"),
+          workState.total > 0
+            ? "Прогресс на момент стопа: " + workState.current + " / " + workState.total
+            : "",
+          "OK=" + workState.ok + " · ошибки=" + workState.fail
+        ].filter(Boolean)
+      });
+      log("Стоп запрошен: после текущего запроса остановим пакет.", "warn");
     });
     sharedOpRow.appendChild(btnGlobalStop);
+
+    var workStatusEl = document.createElement("div");
+    workStatusEl.style.cssText =
+      "margin:0;padding:10px 12px;border-bottom:1px solid #1e293b;background:#0f172a;color:#e2e8f0;" +
+      "font-size:12px;line-height:1.45;min-height:108px;box-sizing:border-box;flex-shrink:0;";
+    root.appendChild(workStatusEl);
+
+    var workState = {
+      level: "info",
+      phase: "Ожидание",
+      title: "Готов к запуску",
+      lines: ["Выберите вкладку и запустите операцию."],
+      current: 0,
+      total: 0,
+      ok: 0,
+      fail: 0,
+      retries: 0,
+      skipped: 0,
+      request: ""
+    };
+
+    function escapeHtmlForStatus(s) {
+      return String(s == null ? "" : s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    /**
+     * Общий статус работы (аналог Pulse): фаза, прогресс, ошибки, текущий запрос.
+     * @param {{
+     *   level?: "info"|"ok"|"warn"|"err";
+     *   phase?: string;
+     *   title?: string;
+     *   lines?: string[];
+     *   current?: number;
+     *   total?: number;
+     *   ok?: number;
+     *   fail?: number;
+     *   retries?: number;
+     *   skipped?: number;
+     *   request?: string;
+     *   text?: string;
+     * }|string} info
+     */
+    function setWorkStatus(info) {
+      if (info == null) return;
+      if (typeof info === "string") {
+        info = { title: info, level: arguments[1] || "info" };
+      }
+      if (info.level) workState.level = info.level;
+      if (info.phase != null) workState.phase = String(info.phase);
+      if (info.title != null) workState.title = String(info.title);
+      if (Array.isArray(info.lines)) workState.lines = info.lines.slice();
+      if (info.current != null) workState.current = Number(info.current) || 0;
+      if (info.total != null) workState.total = Number(info.total) || 0;
+      if (info.ok != null) workState.ok = Number(info.ok) || 0;
+      if (info.fail != null) workState.fail = Number(info.fail) || 0;
+      if (info.retries != null) workState.retries = Number(info.retries) || 0;
+      if (info.skipped != null) workState.skipped = Number(info.skipped) || 0;
+      if (info.request != null) workState.request = String(info.request || "");
+      if (info.text && !(info.lines && info.lines.length) && info.title == null) {
+        workState.title = String(info.text);
+      }
+
+      var colors = {
+        info: { bg: "#0f172a", fg: "#e2e8f0" },
+        ok: { bg: "#064e3b", fg: "#d1fae5" },
+        warn: { bg: "#78350f", fg: "#ffedd5" },
+        err: { bg: "#7f1d1d", fg: "#fee2e2" }
+      };
+      var c = colors[workState.level] || colors.info;
+      workStatusEl.style.background = c.bg;
+      workStatusEl.style.color = c.fg;
+
+      var progressText =
+        workState.total > 0
+          ? workState.current + " / " + workState.total
+          : workState.current > 0
+            ? String(workState.current)
+            : "—";
+      var html = "";
+      html +=
+        '<div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px;margin-bottom:8px;">';
+      [
+        ["Запрос", progressText],
+        ["OK", String(workState.ok)],
+        ["Ошибки", String(workState.fail)],
+        ["Повторы", String(workState.retries)],
+        ["Пропуск", String(workState.skipped)]
+      ].forEach(function (pair) {
+        html +=
+          '<div style="padding:4px 6px;border-radius:6px;background:rgba(255,255,255,.08);">' +
+          '<div style="font-size:9px;letter-spacing:.04em;text-transform:uppercase;opacity:.7;">' +
+          escapeHtmlForStatus(pair[0]) +
+          "</div>" +
+          '<div style="font-weight:800;font-family:ui-monospace,monospace;font-size:12px;">' +
+          escapeHtmlForStatus(pair[1]) +
+          "</div></div>";
+      });
+      html += "</div>";
+      if (workState.phase) {
+        html +=
+          '<div style="font-size:10px;letter-spacing:.06em;text-transform:uppercase;opacity:.75;margin-bottom:4px;">' +
+          escapeHtmlForStatus(workState.phase) +
+          "</div>";
+      }
+      if (workState.title) {
+        html +=
+          '<div style="font-weight:800;margin-bottom:6px;">' +
+          escapeHtmlForStatus(workState.title) +
+          "</div>";
+      }
+      var detailLines = (workState.lines || []).slice();
+      if (workState.request) {
+        detailLines = ["Сейчас: " + workState.request].concat(detailLines);
+      }
+      if (detailLines.length) {
+        html += '<div style="display:grid;gap:3px;font-size:11px;opacity:.95;">';
+        for (var li = 0; li < detailLines.length; li++) {
+          if (!detailLines[li]) continue;
+          html += "<div>" + escapeHtmlForStatus(detailLines[li]) + "</div>";
+        }
+        html += "</div>";
+      }
+      workStatusEl.innerHTML = html;
+    }
+
+    function beginWorkStatus(phase, title, total, lines) {
+      setWorkStatus({
+        level: "info",
+        phase: phase || "Операция",
+        title: title || phase || "Старт",
+        current: 0,
+        total: total || 0,
+        ok: 0,
+        fail: 0,
+        retries: 0,
+        skipped: 0,
+        request: "",
+        lines: lines || ["Ожидание первого запроса…"]
+      });
+    }
+
+    function tickWorkStatus(patch) {
+      setWorkStatus(patch || {});
+      var phase = workState.phase || lastBusyLabel || "операция";
+      var prog =
+        workState.total > 0
+          ? workState.current + "/" + workState.total
+          : workState.current > 0
+            ? String(workState.current)
+            : "";
+      sharedOpStatus.textContent =
+        "Операции: " +
+        phase +
+        (prog ? " " + prog : "") +
+        " · OK=" +
+        workState.ok +
+        " FAIL=" +
+        workState.fail +
+        (newsV2PauseRequested ? " · пауза" : "");
+    }
+
+    function finishWorkStatus(level, title, lines) {
+      setWorkStatus({
+        level: level || "ok",
+        title: title || "Готово",
+        request: "",
+        lines: lines || [
+          "OK=" + workState.ok,
+          "Ошибки=" + workState.fail,
+          "Повторы=" + workState.retries,
+          workState.skipped ? "Пропущено=" + workState.skipped : ""
+        ].filter(Boolean)
+      });
+    }
+
+    setWorkStatus({
+      level: "info",
+      phase: "Ожидание",
+      title: "Готов к запуску",
+      lines: ["Выберите вкладку и запустите операцию."]
+    });
 
     function readSharedGap(inp, fallback) {
       var n = parseInt(String(inp.value || "").trim(), 10);
@@ -2051,9 +2363,21 @@ function createDevToolsTrace(opts) {
       btnGlobalStop.style.opacity = busy ? "1" : "0.55";
       btnGlobalStop.style.cursor = busy ? "pointer" : "not-allowed";
       if (!busy) stopRequested = false;
-      sharedOpStatus.textContent = busy
-        ? "Операции: " + (label || "выполняется…")
-        : "Операции: ожидание";
+      lastBusyLabel = busy ? String(label || "выполняется…") : "";
+      if (!busy) {
+        sharedOpStatus.textContent = "Операции: ожидание";
+      } else if (newsV2PauseRequested) {
+        sharedOpStatus.textContent = "Операции: пауза… (" + lastBusyLabel + ")";
+        beginWorkStatus(lastBusyLabel, "Старт: " + lastBusyLabel, 0, [
+          "Пауза уже включена — запросы пойдут после «Продолжить»."
+        ]);
+      } else {
+        sharedOpStatus.textContent = "Операции: " + lastBusyLabel;
+        beginWorkStatus(lastBusyLabel, "Старт: " + lastBusyLabel, 0, [
+          "Ожидание первого запроса…"
+        ]);
+      }
+      refreshPauseUi();
     }
     function isStopRequested() {
       return !!stopRequested;
@@ -2094,14 +2418,13 @@ function createDevToolsTrace(opts) {
       var pageFrom = range.pageFrom;
       var pageTo = range.pageTo;
       setOpBusy(true, busyLabel || "загрузка списка");
+      var comboTotal = Math.max(1, statuses.length * blocks.length);
+      var comboDone = 0;
+      beginWorkStatus(busyLabel || "загрузка списка", "POST /v1/news · список", comboTotal, [
+        "Стр. " + pageFrom + "…" + pageTo,
+        "status × block: " + statuses.length + " × " + blocks.length
+      ]);
       try {
-        log(
-          "Загрузка списка /v1/news стр. " +
-            pageFrom +
-            "…" +
-            pageTo +
-            (range.pageToRaw > 0 ? "" : " (лимит вкладки: " + localMax + ")")
-        );
         for (var si = 0; si < statuses.length; si++) {
           if (isStopRequested()) {
             stoppedByUser = true;
@@ -2115,13 +2438,27 @@ function createDevToolsTrace(opts) {
             var status = statuses[si];
             var block = blocks[bi];
             var pageNum = pageFrom;
+            comboDone++;
             while (pageNum <= pageTo) {
               if (isStopRequested()) {
                 stoppedByUser = true;
                 break;
               }
-              sharedOpStatus.textContent =
-                "Операции: список " + status + "/" + block + " стр." + pageNum;
+              tickWorkStatus({
+                current: comboDone,
+                total: comboTotal,
+                ok: loaded.length,
+                fail: consecutiveFails,
+                retries: retriesTotal,
+                request: "list · " + status + " / " + block + " · pageNum=" + pageNum,
+                title: "Список " + comboDone + " из " + comboTotal,
+                lines: [
+                  "status=" + status,
+                  "businessBlock=" + block,
+                  "pageNum=" + pageNum + (pageTo > 0 ? "… " + pageTo : ""),
+                  "собрано записей: " + loaded.length
+                ]
+              });
               var payload = { newsStatus: status, businessBlock: block, pageNum: pageNum };
               var retryResult = await fetchNewsPageWithRetry(env.origin, payload, {
                 log: log,
@@ -2129,7 +2466,10 @@ function createDevToolsTrace(opts) {
                 retryPauseMs: settings.retryPauseMs,
                 shouldStop: isStopRequested,
                 onAttempt: function (_a, _m, _e, meta) {
-                  if (meta && meta.isRetry) retriesTotal++;
+                  if (meta && meta.isRetry) {
+                    retriesTotal++;
+                    tickWorkStatus({ retries: retriesTotal, level: "warn" });
+                  }
                 }
               });
               if (retryResult.stopped || isStopRequested()) {
@@ -2148,6 +2488,7 @@ function createDevToolsTrace(opts) {
                     " | " +
                     (retryResult.error || "ошибка")
                 );
+                tickWorkStatus({ fail: consecutiveFails, level: "err" });
                 if (consecutiveFails >= settings.abortLimit) {
                   abortedByErrors = true;
                   log("АВАРИЯ: " + consecutiveFails + " подряд ошибок — остановка загрузки.");
@@ -2204,6 +2545,20 @@ function createDevToolsTrace(opts) {
       } finally {
         setOpBusy(false);
       }
+      finishWorkStatus(
+        abortedByErrors ? "err" : stoppedByUser ? "warn" : "ok",
+        abortedByErrors
+          ? "Загрузка списка прервана ошибками"
+          : stoppedByUser
+            ? "Загрузка списка остановлена"
+            : "Список загружен",
+        [
+          "Записей: " + loaded.length,
+          "Повторы=" + retriesTotal,
+          abortedByErrors ? "Авария по ошибкам" : "",
+          stoppedByUser ? "Стоп пользователем" : ""
+        ].filter(Boolean)
+      );
       return {
         ok: true,
         items: loaded.filter(function (n) {
@@ -2267,42 +2622,66 @@ function createDevToolsTrace(opts) {
 
     var content = document.createElement("div");
     content.style.cssText =
-      "flex:0 1 auto;min-height:0;min-width:0;overflow:auto;padding:8px 10px 0;width:100%;box-sizing:border-box;";
+      "flex:1 1 auto;min-height:0;min-width:0;overflow:auto;padding:8px 10px 0;width:100%;box-sizing:border-box;";
     work.appendChild(content);
 
     var logWrap = document.createElement("div");
     logWrap.style.cssText =
-      "flex:1 1 130px;min-height:130px;margin:0;border-top:1px solid #e2e8f0;background:#fff;padding:5px 12px 6px;" +
+      "flex:0 0 auto;min-height:72px;max-height:160px;margin:0;border-top:1px solid #e2e8f0;background:#fff;padding:5px 12px 6px;" +
       "display:flex;flex-direction:column;width:100%;box-sizing:border-box;";
-    // Журнал — последний блок (под контентом вкладок), без пустого зазора после параметров.
+    // Журнал — только критичное (ошибки/стоп/авария); обычный ход — в блоке статуса сверху.
     work.appendChild(logWrap);
     var logTitle = document.createElement("div");
-    logTitle.textContent = "Журнал";
+    logTitle.textContent = "Ошибки / критичное";
     logTitle.style.cssText = "font-size:10px;font-weight:700;color:#475569;margin:0 0 3px;";
     logWrap.appendChild(logTitle);
     var logEl = document.createElement("div");
     logEl.style.cssText =
-      "flex:1;min-height:0;overflow:auto;border:1px solid #cbd5e1;border-radius:5px;background:#f8fafc;padding:4px 6px;" +
+      "flex:1;min-height:48px;max-height:120px;overflow:auto;border:1px solid #cbd5e1;border-radius:5px;background:#f8fafc;padding:4px 6px;" +
       "font-family:ui-monospace,monospace;font-size:10px;line-height:1.35;";
     logWrap.appendChild(logEl);
 
     // Один общий Trace на всю панель (все вкладки → один буфер / один .log)
     devTrace.mountToggleRow(logWrap, logTitle);
 
-    function log(msg) {
+    function isCriticalLogMessage(msg) {
+      var s = String(msg || "");
+      if (!s) return false;
+      if (/^(Ошибка|ошибка|АВАРИЯ|Отмена|Стоп|FAIL|ВНИМАНИЕ|\[ERR\]|\[WARN\])/i.test(s)) {
+        return true;
+      }
+      return /(ошибк|авария|отменена|отменён|не удалось|не найден|критич)/i.test(s);
+    }
+
+    /**
+     * Журнал UI показывает только критичное; всё остальное уходит в Trace и статус-блок.
+     * @param {string} msg
+     * @param {"info"|"ok"|"warn"|"err"} [level]
+     */
+    function log(msg, level) {
+      var text = String(msg == null ? "" : msg);
+      var lvl = level || (isCriticalLogMessage(text) ? "err" : "info");
+      try {
+        devTrace.log((lvl === "err" ? "[ERR] " : lvl === "warn" ? "[WARN] " : "") + text);
+      } catch (_e) {
+        /* ignore */
+      }
+      if (lvl === "info" || lvl === "ok") return;
       var line = document.createElement("div");
-      line.style.cssText = "margin-bottom:3px;line-height:1.35;";
-      line.textContent = nowIso() + "  " + msg;
+      line.style.cssText =
+        "margin-bottom:3px;line-height:1.35;color:" +
+        (lvl === "warn" ? "#b45309" : "#b91c1c") +
+        ";";
+      line.textContent =
+        nowIso() +
+        "  " +
+        (lvl === "warn" ? "[WARN] " : "[ERR] ") +
+        text;
       logEl.appendChild(line);
       while (logEl.childElementCount > NEWS_V2_CFG.LOG_MAX_LINES) {
         logEl.removeChild(logEl.firstElementChild);
       }
       logEl.scrollTop = logEl.scrollHeight;
-      try {
-        devTrace.log(String(msg));
-      } catch (_e) {
-        /* ignore */
-      }
     }
 
     function mkBtn(text, onClick, extraCss) {
@@ -3103,15 +3482,26 @@ function createDevToolsTrace(opts) {
         var ok = 0;
         var fail = 0;
         setOpBusy(true, "публикация после создания");
+        beginWorkStatus("Публикация", "patch status → published", toPub.length, [
+          "После создания: публикация выбранных черновиков"
+        ]);
         refreshCreateActions();
         try {
           for (var i = 0; i < toPub.length; i++) {
             if (isStopRequested()) {
-              log("Стоп: публикация прервана.");
+              log("Стоп: публикация прервана.", "warn");
               break;
             }
             var newsId = toPub[i].newsId;
-            sharedOpStatus.textContent = "Операции: публикация " + (i + 1) + "/" + toPub.length;
+            tickWorkStatus({
+              current: i + 1,
+              total: toPub.length,
+              ok: ok,
+              fail: fail,
+              request: "newsUpdate patch · published · " + newsId,
+              title: "Публикация " + (i + 1) + " из " + toPub.length,
+              lines: ["newsId=" + newsId, "type=" + (toPub[i].type || "—")]
+            });
             var retryResult = await patchNewsStatus(env.origin, newsId, "published", {
               log: log,
               retryMax: settings.retryMax,
@@ -3122,7 +3512,7 @@ function createDevToolsTrace(opts) {
             if (retryResult.stopped) break;
             if (retryResult.ok) {
               ok++;
-              log("Опубликовано: newsId=" + newsId);
+              tickWorkStatus({ ok: ok, fail: fail, level: "info" });
             } else {
               fail++;
               log(
@@ -3131,6 +3521,7 @@ function createDevToolsTrace(opts) {
                   ": " +
                   (retryResult.error || ("HTTP " + (retryResult.fr && retryResult.fr.status)))
               );
+              tickWorkStatus({ ok: ok, fail: fail, level: "err" });
             }
             if (i < toPub.length - 1 && settings.opGapMs > 0) await delay(settings.opGapMs);
           }
@@ -3138,7 +3529,12 @@ function createDevToolsTrace(opts) {
           setOpBusy(false);
           refreshCreateActions();
         }
-        log("Публикация после создания: OK=" + ok + ", FAIL=" + fail + ".");
+        finishWorkStatus(
+          fail > 0 ? "err" : "ok",
+          fail > 0 ? "Публикация завершена с ошибками" : "Публикация завершена",
+          ["OK=" + ok, "Ошибки=" + fail]
+        );
+        if (fail > 0) log("Публикация после создания: OK=" + ok + ", FAIL=" + fail + ".");
         if (ok > 0) {
           var keep = [];
           for (var ki = 0; ki < createdDrafts.length; ki++) {
@@ -3186,15 +3582,26 @@ function createDevToolsTrace(opts) {
         var ok = 0;
         var fail = 0;
         setOpBusy(true, "удаление после создания");
+        beginWorkStatus("Удаление", "newsDelete · после создания", toDel.length, [
+          "Удаление выбранных черновиков после создания"
+        ]);
         refreshCreateActions();
         try {
           for (var i = 0; i < toDel.length; i++) {
             if (isStopRequested()) {
-              log("Стоп: удаление прервано.");
+              log("Стоп: удаление прервано.", "warn");
               break;
             }
             var newsId = toDel[i].newsId;
-            sharedOpStatus.textContent = "Операции: удаление " + (i + 1) + "/" + toDel.length;
+            tickWorkStatus({
+              current: i + 1,
+              total: toDel.length,
+              ok: ok,
+              fail: fail,
+              request: "newsDelete · " + newsId,
+              title: "Удаление " + (i + 1) + " из " + toDel.length,
+              lines: ["newsId=" + newsId]
+            });
             var retryResult = await postJsonWithRetry(
               env.origin + NEWS_V2_CFG.NEWS_DELETE_PATH,
               { newsId: newsId },
@@ -3210,7 +3617,7 @@ function createDevToolsTrace(opts) {
             if (retryResult.stopped) break;
             if (retryResult.ok) {
               ok++;
-              log("Удалено: newsId=" + newsId);
+              tickWorkStatus({ ok: ok, fail: fail, level: "info" });
             } else {
               fail++;
               log(
@@ -3219,6 +3626,7 @@ function createDevToolsTrace(opts) {
                   ": " +
                   (retryResult.error || ("HTTP " + (retryResult.fr && retryResult.fr.status)))
               );
+              tickWorkStatus({ ok: ok, fail: fail, level: "err" });
             }
             if (i < toDel.length - 1 && settings.opGapMs > 0) await delay(settings.opGapMs);
           }
@@ -3226,7 +3634,12 @@ function createDevToolsTrace(opts) {
           setOpBusy(false);
           refreshCreateActions();
         }
-        log("Удаление после создания: OK=" + ok + ", FAIL=" + fail + ".");
+        finishWorkStatus(
+          fail > 0 ? "err" : "ok",
+          fail > 0 ? "Удаление завершено с ошибками" : "Удаление завершено",
+          ["OK=" + ok, "Ошибки=" + fail]
+        );
+        if (fail > 0) log("Удаление после создания: OK=" + ok + ", FAIL=" + fail + ".");
         if (ok > 0) {
           var keep = [];
           for (var ki = 0; ki < createdDrafts.length; ki++) {
@@ -3697,18 +4110,36 @@ function createDevToolsTrace(opts) {
               var createdObjectIdsByIndex = new Array(selectedValid.length);
               clearPublishBox();
               setOpBusy(true, "создание");
+              beginWorkStatus("Создание", "newsCreate · пакет", selectedValid.length, [
+                "Валидных: " + selectedValid.length,
+                errors.length ? "Пропущено невалидных: " + errors.length : "",
+                stubMode ? "Режим болванки: leaders/authors = []" : ""
+              ].filter(Boolean));
               refreshCreateActions();
               try {
                 for (var si = 0; si < selectedValid.length; si++) {
                   if (isStopRequested()) {
                     stoppedByUser = true;
-                    log("Стоп: создание прервано пользователем.");
+                    log("Стоп: создание прервано пользователем.", "warn");
                     break;
                   }
                   // Болванка очищает списки только в копии для отправки.
                   var payload = payloadForCreateSend(selectedValid[si].payload, stubMode);
-                  sharedOpStatus.textContent =
-                    "Операции: создание " + (si + 1) + "/" + selectedValid.length;
+                  tickWorkStatus({
+                    current: si + 1,
+                    total: selectedValid.length,
+                    ok: okCount,
+                    fail: failCount,
+                    retries: retriesTotal,
+                    skipped: errors.length,
+                    request: "newsCreate · " + (payload.type || "?") + " · " + compactNewsLabel(payload),
+                    title: "Создание " + (si + 1) + " из " + selectedValid.length,
+                    lines: [
+                      "type=" + (payload.type || "—"),
+                      "createdBy=" + (payload.createdBy || "—"),
+                      stubMode ? "болванка: без leaders/authors" : ""
+                    ].filter(Boolean)
+                  });
                   var retryResult = await postJsonWithRetry(
                     env.origin + NEWS_V2_CFG.NEWS_CREATE_PATH,
                     payload,
@@ -3726,7 +4157,10 @@ function createDevToolsTrace(opts) {
                         return null;
                       },
                       onAttempt: function (attempt, maxAttempts, err, meta) {
-                        if (meta && meta.isRetry) retriesTotal++;
+                        if (meta && meta.isRetry) {
+                          retriesTotal++;
+                          tickWorkStatus({ retries: retriesTotal, level: "warn" });
+                        }
                       }
                     }
                   );
@@ -3752,14 +4186,12 @@ function createDevToolsTrace(opts) {
                       type: payload.type,
                       summary: compactNewsLabel(payload)
                     });
-                    log(
-                      "Создано: objectId=" +
-                        newId +
-                        " | type=" +
-                        payload.type +
-                        " | " +
-                        compactNewsLabel(payload)
-                    );
+                    tickWorkStatus({
+                      ok: okCount,
+                      fail: failCount,
+                      retries: retriesTotal,
+                      level: "info"
+                    });
                   } else {
                     failCount++;
                     consecutiveFails++;
@@ -3769,13 +4201,19 @@ function createDevToolsTrace(opts) {
                         " | " +
                         compactNewsLabel(payload)
                     );
-              if (consecutiveFails >= settings.abortLimit) {
-                log(
-                  "ВНИМАНИЕ: " +
-                    consecutiveFails +
-                    " подряд исчерпанных ошибок, но создание продолжается (без аварийной остановки)."
-                );
-              }
+                    tickWorkStatus({
+                      ok: okCount,
+                      fail: failCount,
+                      retries: retriesTotal,
+                      level: "err"
+                    });
+                    if (consecutiveFails >= settings.abortLimit) {
+                      log(
+                        "ВНИМАНИЕ: " +
+                          consecutiveFails +
+                          " подряд исчерпанных ошибок, но создание продолжается (без аварийной остановки)."
+                      );
+                    }
                   }
                   if (si < selectedValid.length - 1 && settings.opGapMs > 0) {
                     await delay(settings.opGapMs);
@@ -3829,20 +4267,37 @@ function createDevToolsTrace(opts) {
                     ")"
                 );
               }
-              log(
-                "Создание завершено. OK=" +
-                  okCount +
-                  ", FAIL=" +
-                  failCount +
-                  ", пропущено невалидных=" +
-                  errors.length +
-                  ", повторов=" +
-                  retriesTotal +
-                  (stoppedByUser ? " | стоп" : "") +
-                  (abortedByErrors ? " | авария" : "") +
-                  (stubMode ? " | болванка без leaders/authors" : "") +
-                  "."
+              finishWorkStatus(
+                failCount > 0 || stoppedByUser ? (stoppedByUser ? "warn" : "err") : "ok",
+                stoppedByUser
+                  ? "Создание остановлено"
+                  : failCount > 0
+                    ? "Создание завершено с ошибками"
+                    : "Создание завершено",
+                [
+                  "OK=" + okCount + " из " + selectedValid.length,
+                  "Ошибки=" + failCount,
+                  errors.length ? "Пропущено невалидных=" + errors.length : "",
+                  "Повторы=" + retriesTotal,
+                  createdIds.length ? "Черновиков для publish/delete: " + createdIds.length : ""
+                ].filter(Boolean)
               );
+              if (failCount > 0 || stoppedByUser || errors.length) {
+                log(
+                  "Создание завершено. OK=" +
+                    okCount +
+                    ", FAIL=" +
+                    failCount +
+                    ", пропущено невалидных=" +
+                    errors.length +
+                    ", повторов=" +
+                    retriesTotal +
+                    (stoppedByUser ? " | стоп" : "") +
+                    (abortedByErrors ? " | авария" : "") +
+                    ".",
+                  failCount > 0 ? "err" : "warn"
+                );
+              }
               if (createdIds.length) showCreatedDraftsForPublish(createdIds);
             })();
         },
@@ -4157,16 +4612,27 @@ function createDevToolsTrace(opts) {
               var abortedByErrors = false;
               var dump = [];
               setOpBusy(true, "статусы");
+              beginWorkStatus("Статусы", "newsUpdate patch · " + targetSel.value, selected.length, [
+                "Целевой статус: " + targetSel.value
+              ]);
               try {
                 for (var si = 0; si < selected.length; si++) {
                   if (isStopRequested()) {
                     stoppedByUser = true;
-                    log("Стоп: смена статусов прервана пользователем.");
+                    log("Стоп: смена статусов прервана пользователем.", "warn");
                     break;
                   }
                   var item = selected[si];
-                  sharedOpStatus.textContent =
-                    "Операции: статус " + (si + 1) + "/" + selected.length;
+                  tickWorkStatus({
+                    current: si + 1,
+                    total: selected.length,
+                    ok: okCount,
+                    fail: failCount,
+                    retries: retriesTotal,
+                    request: "patch · " + item.targetStatus + " · " + item.newsId,
+                    title: "Статус " + (si + 1) + " из " + selected.length,
+                    lines: ["newsId=" + item.newsId, "→ " + item.targetStatus]
+                  });
                   var retryResult = await patchNewsStatus(
                     env.origin,
                     item.newsId,
@@ -4208,7 +4674,7 @@ function createDevToolsTrace(opts) {
                   if (retryResult.ok) {
                     consecutiveFails = 0;
                     okCount++;
-                    log("Статус обновлён: newsId=" + item.newsId + " -> " + item.targetStatus);
+                    tickWorkStatus({ ok: okCount, fail: failCount, retries: retriesTotal, level: "info" });
                   } else {
                     failCount++;
                     consecutiveFails++;
@@ -4218,6 +4684,7 @@ function createDevToolsTrace(opts) {
                         " | " +
                         (retryResult.error || ("HTTP " + (retryResult.fr && retryResult.fr.status)))
                     );
+                    tickWorkStatus({ ok: okCount, fail: failCount, retries: retriesTotal, level: "err" });
                     if (consecutiveFails >= settings.abortLimit) {
                       abortedByErrors = true;
                       log(
@@ -4253,17 +4720,33 @@ function createDevToolsTrace(opts) {
                   results: dump
                 }
               );
-              log(
-                "Смена статусов завершена. OK=" +
-                  okCount +
-                  ", FAIL=" +
-                  failCount +
-                  ", повторов=" +
-                  retriesTotal +
-                  (stoppedByUser ? " | стоп" : "") +
-                  (abortedByErrors ? " | авария" : "") +
-                  "."
+              finishWorkStatus(
+                failCount > 0 || abortedByErrors ? "err" : stoppedByUser ? "warn" : "ok",
+                stoppedByUser
+                  ? "Смена статусов остановлена"
+                  : failCount > 0
+                    ? "Смена статусов завершена с ошибками"
+                    : "Смена статусов завершена",
+                [
+                  "OK=" + okCount + " из " + selected.length,
+                  "Ошибки=" + failCount,
+                  "Повторы=" + retriesTotal
+                ]
               );
+              if (failCount > 0 || stoppedByUser || abortedByErrors) {
+                log(
+                  "Смена статусов завершена. OK=" +
+                    okCount +
+                    ", FAIL=" +
+                    failCount +
+                    ", повторов=" +
+                    retriesTotal +
+                    (stoppedByUser ? " | стоп" : "") +
+                    (abortedByErrors ? " | авария" : "") +
+                    ".",
+                  failCount > 0 || abortedByErrors ? "err" : "warn"
+                );
+              }
             })();
           },
           "background:#2563eb;color:#fff;border-color:#2563eb;"
@@ -4623,17 +5106,28 @@ function createDevToolsTrace(opts) {
               var abortedByErrors = false;
               var dump = [];
               setOpBusy(true, "редактирование");
+              beginWorkStatus("Редактирование", "newsUpdate put", selected.length, [
+                detailCb.checked ? "Сначала news-detail, затем put" : "Сразу put"
+              ]);
               try {
                 for (var si = 0; si < selected.length; si++) {
                   if (isStopRequested()) {
                     stoppedByUser = true;
-                    log("Стоп: редактирование прервано пользователем.");
+                    log("Стоп: редактирование прервано пользователем.", "warn");
                     break;
                   }
                   var payload = selected[si].payload;
                   if (detailCb.checked) {
-                    sharedOpStatus.textContent =
-                      "Операции: news-detail " + (si + 1) + "/" + selected.length;
+                    tickWorkStatus({
+                      current: si + 1,
+                      total: selected.length,
+                      ok: okCount,
+                      fail: failCount,
+                      retries: retriesTotal,
+                      request: "news-detail · " + payload.newsId,
+                      title: "Детализация " + (si + 1) + " из " + selected.length,
+                      lines: ["newsId=" + payload.newsId]
+                    });
                     var detailRes = await postJsonWithRetry(
                       env.origin + NEWS_V2_CFG.NEWS_DETAIL_PATH,
                       { newsId: String(payload.newsId || "").trim() },
@@ -4645,7 +5139,10 @@ function createDevToolsTrace(opts) {
                         requireBody: true,
                         shouldStop: isStopRequested,
                         onAttempt: function (_a, _m, _e, meta) {
-                          if (meta && meta.isRetry) retriesTotal++;
+                          if (meta && meta.isRetry) {
+                            retriesTotal++;
+                            tickWorkStatus({ retries: retriesTotal, level: "warn" });
+                          }
                         }
                       }
                     );
@@ -4677,8 +5174,20 @@ function createDevToolsTrace(opts) {
                     }
                   }
                   payload.method = "put";
-                  sharedOpStatus.textContent =
-                    "Операции: редактирование " + (si + 1) + "/" + selected.length;
+                  tickWorkStatus({
+                    current: si + 1,
+                    total: selected.length,
+                    ok: okCount,
+                    fail: failCount,
+                    retries: retriesTotal,
+                    request: "newsUpdate put · " + payload.newsId,
+                    title: "Редактирование " + (si + 1) + " из " + selected.length,
+                    lines: [
+                      "newsId=" + payload.newsId,
+                      "type=" + (payload.type || "—"),
+                      "status=" + (payload.status || "—")
+                    ]
+                  });
                   var retryResult = await postJsonWithRetry(
                     env.origin + NEWS_V2_CFG.NEWS_UPDATE_PATH,
                     payload,
@@ -4690,7 +5199,10 @@ function createDevToolsTrace(opts) {
                       requireBody: false,
                       shouldStop: isStopRequested,
                       onAttempt: function (attempt, maxAttempts, err, meta) {
-                        if (meta && meta.isRetry) retriesTotal++;
+                        if (meta && meta.isRetry) {
+                          retriesTotal++;
+                          tickWorkStatus({ retries: retriesTotal, level: "warn" });
+                        }
                       }
                     }
                   );
@@ -4708,7 +5220,7 @@ function createDevToolsTrace(opts) {
                   if (retryResult.ok) {
                     consecutiveFails = 0;
                     okCount++;
-                    log("Обновлено: newsId=" + payload.newsId);
+                    tickWorkStatus({ ok: okCount, fail: failCount, retries: retriesTotal, level: "info" });
                   } else {
                     failCount++;
                     consecutiveFails++;
@@ -4718,6 +5230,7 @@ function createDevToolsTrace(opts) {
                         " | " +
                         (retryResult.error || ("HTTP " + (retryResult.fr && retryResult.fr.status)))
                     );
+                    tickWorkStatus({ ok: okCount, fail: failCount, retries: retriesTotal, level: "err" });
                     if (consecutiveFails >= settings.abortLimit) {
                       abortedByErrors = true;
                       log(
@@ -4753,17 +5266,33 @@ function createDevToolsTrace(opts) {
                   results: dump
                 }
               );
-              log(
-                "Редактирование завершено. OK=" +
-                  okCount +
-                  ", FAIL=" +
-                  failCount +
-                  ", повторов=" +
-                  retriesTotal +
-                  (stoppedByUser ? " | стоп" : "") +
-                  (abortedByErrors ? " | авария" : "") +
-                  "."
+              finishWorkStatus(
+                failCount > 0 || abortedByErrors ? "err" : stoppedByUser ? "warn" : "ok",
+                stoppedByUser
+                  ? "Редактирование остановлено"
+                  : failCount > 0
+                    ? "Редактирование завершено с ошибками"
+                    : "Редактирование завершено",
+                [
+                  "OK=" + okCount + " из " + selected.length,
+                  "Ошибки=" + failCount,
+                  "Повторы=" + retriesTotal
+                ]
               );
+              if (failCount > 0 || stoppedByUser || abortedByErrors) {
+                log(
+                  "Редактирование завершено. OK=" +
+                    okCount +
+                    ", FAIL=" +
+                    failCount +
+                    ", повторов=" +
+                    retriesTotal +
+                    (stoppedByUser ? " | стоп" : "") +
+                    (abortedByErrors ? " | авария" : "") +
+                    ".",
+                  failCount > 0 || abortedByErrors ? "err" : "warn"
+                );
+              }
             })();
           },
           "background:#7c3aed;color:#fff;border-color:#7c3aed;"
@@ -5009,17 +5538,28 @@ function createDevToolsTrace(opts) {
               var abortedByErrors = false;
               var dump = [];
               setOpBusy(true, "удаление");
+              beginWorkStatus("Удаление", "newsDelete", selected.length, [
+                "Безвозвратное удаление выбранных новостей"
+              ]);
               try {
                 for (var si = 0; si < selected.length; si++) {
                   if (isStopRequested()) {
                     stoppedByUser = true;
-                    log("Стоп: удаление прервано.");
+                    log("Стоп: удаление прервано.", "warn");
                     break;
                   }
                   var item = selected[si];
                   var payload = { newsId: item.newsId };
-                  sharedOpStatus.textContent =
-                    "Операции: удаление " + (si + 1) + "/" + selected.length;
+                  tickWorkStatus({
+                    current: si + 1,
+                    total: selected.length,
+                    ok: okCount,
+                    fail: failCount,
+                    retries: retriesTotal,
+                    request: "newsDelete · " + item.newsId,
+                    title: "Удаление " + (si + 1) + " из " + selected.length,
+                    lines: ["newsId=" + item.newsId]
+                  });
                   var retryResult = await postJsonWithRetry(
                     env.origin + NEWS_V2_CFG.NEWS_DELETE_PATH,
                     payload,
@@ -5031,7 +5571,10 @@ function createDevToolsTrace(opts) {
                       requireBody: false,
                       shouldStop: isStopRequested,
                       onAttempt: function (_a, _m, _e, meta) {
-                        if (meta && meta.isRetry) retriesTotal++;
+                        if (meta && meta.isRetry) {
+                          retriesTotal++;
+                          tickWorkStatus({ retries: retriesTotal, level: "warn" });
+                        }
                       }
                     }
                   );
@@ -5049,7 +5592,7 @@ function createDevToolsTrace(opts) {
                   if (retryResult.ok) {
                     consecutiveFails = 0;
                     okCount++;
-                    log("Удалено: newsId=" + item.newsId);
+                    tickWorkStatus({ ok: okCount, fail: failCount, retries: retriesTotal, level: "info" });
                   } else {
                     failCount++;
                     consecutiveFails++;
@@ -5059,6 +5602,7 @@ function createDevToolsTrace(opts) {
                         " | " +
                         (retryResult.error || ("HTTP " + (retryResult.fr && retryResult.fr.status)))
                     );
+                    tickWorkStatus({ ok: okCount, fail: failCount, retries: retriesTotal, level: "err" });
                     if (consecutiveFails >= settings.abortLimit) {
                       abortedByErrors = true;
                       log("АВАРИЯ: остановка удаления после " + consecutiveFails + " ошибок подряд.");
@@ -5090,15 +5634,31 @@ function createDevToolsTrace(opts) {
                   results: dump
                 }
               );
-              log(
-                "Удаление завершено. OK=" +
-                  okCount +
-                  ", FAIL=" +
-                  failCount +
-                  (stoppedByUser ? " | стоп" : "") +
-                  (abortedByErrors ? " | авария" : "") +
-                  "."
+              finishWorkStatus(
+                failCount > 0 || abortedByErrors ? "err" : stoppedByUser ? "warn" : "ok",
+                stoppedByUser
+                  ? "Удаление остановлено"
+                  : failCount > 0
+                    ? "Удаление завершено с ошибками"
+                    : "Удаление завершено",
+                [
+                  "OK=" + okCount + " из " + selected.length,
+                  "Ошибки=" + failCount,
+                  "Повторы=" + retriesTotal
+                ]
               );
+              if (failCount > 0 || stoppedByUser || abortedByErrors) {
+                log(
+                  "Удаление завершено. OK=" +
+                    okCount +
+                    ", FAIL=" +
+                    failCount +
+                    (stoppedByUser ? " | стоп" : "") +
+                    (abortedByErrors ? " | авария" : "") +
+                    ".",
+                  failCount > 0 || abortedByErrors ? "err" : "warn"
+                );
+              }
             })();
           },
           "background:#b91c1c;color:#fff;border-color:#b91c1c;"
@@ -5131,7 +5691,18 @@ function createDevToolsTrace(opts) {
         stopRequested = true;
         sharedOpStatus.textContent = "Операции: стоп запрошен…";
         setStats({ tone: "stop", phase: "стоп… (ждём POST)" });
-        log("Стоп запрошен: после текущего запроса сохраним уже загруженное.");
+        setWorkStatus({
+          level: "warn",
+          title: "Стоп запрошен — ждём текущий POST",
+          lines: [
+            "Фаза: " + (workState.phase || "выгрузка"),
+            workState.total > 0
+              ? "Прогресс: " + workState.current + " / " + workState.total
+              : "",
+            "OK=" + workState.ok + " · ошибки=" + workState.fail
+          ].filter(Boolean)
+        });
+        log("Стоп запрошен: после текущего запроса сохраним уже загруженное.", "warn");
       }, "background:#dc2626;color:#fff;border-color:#dc2626;opacity:0.55;");
       btnStop.disabled = true;
       actionBar.appendChild(btnJson);
@@ -5392,6 +5963,10 @@ function createDevToolsTrace(opts) {
             (pageTo > 0 ? String(pageTo) : "конец")
         );
         setStats({ tone: "run", phase: "выгрузка", progress: "0 / " + combos.length, news: "0", newsCount: "—", retries: "0", errors: "0" });
+        beginWorkStatus("Выгрузка", "POST /v1/news · " + mode, combos.length, [
+          "Комбинаций status×block: " + combos.length,
+          "Страницы: " + pageFrom + "…" + (pageTo > 0 ? String(pageTo) : "конец")
+        ]);
 
         var rawPages = [];
         var comboResults = [];
@@ -5568,8 +6143,28 @@ function createDevToolsTrace(opts) {
             var tagsStat = combo.newsTagList.length
               ? combo.newsTagList.map(function (t) { return t.tagCode; }).join(", ")
               : "—";
-            sharedOpStatus.textContent =
-              "Операции: выгрузка " + (ci + 1) + "/" + combos.length;
+            tickWorkStatus({
+              current: ci + 1,
+              total: combos.length,
+              ok: combosOk,
+              fail: errors,
+              retries: retriesTotal,
+              request:
+                "list · " +
+                combo.newsStatus +
+                " / " +
+                combo.businessBlock +
+                " · pageNum=" +
+                pageFrom +
+                "…",
+              title: "Выгрузка " + (ci + 1) + " из " + combos.length,
+              lines: [
+                "status=" + combo.newsStatus,
+                "businessBlock=" + combo.businessBlock,
+                "теги=" + tagsStat,
+                "собрано новостей: " + newsTotal
+              ]
+            });
             setStats({
               tone: consecutiveExhaustedFails >= 1 ? "retry2" : "run",
               phase: (ci + 1) + "/" + combos.length,
@@ -5594,6 +6189,31 @@ function createDevToolsTrace(opts) {
                 pageNum: pageNum
               };
               if (combo.newsTagList.length) payload.newsTagList = combo.newsTagList;
+              tickWorkStatus({
+                current: ci + 1,
+                total: combos.length,
+                ok: combosOk,
+                fail: errors,
+                retries: retriesTotal,
+                request:
+                  "list · " +
+                  combo.newsStatus +
+                  " / " +
+                  combo.businessBlock +
+                  " · pageNum=" +
+                  pageNum,
+                title: "Выгрузка " + (ci + 1) + " из " + combos.length,
+                lines: [
+                  "status=" + combo.newsStatus,
+                  "businessBlock=" + combo.businessBlock,
+                  "pageNum=" +
+                    pageNum +
+                    (totalPages != null ? "/" + totalPages : "") +
+                    (pageTo > 0 ? " (до " + pageTo + ")" : ""),
+                  "теги=" + tagsStat,
+                  "собрано новостей: " + newsTotal
+                ]
+              });
               setStats({
                 tone: consecutiveExhaustedFails >= 1 ? "retry2" : "run",
                 page: "pageNum=" + pageNum + (totalPages != null ? "/" + totalPages : "") +
@@ -5611,6 +6231,13 @@ function createDevToolsTrace(opts) {
                 onAttempt: function (attempt, maxAttempts, err, meta) {
                   var m = meta || {};
                   if (m.isRetry) retriesTotal++;
+                  tickWorkStatus({
+                    retries: retriesTotal,
+                    level: err ? "warn" : "info",
+                    title: err
+                      ? "Повтор " + attempt + "/" + maxAttempts + " · combo " + (ci + 1) + "/" + combos.length
+                      : "Выгрузка " + (ci + 1) + " из " + combos.length
+                  });
                   setStats({
                     tone: err ? (consecutiveExhaustedFails >= 1 || attempt > 2 ? "retry2" : "retry1") : (consecutiveExhaustedFails >= 1 ? "retry2" : "run"),
                     phase: err ? ("повтор " + attempt + "/" + maxAttempts) : ((ci + 1) + "/" + combos.length),
@@ -5624,6 +6251,7 @@ function createDevToolsTrace(opts) {
                 // Ошибочную страницу не сохраняем, успешные остаются доступны для partial-файла.
                 errors++;
                 consecutiveExhaustedFails++;
+                tickWorkStatus({ fail: errors, retries: retriesTotal, level: "err" });
                 log(
                   "  ✗ pageNum=" +
                     pageNum +
@@ -5713,6 +6341,7 @@ function createDevToolsTrace(opts) {
             }
             if (comboHadSuccess) {
               combosOk++;
+              tickWorkStatus({ ok: combosOk, fail: errors, retries: retriesTotal, level: "info" });
               comboResults.push({
                 combo: {
                   newsStatus: combo.newsStatus,
@@ -5767,6 +6396,22 @@ function createDevToolsTrace(opts) {
               /* ignore */
             }
           }
+          finishWorkStatus(
+            abortedByErrors || errors > 0 ? "err" : stoppedByUser ? "warn" : "ok",
+            abortedByErrors
+              ? "Выгрузка прервана ошибками"
+              : stoppedByUser
+                ? "Выгрузка остановлена"
+                : errors > 0
+                  ? "Выгрузка завершена с ошибками"
+                  : "Выгрузка завершена",
+            [
+              "Комбинаций OK=" + combosOk + " / " + combos.length,
+              "Новостей=" + newsTotal,
+              "Ошибки страниц=" + errors,
+              "Повторы=" + retriesTotal
+            ]
+          );
           setExportBusy(false);
         }
       }
