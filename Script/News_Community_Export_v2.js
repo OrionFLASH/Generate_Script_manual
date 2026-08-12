@@ -2949,7 +2949,7 @@ function createDevToolsTrace(opts) {
       selectionInfo.style.cssText = "font-size:11px;color:#475569;";
       wrap.appendChild(selectionInfo);
 
-      /** @type {{ newsId: string, type: string, summary: string, selected: boolean }[]} */
+      /** @type {{ newsId: string, type: string, summary: string, action: ("publish"|"delete"|"none") }[]} */
       var createdDrafts = [];
 
       function clearPublishBox() {
@@ -2970,7 +2970,7 @@ function createDevToolsTrace(opts) {
         title.textContent =
           "Созданы черновики (" +
           createdDrafts.length +
-          "). Отметьте и опубликуйте (status → published):";
+          "). Выберите действие: публиковать (status → published) или удалить:";
         publishBox.appendChild(title);
 
         var list = document.createElement("div");
@@ -2981,15 +2981,34 @@ function createDevToolsTrace(opts) {
             var item = createdDrafts[i];
             var row = document.createElement("label");
             row.style.cssText =
-              "display:grid;grid-template-columns:24px 110px 1fr 200px;gap:8px;padding:6px 8px;" +
+              "display:grid;grid-template-columns:95px 95px 110px 1fr 200px;gap:8px;padding:6px 8px;" +
               "font-size:11px;border-bottom:1px solid #f0fdf4;align-items:center;cursor:pointer;";
-            var cb = document.createElement("input");
-            cb.type = "checkbox";
-            cb.checked = item.selected !== false;
-            cb.addEventListener("change", function () {
-              item.selected = cb.checked;
+            var pubWrap = document.createElement("label");
+            pubWrap.style.cssText = "display:inline-flex;align-items:center;gap:4px;";
+            var pubCb = document.createElement("input");
+            pubCb.type = "checkbox";
+            pubCb.checked = item.action === "publish";
+            pubCb.addEventListener("change", function () {
+              item.action = pubCb.checked ? "publish" : "none";
+              if (item.action === "publish") delCb.checked = false;
             });
-            row.appendChild(cb);
+            pubWrap.appendChild(pubCb);
+            pubWrap.appendChild(document.createTextNode("Публиковать"));
+            row.appendChild(pubWrap);
+
+            var delWrap = document.createElement("label");
+            delWrap.style.cssText = "display:inline-flex;align-items:center;gap:4px;";
+            var delCb = document.createElement("input");
+            delCb.type = "checkbox";
+            delCb.checked = item.action === "delete";
+            delCb.addEventListener("change", function () {
+              item.action = delCb.checked ? "delete" : "none";
+              if (item.action === "delete") pubCb.checked = false;
+            });
+            delWrap.appendChild(delCb);
+            delWrap.appendChild(document.createTextNode("Удалить"));
+            row.appendChild(delWrap);
+
             var t = document.createElement("div");
             t.textContent = item.type || "";
             row.appendChild(t);
@@ -3011,14 +3030,20 @@ function createDevToolsTrace(opts) {
         publishBox.appendChild(pubActions);
 
         pubActions.appendChild(
-          mkBtn("Отметить все", function () {
-            for (var i = 0; i < createdDrafts.length; i++) createdDrafts[i].selected = true;
+          mkBtn("Все → публиковать", function () {
+            for (var i = 0; i < createdDrafts.length; i++) createdDrafts[i].action = "publish";
             renderPublishBox();
           })
         );
         pubActions.appendChild(
-          mkBtn("Снять все", function () {
-            for (var i = 0; i < createdDrafts.length; i++) createdDrafts[i].selected = false;
+          mkBtn("Все → удалять", function () {
+            for (var i = 0; i < createdDrafts.length; i++) createdDrafts[i].action = "delete";
+            renderPublishBox();
+          })
+        );
+        pubActions.appendChild(
+          mkBtn("Снять все решения", function () {
+            for (var i = 0; i < createdDrafts.length; i++) createdDrafts[i].action = "none";
             renderPublishBox();
           })
         );
@@ -3029,6 +3054,15 @@ function createDevToolsTrace(opts) {
               void publishCreatedDrafts();
             },
             "background:#16a34a;color:#fff;border-color:#16a34a;"
+          )
+        );
+        pubActions.appendChild(
+          mkBtn(
+            "Удалить выбранные",
+            function () {
+              void deleteCreatedDrafts();
+            },
+            "background:#b91c1c;color:#fff;border-color:#b91c1c;"
           )
         );
         pubActions.appendChild(
@@ -3046,10 +3080,10 @@ function createDevToolsTrace(opts) {
 
       async function publishCreatedDrafts() {
         var toPub = createdDrafts.filter(function (x) {
-          return x.selected !== false && String(x.newsId || "").trim();
+          return x.action === "publish" && String(x.newsId || "").trim();
         });
         if (!toPub.length) {
-          log("Нет отмеченных черновиков для публикации.");
+          log("Нет черновиков, отмеченных к публикации.");
           return;
         }
         if (opBusy) {
@@ -3105,7 +3139,114 @@ function createDevToolsTrace(opts) {
           refreshCreateActions();
         }
         log("Публикация после создания: OK=" + ok + ", FAIL=" + fail + ".");
-        if (fail === 0 && ok > 0) clearPublishBox();
+        if (ok > 0) {
+          var keep = [];
+          for (var ki = 0; ki < createdDrafts.length; ki++) {
+            var cd = createdDrafts[ki];
+            if (cd.action === "publish") {
+              var isPublished = false;
+              for (var pi = 0; pi < toPub.length; pi++) {
+                if (toPub[pi].newsId === cd.newsId) {
+                  isPublished = true;
+                  break;
+                }
+              }
+              if (isPublished) continue;
+            }
+            keep.push(cd);
+          }
+          createdDrafts = keep;
+          if (!createdDrafts.length) clearPublishBox();
+          else renderPublishBox();
+        }
+      }
+
+      async function deleteCreatedDrafts() {
+        var toDel = createdDrafts.filter(function (x) {
+          return x.action === "delete" && String(x.newsId || "").trim();
+        });
+        if (!toDel.length) {
+          log("Нет черновиков, отмеченных к удалению.");
+          return;
+        }
+        if (opBusy) {
+          log("Уже выполняется другая операция — дождитесь завершения или нажмите Стоп.");
+          return;
+        }
+        if (
+          !window.confirm(
+            "Удалить выбранные новости: " + toDel.length + " шт.? Это действие необратимо."
+          )
+        ) {
+          log("Удаление после создания отменено пользователем.");
+          return;
+        }
+        var env = getEnv();
+        var settings = getSharedRequestSettings();
+        var ok = 0;
+        var fail = 0;
+        setOpBusy(true, "удаление после создания");
+        refreshCreateActions();
+        try {
+          for (var i = 0; i < toDel.length; i++) {
+            if (isStopRequested()) {
+              log("Стоп: удаление прервано.");
+              break;
+            }
+            var newsId = toDel[i].newsId;
+            sharedOpStatus.textContent = "Операции: удаление " + (i + 1) + "/" + toDel.length;
+            var retryResult = await postJsonWithRetry(
+              env.origin + NEWS_V2_CFG.NEWS_DELETE_PATH,
+              { newsId: newsId },
+              env.origin + "/admin/community/" + newsId,
+              {
+                log: log,
+                retryMax: settings.retryMax,
+                retryPauseMs: settings.retryPauseMs,
+                requireBody: false,
+                shouldStop: isStopRequested
+              }
+            );
+            if (retryResult.stopped) break;
+            if (retryResult.ok) {
+              ok++;
+              log("Удалено: newsId=" + newsId);
+            } else {
+              fail++;
+              log(
+                "Ошибка удаления newsId=" +
+                  newsId +
+                  ": " +
+                  (retryResult.error || ("HTTP " + (retryResult.fr && retryResult.fr.status)))
+              );
+            }
+            if (i < toDel.length - 1 && settings.opGapMs > 0) await delay(settings.opGapMs);
+          }
+        } finally {
+          setOpBusy(false);
+          refreshCreateActions();
+        }
+        log("Удаление после создания: OK=" + ok + ", FAIL=" + fail + ".");
+        if (ok > 0) {
+          var keep = [];
+          for (var ki = 0; ki < createdDrafts.length; ki++) {
+            var cd = createdDrafts[ki];
+            if (cd.action === "delete") {
+              var isDeleted = false;
+              for (var di = 0; di < toDel.length; di++) {
+                if (toDel[di].newsId === cd.newsId) {
+                  isDeleted = true;
+                  break;
+                }
+              }
+              if (isDeleted) continue;
+            }
+            keep.push(cd);
+          }
+          createdDrafts = keep;
+          if (!createdDrafts.length) clearPublishBox();
+          else renderPublishBox();
+        }
       }
 
       function showCreatedDraftsForPublish(items) {
@@ -3115,7 +3256,7 @@ function createDevToolsTrace(opts) {
               newsId: ensureString(x.newsId || x.objectId || "").trim(),
               type: ensureString(x.type),
               summary: ensureString(x.summary),
-              selected: true
+              action: "publish"
             };
           })
           .filter(function (x) {
@@ -3126,7 +3267,7 @@ function createDevToolsTrace(opts) {
           log(
             "Можно опубликовать созданные черновики (" +
               createdDrafts.length +
-              "): отметьте нужные под кнопками и нажмите «Опубликовать выбранные»."
+              "): выберите для каждой записи действие «Публиковать» или «Удалить», затем запустите нужную кнопку."
           );
         } else {
           log("Создание завершено, но не удалось получить objectId из ответов — публикация недоступна.");
@@ -3628,15 +3769,13 @@ function createDevToolsTrace(opts) {
                         " | " +
                         compactNewsLabel(payload)
                     );
-                    if (consecutiveFails >= settings.abortLimit) {
-                      abortedByErrors = true;
-                      log(
-                        "АВАРИЯ: " +
-                          consecutiveFails +
-                          " подряд исчерпанных ошибок — остановка создания."
-                      );
-                      break;
-                    }
+              if (consecutiveFails >= settings.abortLimit) {
+                log(
+                  "ВНИМАНИЕ: " +
+                    consecutiveFails +
+                    " подряд исчерпанных ошибок, но создание продолжается (без аварийной остановки)."
+                );
+              }
                   }
                   if (si < selectedValid.length - 1 && settings.opGapMs > 0) {
                     await delay(settings.opGapMs);
