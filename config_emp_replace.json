@@ -10,9 +10,18 @@
   "excel_report_file": "REPL_EmpID_mapping.xlsx",
   "employee_csv_file": "custom_cib_kksb_dvl.dm_gamification_list_employee.csv",
   "csv_delimiter": ";",
-  "filter_business_block": "KMKKSB",
-  "filter_role_code": "KM_KKSB",
-  "filter_uch_code": "1",
+  "filter_rules": [
+    {
+      "business_block": "KMKKSB",
+      "role_code": "KM_KKSB",
+      "uch_code": "1"
+    },
+    {
+      "business_block": "AKMKKSB",
+      "role_code": "AKM_KKSB",
+      "uch_code": "*"
+    }
+  ],
   "random_seed": 20260805,
   "tb_to_ter_division_name": {
     "13": "ЦЧБ",

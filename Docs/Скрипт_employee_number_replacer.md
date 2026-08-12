@@ -39,7 +39,8 @@ python3 employee_number_replacer.py --config ./config_emp_replace.json
 | `output_prefix` | Префикс выходного имени (`REPL_EmpID_`) |
 | `excel_report_file` | Имя Excel-отчёта в `output_dir` (по умолчанию `REPL_EmpID_mapping.xlsx`) |
 | `employee_csv_file` | CSV-справочник табельных |
-| `filter_*` | Фильтры строк CSV (`BUSINESS_BLOCK`, `ROLE_CODE`, `UCH_CODE`) |
+| `filter_rules` | Список правил фильтрации CSV: `business_block`, `role_code`, `uch_code` (`*`/`ANY`/`ALL` = любой `UCH_CODE`) |
+| `filter_*` | Legacy-формат фильтров (`BUSINESS_BLOCK`, `ROLE_CODE`, `UCH_CODE`), строка или список |
 | `tb_to_ter_division_name` | Соответствие `TB_CODE` → `terDivisionName` |
 | `random_seed` | Seed для воспроизводимой случайной замены |
 
@@ -52,11 +53,28 @@ python3 employee_number_replacer.py --config ./config_emp_replace.json
 ]
 ```
 
+Пример `filter_rules`:
+
+```json
+"filter_rules": [
+  {
+    "business_block": "KMKKSB",
+    "role_code": "KM_KKSB",
+    "uch_code": "1"
+  },
+  {
+    "business_block": "AKMKKSB",
+    "role_code": "AKM_KKSB",
+    "uch_code": "*"
+  }
+]
+```
+
 ## Логика
 
 1. Читает указанные JSON из `IN`.
 2. Собирает все `employeeNumber`, дедуплицирует.
-3. Строит биективную замену на пул из CSV (фильтры `KMKKSB` / `KM_KKSB` / `1`).
+3. Строит биективную замену на пул из CSV (по `filter_rules`; если поле не задано — по legacy `filter_*`).
 4. Один исходный табельный → один и тот же заменяющий во всех файлах/вхождениях.
 5. При наличии в блоке сотрудника также меняет:
    - `lastName` ← `SURNAME`
